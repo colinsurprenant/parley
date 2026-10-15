@@ -1,0 +1,6 @@
+2026-10-11T04:28:15.780Z : info  : server     : ergo-2.19.1 starting
+2026-10-11T04:28:15.780Z : info  : server     : Using config file : /store/ircd-3129793571.yaml
+2026-10-11T04:28:15.780Z : info  : server     : Using datastore : /store/ergo.db
+2026-10-11T04:28:15.780Z : warn  : server     : database does not exist, creating it : /store/ergo.db
+2026-10-11T04:28:15.789Z : error : server     : couldn't listen on : 127.0.0.1:17802 : listen tcp 127.0.0.1:17802: bind: address already in use
+2026-10-11T04:28:15.789Z : error : server     : Could not load server: listen tcp 127.0.0.1:17802: bind: address already in use

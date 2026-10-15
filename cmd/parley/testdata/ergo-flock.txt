@@ -1,0 +1,3 @@
+2026-10-11T04:27:59.047Z : info  : server     : ergo-2.19.1 starting
+2026-10-11T04:27:59.048Z : info  : server     : Using config file : /store/ircd-532311392.yaml
+2026-10-11T04:27:59.048Z : error : server     : Could not load server: failed to acquire flock on ircd.lock: Couldn't acquire flock (is another Ergo running?)

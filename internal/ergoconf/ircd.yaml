@@ -1,0 +1,125 @@
+# ergo v2.19.1 configuration for a loopback parley channel: the smallest config
+# that starts cleanly and satisfies the IRC stream adapter. Everything here is
+# either required by ergo or required by parley; nothing is decoration.
+#
+# This file is embedded in the parley binary (internal/ergoconf), and
+# `parley server` runs ergo with a copy of it that has the listener and the
+# datastore path below replaced by its own flags' values. The values written
+# here are the defaults that copy replaces, and the file runs as it stands:
+#
+#   cd <a datastore directory> && ergo run --conf <this file>
+#
+# See contrib/ergo/README.md for installing ergo and joining from a client.
+
+network:
+    name: parley
+
+server:
+    name: ergo.test
+    # Loopback and plaintext, by design: no TLS block means no certificates to
+    # make, and nothing outside this machine can reach the socket.
+    listeners:
+        "127.0.0.1:6667": {}
+    max-sendq: 96k
+
+accounts:
+    # Every parley participant is an account here, and every parley connection
+    # authenticates as one with SASL PLAIN. That is what lets a long-lived
+    # `parley wait` and the `parley send` that answers it hold one nick at the
+    # same time: multiclient makes them two sessions of one client instead of
+    # two clients colliding on 433.
+    authentication-enabled: true
+    registration:
+        # parley registers a participant's account itself, on that
+        # participant's first connection, with a password it generates and
+        # keeps in the state directory. Nobody types a password, so nothing
+        # here may ask for one.
+        enabled: true
+        allow-before-connect: true
+        email-verification:
+            enabled: false
+        # The lowest the library allows, and the right value here: the password
+        # is 32 random bytes nobody chose and nobody reuses, so there is nothing
+        # for a slow hash to protect — and every connection pays it, including
+        # the one-shot `parley send` on the reply path.
+        bcrypt-cost: 4
+    require-sasl:
+        # The human in the channel has no account and needs none: a stock
+        # client joins anonymously, as it would any other server.
+        enabled: false
+    nick-reservation:
+        # A registered nick belongs to its account. A stranger asking for it is
+        # refused, which is what makes a participant's nick its own.
+        enabled: true
+        method: strict
+    multiclient:
+        enabled: true
+        allowed-by-default: true
+        # The participant stays on the server between connections, which keeps
+        # the channel — and so its history — alive across a pump restart and
+        # between one-shot sends.
+        always-on: "opt-out"
+        # An always-on participant with nothing connected is not away; it is
+        # simply not reading yet.
+        auto-away: "opt-in"
+
+datastore:
+    # Relative to the working directory ergo is started in, and created on
+    # first run; `parley server` replaces it with an absolute path inside its
+    # --datastore directory. Accounts and channel registrations live here;
+    # history does not.
+    path: ergo.db
+
+# ergo takes an exclusive lock on this file for as long as it runs and refuses
+# to start when another ergo holds it. Without the line ergo takes no lock at
+# all, and two servers on one datastore both start and share one ergo.db.
+# Relative to the working directory, like the datastore path; the lock is
+# released by the kernel when the process dies, so a killed ergo leaves a file
+# behind and no lock.
+lock-file: "ircd.lock"
+
+limits:
+    # A nick is a parley nick, which is bounded at 64 bytes.
+    nicklen: 64
+    channellen: 64
+    awaylen: 390
+    kicklen: 390
+    topiclen: 390
+    # One parley message is one draft/multiline batch, so these two are the
+    # real bound on a message body: 64 KiB over at most a thousand lines.
+    multiline:
+        max-bytes: 65536
+        max-lines: 1000
+
+fakelag:
+    # Agents write in bursts and read history in pages. Rate-limiting a
+    # loopback peer only turns a delivery into a delay.
+    enabled: false
+
+history:
+    enabled: true
+    # The retained ring, per channel: a cursor older than this is a history gap,
+    # which parley reports rather than skipping over.
+    channel-length: 2048
+    client-length: 256
+    autoresize-window: 3d
+    # parley replays with CHATHISTORY itself, so the server must not replay on
+    # join as well.
+    autoreplay-on-join: 0
+    # The page size parley asks for, advertised as ISUPPORT CHATHISTORY. Zero
+    # here silently disables the CHATHISTORY cap.
+    chathistory-maxmessages: 1000
+    restrictions:
+        # No time cutoff: a participant that was away for a week still gets
+        # everything the ring holds.
+        query-cutoff: 'none'
+    persistent:
+        # History is in memory and dies with the server, which is what a local
+        # channel between two agent sessions wants.
+        enabled: false
+
+logging:
+    -
+        method: stderr
+        type: "* -userinput -useroutput"
+        level: info

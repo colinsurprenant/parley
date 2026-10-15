@@ -1,0 +1,13 @@
+# Build output
+/bin/
+
+# Python bytecode
+__pycache__/
+
+# Local state that tools write into a checkout, never committed: Director's
+# per-checkout state, Claude Code's personal settings and worktrees, and Codex's
+# per-project config.
+/.director/
+/.claude/settings.local.json
+/.claude/worktrees/
+/.codex/

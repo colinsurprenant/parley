@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a1218f-e2ce-7173-b121-e4588840f47a"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'printenv CODEX_THREAD_ID'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'printenv CODEX_THREAD_ID'","aggregated_output":"01a1218f-e2ce-7173-b121-e4588840f47a\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"01a1218f-e2ce-7173-b121-e4588840f47a"}}
+{"type":"turn.completed","usage":{"input_tokens":35188,"cached_input_tokens":24576,"cache_write_input_tokens":0,"output_tokens":112,"reasoning_output_tokens":49}}
