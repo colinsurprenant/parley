@@ -183,10 +183,31 @@ func startErgoWith(t *testing.T, channelLength, chatHistoryMax int) *ergoServer 
 // pause stops the server process without closing anything: the sockets stay
 // open and every request written to them goes unanswered, which is the one
 // thing a client cannot tell from a server that is merely slow.
+//
+// It returns only once the process has stopped. A SIGSTOP is delivered
+// asynchronously: kill returns while ergo's threads may still be running on
+// other cores, and a request written in that window is answered (seen on a
+// Linux CI runner). Waiting for the stop report closes it; ergo is this
+// process's child and nothing else waits on it until cleanup.
 func (s *ergoServer) pause(t *testing.T) {
 	t.Helper()
 	if err := s.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
 		t.Fatalf("stop ergo: %v", err)
+	}
+	var ws syscall.WaitStatus
+	for {
+		_, err := syscall.Wait4(s.cmd.Process.Pid, &ws, syscall.WUNTRACED, nil)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("wait for ergo to stop: %v", err)
+		}
+		break
+	}
+	// Not ws.Stopped(): on the BSDs, Go reports a SIGSTOP as Continued.
+	if ws.Exited() || ws.Signaled() {
+		t.Fatalf("ergo ended instead of stopping: wait status %#x", uint32(ws))
 	}
 }
 
