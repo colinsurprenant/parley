@@ -43,7 +43,8 @@ parley table new <id> --target <target> --chair <chair> --rounds 3 \
 ```
 
 `--seat <nick>=<claude|codex>[:<model>]` is repeatable, one per seat. OpenCode
-seats come after v1. A model is at most 128 bytes of ASCII letters and digits and
+seats are not supported yet; OpenCode is the next harness on the list. A model
+is at most 128 bytes of ASCII letters and digits and
 `. _ - : / @ [ ] +`, which holds the ids Claude Code and Codex take; it does not
 begin with `-` and holds no control character. It is kept in `table.json`, so the
 bound is also what keeps that record under the 64 KiB `table end` reads. The

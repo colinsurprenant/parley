@@ -146,7 +146,7 @@ func cmdTableNew(args []string) error {
 	chair := fs.String("chair", "", "required: your registered nick on the server, the human who chairs the table")
 	rounds := fs.Int("rounds", 0, "required: rounds the table runs before a checkpoint; the gates' cap is rounds times the number of seats")
 	var seatArgs stringList
-	fs.Var(&seatArgs, "seat", "required, repeatable: a seat as <nick>=<claude|codex>[:<model>], e.g. --seat codex-a=codex:gpt-5 --seat claude-a=claude:opus; a model is at most 128 bytes of letters, digits and . _ - : / @ [ ] +; opencode seats come after v1")
+	fs.Var(&seatArgs, "seat", "required, repeatable: a seat as <nick>=<claude|codex>[:<model>], e.g. --seat codex-a=codex:gpt-5 --seat claude-a=claude:opus; a model is at most 128 bytes of letters, digits and . _ - : / @ [ ] +; opencode seats are not supported yet")
 	worktree := fs.String("worktree", "", "the shared worktree to make, an absolute path that does not exist yet (default <state base>/tables/<id>/worktree)")
 	server := fs.String("server", defaultListen, "the loopback IP:port of the IRC server the table uses (a host name is refused)")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ and tables/ (default $XDG_STATE_HOME/parley)")
@@ -432,9 +432,9 @@ func (p *tablePlan) checkIDFree() error {
 }
 
 // parseMember parses one --seat or --peer value (flagName), <nick>=<harness>[:<model>].
-// The harness is claude or codex; OpenCode comes after v1. The two directories
-// the state base keeps tables and builds in sit beside the per-nick ones, so
-// neither is a nick: stream.ValidNick refuses both.
+// The harness is claude or codex; OpenCode is not supported yet. The two
+// directories the state base keeps tables and builds in sit beside the per-nick
+// ones, so neither is a nick: stream.ValidNick refuses both.
 func parseMember(flagName, raw string) (*seatPlan, error) {
 	nick, spec, ok := strings.Cut(raw, "=")
 	if !ok {
@@ -447,7 +447,7 @@ func parseMember(flagName, raw string) (*seatPlan, error) {
 	switch harness {
 	case harnessClaude, harnessCodex:
 	case "opencode":
-		return nil, cfgErrf("%s %q: OpenCode %ss come after v1; the harnesses are claude and codex", flagName, raw, strings.TrimPrefix(flagName, "--"))
+		return nil, cfgErrf("%s %q: OpenCode %ss are not supported yet; the harnesses are claude and codex", flagName, raw, strings.TrimPrefix(flagName, "--"))
 	default:
 		return nil, cfgErrf("%s %q: unknown harness %q: the harnesses are claude and codex", flagName, raw, harness)
 	}

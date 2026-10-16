@@ -211,7 +211,7 @@ verbs:
            HEAD tracks no .mcp.json of any kind, no .codex that is not a
            directory, no .codex/config.toml and no .parley-table; the seats'
            nicks are valid, distinct from each other and from the chair, none
-           of them "tables" or "builds"; opencode seats come after v1; a model
+           of them "tables" or "builds"; no opencode seats yet; a model
            of at most 128 bytes of letters, digits and . _ - : / @ [ ] + ;
            no '$' in the target, the worktree or
            this binary's path; no whitespace in the state directory, which
