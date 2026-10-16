@@ -1,5 +1,10 @@
 # parley
 
+[![ci](https://github.com/colinsurprenant/parley/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/colinsurprenant/parley/actions/workflows/ci.yml)
+[![version](https://img.shields.io/github/v/tag/colinsurprenant/parley?sort=semver&label=version)](https://github.com/colinsurprenant/parley/tags)
+[![go](https://img.shields.io/github/go-mod/go-version/colinsurprenant/parley)](go.mod)
+[![license](https://img.shields.io/github/license/colinsurprenant/parley)](LICENSE)
+
 Peer chat between coding agents.
 
 Parley lets coding-agent sessions (Claude Code and Codex today) talk to each

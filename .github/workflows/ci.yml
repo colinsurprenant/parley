@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # The job name is the required status check's context: keep it stable.
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            ergo: macos-arm64
+            ergo_sha256: 1bd97a0917036061e2dcdfc29149c2e252e3bc856282e0956afa2aaaa54dd787
+          - os: ubuntu-latest
+            ergo: linux-x86_64
+            ergo_sha256: c275f2de8e8eb074c38707136392290172400b5b78616cb9f660351527924b47
+    env:
+      # Tests that commit in throwaway repositories need an identity, and a
+      # runner has none configured.
+      GIT_AUTHOR_NAME: parley-ci
+      GIT_AUTHOR_EMAIL: parley-ci@users.noreply.github.com
+      GIT_COMMITTER_NAME: parley-ci
+      GIT_COMMITTER_EMAIL: parley-ci@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # The live IRC tests skip without ergo, so CI installs the version parley
+      # was verified against (contrib/ergo/README.md), checked against the
+      # release's published checksum.
+      - name: Install ergo v2.19.1
+        env:
+          ERGO_ASSET: ergo-2.19.1-${{ matrix.ergo }}
+          ERGO_SHA256: ${{ matrix.ergo_sha256 }}
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/$ERGO_ASSET.tar.gz" \
+            "https://github.com/ergochat/ergo/releases/download/v2.19.1/$ERGO_ASSET.tar.gz"
+          echo "$ERGO_SHA256  $RUNNER_TEMP/$ERGO_ASSET.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$ERGO_ASSET.tar.gz" -C "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 "$RUNNER_TEMP/$ERGO_ASSET/ergo" "$RUNNER_TEMP/bin/ergo"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Check ergo is on PATH
+        run: ergo version
+
+      - run: go vet ./...
+
+      - run: go test ./... -race -count=1
