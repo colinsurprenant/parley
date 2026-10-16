@@ -130,7 +130,7 @@ func cmdBuildNew(args []string) error {
 	target := fs.String("target", "", "required: the repo the build works on, the root of a git checkout, adopted in Director before this runs; each peer gets a worktree of its HEAD on a new branch, and nothing else is written into it but git's registration of the worktrees")
 	chair := fs.String("chair", "", "required: your registered nick on the server, the human whose channel lines rule the build")
 	var peerArgs stringList
-	fs.Var(&peerArgs, "peer", "required, exactly twice: a peer as <nick>=<claude|codex>[:<model>], e.g. --peer claude-a=claude:opus --peer codex-b=codex:gpt-5; a model is at most 128 bytes of letters, digits and . _ - : / @ [ ] +; opencode peers come after v1")
+	fs.Var(&peerArgs, "peer", "required, exactly twice: a peer as <nick>=<claude|codex>[:<model>], e.g. --peer claude-a=claude:opus --peer codex-b=codex:gpt-5; a model is at most 128 bytes of letters, digits and . _ - : / @ [ ] +; opencode peers are not supported yet")
 	server := fs.String("server", defaultListen, "the loopback IP:port of the IRC server the build uses (a host name is refused)")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ and builds/ (default $XDG_STATE_HOME/parley)")
 	codexBin := fs.String("codex-bin", codex.DefaultBin, "the codex CLI to run, resolved on PATH unless it holds a separator")

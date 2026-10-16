@@ -912,7 +912,7 @@ func TestTableNewRefusesBeforeAnyChange(t *testing.T) {
 		{"tables as the chair", "tables", func(t *testing.T, b *tableBench) []string {
 			return b.newArgs("t1", nil, "--chair", "tables")
 		}},
-		{"opencode", "after v1", func(t *testing.T, b *tableBench) []string { return b.newArgs("t1", []string{"o=opencode"}) }},
+		{"opencode", "not supported yet", func(t *testing.T, b *tableBench) []string { return b.newArgs("t1", []string{"o=opencode"}) }},
 		{"unknown harness", "unknown harness", func(t *testing.T, b *tableBench) []string { return b.newArgs("t1", []string{"o=gemini"}) }},
 		{"no equals", "<nick>=", func(t *testing.T, b *tableBench) []string { return b.newArgs("t1", []string{"codex"}) }},
 		{"bad seat nick", "nick", func(t *testing.T, b *tableBench) []string { return b.newArgs("t1", []string{"a.b=codex"}) }},
@@ -1949,7 +1949,7 @@ func TestTableEndConfigurationErrors(t *testing.T) {
 func TestUsageDocumentsTheTableVerbs(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{"parley table   new <id>", "--seat <nick>=<claude|codex>[:<model>]", "parley table   end <id> [--force]",
-		"table    set a table up", "codex delete line for each Codex seat and never runs one", "opencode seats come after v1", "tables/<id>/table.json", "Tables live in <dir>/tables/<id>/",
+		"table    set a table up", "codex delete line for each Codex seat and never runs one", "no opencode seats yet", "tables/<id>/table.json", "Tables live in <dir>/tables/<id>/",
 		"no whitespace in the state directory", "no .codex that is not a", "the parley-table skill under", "holds the marker new wrote",
 		"before it takes a lock or removes anything", "the digest of the record's", "so those lines say plain codex", "takes every seat's lock and holds them to the end", "a hangup (the terminal", "PLAIN among the"} {
 		if !strings.Contains(top, want) {

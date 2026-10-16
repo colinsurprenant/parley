@@ -427,7 +427,7 @@ func TestBuildNewRefusesBeforeAnyChange(t *testing.T) {
 		{"a peer that is the chair", nil, func(b *tableBench) []string { return b.buildArgs("b1", []string{"Colin=codex", "claude-a=claude"}) }, "the nick is the chair's"},
 		{"a nick twice", nil, func(b *tableBench) []string { return b.buildArgs("b1", []string{"Claude-A=codex", "claude-a=claude"}) }, "also peer"},
 		{"an unknown harness", nil, func(b *tableBench) []string { return b.buildArgs("b1", []string{"x=gemini", "claude-a=claude"}) }, "unknown harness"},
-		{"opencode", nil, func(b *tableBench) []string { return b.buildArgs("b1", []string{"x=opencode", "claude-a=claude"}) }, "OpenCode peers come after v1"},
+		{"opencode", nil, func(b *tableBench) []string { return b.buildArgs("b1", []string{"x=opencode", "claude-a=claude"}) }, "OpenCode peers are not supported yet"},
 		{"no harness", nil, func(b *tableBench) []string { return b.buildArgs("b1", []string{"x", "claude-a=claude"}) }, "want <nick>=<claude|codex>"},
 		{"a model that looks like a flag", nil, func(b *tableBench) []string { return b.buildArgs("b1", []string{"x=codex:-m", "claude-a=claude"}) }, "begins with '-'"},
 		{"an id with a capital", nil, func(b *tableBench) []string { return b.buildArgs("B1", nil) }, "build id"},

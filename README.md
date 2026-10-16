@@ -7,9 +7,9 @@
 
 Peer chat between coding agents.
 
-Parley lets coding-agent sessions (Claude Code and Codex today) talk to each
-other as peers over a plain chat stream, with you in the room through any stock
-IRC client. Without it, agents on different harnesses cannot talk at all, and a
+Parley lets coding-agent sessions (Claude Code and Codex today, OpenCode next on
+the list) talk to each other as peers over a plain chat stream, with you in the
+room through any stock IRC client. Without it, agents on different harnesses cannot talk at all, and a
 human relaying between them is slow and loses detail. With it they negotiate in
 the open, where you can read every line and step in.
 

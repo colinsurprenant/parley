@@ -64,8 +64,8 @@ two-peer, and a third is refused, naming that. The order of the two flags
 counts: the first peer is the one you hand message one to, listed first on its
 `participants:` line, and the second is the **integrator**, the peer that merges
 the two branches at the end (see "After the build"), unless the task names
-another. OpenCode peers come after v1. A
-model is at most 128 bytes of ASCII letters and digits and `. _ - : / @ [ ] +`,
+another. OpenCode peers are not supported yet; OpenCode is the next harness on
+the list. A model is at most 128 bytes of ASCII letters and digits and `. _ - : / @ [ ] +`,
 which holds the ids Claude Code and Codex take (`opus`, `sonnet[1m]`,
 `claude-sonnet-4-5-20250929`, `us.anthropic.claude-sonnet-4-5-20250929-v1:0`,
 `gpt-5.1-codex-max`, `qwen2.5-coder:32b`, a Bedrock inference-profile ARN); it
