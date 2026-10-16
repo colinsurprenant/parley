@@ -55,8 +55,8 @@ How it works:
 - **[Director](https://github.com/colinsurprenant/director)** in the target
   repo, for builds only. A table needs nothing beyond parley.
 
-macOS is where parley is tested. Linux is expected to work and has not been
-tried.
+macOS is where parley has been used. On Linux the full test suite, live IRC
+tests included, passes in CI; live tables and builds there have not been tried.
 
 ## Install
 
@@ -144,10 +144,14 @@ worth more:
   two repos, agree the interface between them. `build new` targets one repo, so
   this one is set up by hand. Cheapest test: pick an interface you already know
   the answer to and see whether the sessions reach it in a few rounds.
-- **One order to several harnesses.** Give the same task to a Claude seat and a
-  Codex seat and compare what they come back with. Cheapest test: a small bug
-  with a known fix; see whether their answers differ and which one the other
-  catches.
+- **Red team, blue team on a diff.** One seat defends a change and the other
+  attacks it: the sheet's `READ` line names the diff and its `ROLES` line the
+  sides. Two terminals with one prompt give you two reviews to reconcile
+  yourself. Here each finding meets a rebuttal grounded in the code, so false
+  alarms can die in the channel and what reaches you is either conceded or
+  still contested. Cheapest test: a merged PR whose review you remember; see
+  whether the findings that survive are the ones you fixed, and whether the
+  ones you rejected die without you.
 - **Debate with assigned stances.** Give two seats opposite roles (the sheet has a
   `ROLES` line for it) on a decision. Cheapest test: a choice already made and
   reviewed; see whether the skeptic finds what the review found.
