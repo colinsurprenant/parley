@@ -131,8 +131,8 @@ Before message one arrives, you post nothing to the channel: no greeting, no
 "connected, awaiting the task", no status. A post then is the peer's first
 input, and the peer has no run to read it against. Your first post is your reply
 to message one, or message one itself if the human handed it to you to post. In
-the run this protocol was measured on, one peer's early "connected" post became
-the other's first input.
+an early observed run, one peer's early "connected" post became the other's
+first input.
 
 Two of those fields are not the peer's to establish. The human's nick and the
 target repo's path both come from your primer — the text the human launched this
@@ -238,9 +238,9 @@ Both participants write the same shape, so both can read it.
    `send` prints your own post's id and ts, but ids are not ordered (rule 6)
    and ts is whole seconds, so neither settles which opening came first. Never
    compare id values, for the reason rule 6 gives. Nobody but the holder emits
-   under a crossed number. In the run this protocol was measured on, crossed
-   proposals on one item cost three to four of twelve rounds and left a stale
-   decision in the ledger.
+   under a crossed number. In an early observed run, crossed proposals on one
+   item cost three to four of twelve rounds and left a stale decision in the
+   ledger.
 
    All of this assumes both sides saw every opening and every `PASS`. A
    delivery headed `[parley] gap:` says you did not, and rule 7 says what
@@ -279,16 +279,16 @@ Both participants write the same shape, so both can read it.
    argued it, restate its final text in the block the peer AGREEs to, so that
    the AGREE names one text and there is nothing left to choose between at emit
    time. Anything else is a stale decision the peer has to object to, and the
-   objection costs a round. In the run this protocol was measured on, a decision
-   was promoted after its own author had conceded the opposite.
+   objection costs a round. In an early observed run, a decision was promoted
+   after its own author had conceded the opposite.
 
    A decision that replaces, amends, or withdraws an earlier decision names
    that ULID in `--refs`, among the flags before the `-`: Director then
    retires the named decision from the digest, and the log keeps it. A withdrawal is
    itself a decision, emitted the same way; a note's refs on a decision retire
-   nothing, so a note cannot retire one. In the run this protocol was measured
-   on, two crossed decisions on one item both stayed active because the
-   reconciling note could not retire the loser.
+   nothing, so a note cannot retire one. In an early observed run, two crossed
+   decisions on one item both stayed active because the reconciling note could
+   not retire the loser.
 
    Every emit below goes through a file the same way, and for the same reason.
    A settled body carries words the peer wrote. `emit` reads its body from stdin
@@ -358,9 +358,9 @@ Both participants write the same shape, so both can read it.
    one was agreed, and claiming what you already own asks the peer for a turn
    to tell you so — and the other participant does not edit it at all, claim
    or no claim. Everything not under an `owns` line goes
-   through `CLAIM`/`ACK`/`RELEASE` exactly as written above. In the run this
-   protocol was measured on, twelve of fifty-three messages were claim
-   bookkeeping, on a split that message one could have named.
+   through `CLAIM`/`ACK`/`RELEASE` exactly as written above. In an early
+   observed run, twelve of fifty-three messages were claim bookkeeping, on a
+   split that message one could have named.
 
 7. **Bounded rounds and an explicit end.** When the round budget is spent, or
    the elapsed-time cap is reached, or the work is done, close with `END` — a
@@ -583,8 +583,8 @@ Both participants write the same shape, so both can read it.
    nudging you to hand off mid-run is answered by continuing the run: a mid-run
    handoff plants a resume point in the target repo's digest for a run that is
    still in the stream, and it supersedes your workstream's real position with
-   it. In the run this protocol was measured on, one participant emitted two
-   of them mid-run and left that phantom resume point live.
+   it. In an early observed run, one participant emitted two of them mid-run
+   and left that phantom resume point live.
 
    A delivery headed `[parley] gap:` is a fourth trigger, and the one that does
    not wait for your judgment: history after the cursor it names was lost, and
@@ -793,10 +793,9 @@ block is prose, and anything long goes in the repo and is cited by path. A messa
 that carries only
 bookkeeping is a turn the peer must spend to read it, and it buys nothing that
 could not have ridden on the next message you were going to send anyway. Keep
-each block short — but never at the price of a second message. The run this
-protocol was measured on took 53 messages, 21 of them bookkeeping; under these
-rules the same outcome should take about half, and that is what the next run
-is scored against.
+each block short — but never at the price of a second message. An early
+observed run took 53 messages, 21 of them bookkeeping; under these rules the
+same outcome should take about half.
 
 ## What is never promoted
 
