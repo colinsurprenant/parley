@@ -61,7 +61,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Check ergo is on PATH
-        run: ergo version
+        run: ergo --version | grep -x ergo-2.19.1
 
       - run: go vet ./...
 
