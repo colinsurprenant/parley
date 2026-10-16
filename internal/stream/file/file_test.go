@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -709,10 +710,13 @@ func nearMaxLineBody(t *testing.T) string {
 	return strings.Repeat("y", MaxLine-len(rawLine(t, "codex", ""))-margin)
 }
 
-func TestNearMaxLineCursorVerifiesQuickly(t *testing.T) {
+// verifyTimer fills a stream with one line holding body and returns a function
+// that times a batch of verifications of the cursor at its end. Every
+// verification hashes that line, so the batch is that cost and little else.
+func verifyTimer(t *testing.T, body string, rounds int) func() time.Duration {
+	t.Helper()
 	ctx := context.Background()
 	s, _ := newStream(t, "codex")
-	body := nearMaxLineBody(t)
 	if _, err := s.Send(ctx, body); err != nil {
 		t.Fatalf("Send of a %d-byte body: %v", len(body), err)
 	}
@@ -723,25 +727,53 @@ func TestNearMaxLineCursorVerifiesQuickly(t *testing.T) {
 	if len(msgs) != 1 || msgs[0].Body != body {
 		t.Fatalf("read %d messages, want the %d-byte body intact", len(msgs), len(body))
 	}
+	return func() time.Duration {
+		start := time.Now()
+		for range rounds {
+			msgs, next, err := s.Read(ctx, cursor)
+			if err != nil {
+				t.Fatalf("Read at %q: %v", cursor, err)
+			}
+			if len(msgs) != 0 || next != cursor {
+				t.Fatalf("read %+v at %q, want nothing and the cursor held", msgs, next)
+			}
+		}
+		return time.Since(start)
+	}
+}
+
+func TestNearMaxLineCursorVerificationScalesLinearly(t *testing.T) {
+	full := nearMaxLineBody(t)
+	quarter := full[:len(full)/4]
+	const rounds = 20
+	timeFull := verifyTimer(t, full, rounds)
+	timeQuarter := verifyTimer(t, quarter, rounds)
 
 	// Every verification hashes the line ending at the cursor. Reading that
 	// window once makes the cost linear in it; growing the buffer a chunk at a
-	// time made it quadratic, and a line this long is where that showed: the
-	// twenty rounds below take about 30ms that way and about 600ms the other.
-	const rounds = 20
-	const budget = 300 * time.Millisecond
-	start := time.Now()
-	for range rounds {
-		msgs, next, err := s.Read(ctx, cursor)
-		if err != nil {
-			t.Fatalf("Read at %q: %v", cursor, err)
-		}
-		if len(msgs) != 0 || next != cursor {
-			t.Fatalf("read %+v at %q, want nothing and the cursor held", msgs, next)
-		}
+	// time made it quadratic, and a line this long is where that showed. A
+	// wall-clock budget cannot tell the two apart on every machine, since the
+	// race detector alone slows the same code several-fold, so the line is timed
+	// against one a quarter its length on the same machine: linear cost grows
+	// about fourfold (less where fixed per-read work dilutes it) and quadratic
+	// cost about sixteenfold. Measured, linear came out at 3.7 to 4.0 (up to 4.6
+	// on a machine with every core busy) and quadratic at 14.1 to 15.1, with and
+	// without the race detector; 8 is the midpoint of 4 and 16 on a log scale,
+	// a factor of two clear of each.
+	const maxRatio = 8.0
+
+	// The fastest of several batches is the one least disturbed by whatever else
+	// the machine was doing, and the two sizes alternate so a slow stretch lands
+	// on both.
+	tFull, tQuarter := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+	for range 5 {
+		tFull = min(tFull, timeFull())
+		tQuarter = min(tQuarter, timeQuarter())
 	}
-	if elapsed := time.Since(start); elapsed > budget {
-		t.Fatalf("%d verifications of a %d-byte line took %v, want under %v", rounds, len(body), elapsed, budget)
+	ratio := float64(tFull) / float64(tQuarter)
+	t.Logf("%d verifications: %v at %d bytes, %v at %d bytes, ratio %.2f", rounds, tFull, len(full), tQuarter, len(quarter), ratio)
+	if ratio > maxRatio {
+		t.Fatalf("verifying a %d-byte line took %.1fx as long as a %d-byte one, want under %.0fx: the cost is not linear in the line", len(full), ratio, len(quarter), maxRatio)
 	}
 }
 
