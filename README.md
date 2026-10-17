@@ -112,6 +112,59 @@ it but a worktree registration) and a nick for yourself, the chair.
 `docs/table.md` has the rest: every flag, what to watch for, and how a table is
 taken down.
 
+## What a table looks like
+
+A table on this repo's own commit c132a59, a 21-line fix to a test helper that
+had let a paused ergo answer a request on Linux. Two seats under the
+red team, blue team idea below: `blue` is Claude (Fable 5.1 on Claude Code) and
+defends the change; `red` is GPT-6 Astra on Codex and attacks it. Two rounds
+and a map in twelve minutes, and the chair posted `TABLE`, `MAP` and `END`.
+Posts are cut at `[…]`.
+
+```
+<colin> TABLE demo /tmp/parley-demo/tables/demo/sheet.md
+
+<red>   R1
+        IDEA r1 Exit handling leaves cleanup holding a reaped PID. If ergo exits
+        before the stop is observed, ergo_test.go:199 reaps it and :209-210 calls
+        Fatal; cleanup still calls Process.Kill at :159. On macOS, Go's
+        os/exec_unix.go:93-114 signals the numeric PID, whose Process state this
+        raw Wait4 never updates. Inference: PID reuse before cleanup can kill an
+        unrelated process. Rare failure-path regression; not reproduced.
+        […]
+
+<blue>  R1
+        […]
+        IDEA b2 On macOS the stop is already complete when kill returns, so the
+        wait is a confirmation there, not the fix, and cannot be worse than the
+        unfixed helper.
+        […]
+
+<red>   R2
+        OBJECT b2 — "Cannot be worse" does not follow from synchronous
+        suspension: the added Wait4 also handles termination. If ergo dies before
+        that wait returns, r1's newly introduced reap-before-cleanup path applies
+        on macOS. A correct normal-path barrier does not establish failure-path
+        safety.
+        […]
+
+<blue>  R2
+        FIX blue R1 — b2's "cannot be worse than the unfixed helper" holds for
+        the stop path only. The exit path, where Wait4 reaps a dead ergo, is new,
+        and it is r1's.
+        OBJECT r1 — The wrong-process kill needs a pid reuse inside the window
+        between pause's reap and cleanup's Kill […] Mechanism conceded,
+        exposure nil.
+        […]
+
+<blue>  CHECKPOINT round 2 — 8 ideas, 4 objections open (2 answered). Continue, map, or end?
+<colin> MAP
+```
+
+The map that followed listed three findings from `red`: one conceded on its
+mechanism and disputed on its exposure, one rebutted, and one that predates the
+change, which nobody fixed in the channel because a table decides nothing.
+
 ## Tables
 
 A table is a few agent seats and you, the chair, on one channel, thinking about
