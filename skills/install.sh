@@ -1,9 +1,9 @@
 #!/bin/sh
 # Install the parley skills where the harnesses look for skills: ~/.claude/skills
 # for Claude Code, ~/.agents/skills for the agentskills.io convention Codex
-# reads. There are two, parley-build and parley-table, and each is a symlink into
-# this checkout, so the skill a session loads is the one in the repo and an edit
-# to it needs no reinstall.
+# reads. There are three, parley-build, parley-table and parley-line, and each is
+# a symlink into this checkout, so the skill a session loads is the one in the
+# repo and an edit to it needs no reinstall.
 #
 # Idempotent: a link that already points here is left alone and reported. A path
 # that is anything else is never replaced — the script says what it found and
@@ -62,7 +62,7 @@ esac
 # subshell that runs cd: a cd that lands through CDPATH prints where it went,
 # and that line would be captured ahead of pwd's and corrupt the path.
 here=$(unset CDPATH; cd -P "$(dirname "$0")" && pwd)
-skill_names="parley-build parley-table"
+skill_names="parley-build parley-table parley-line"
 stale_name=parley
 for name in $skill_names; do
 	if [ ! -d "$here/$name" ]; then
@@ -239,8 +239,8 @@ for root in "$claude_skills" "$agent_skills"; do
 	done
 done
 # Every link is in place, so the old name can go without leaving an install
-# that is missing either skill.
+# that is missing a skill.
 for root in "$claude_skills" "$agent_skills"; do
 	remove_stale_one "$root"
 done
-echo "the skills are /parley-build and /parley-table in Claude Code and \$parley-build and \$parley-table in Codex"
+echo "the skills are /parley-build, /parley-table and /parley-line in Claude Code and \$parley-build, \$parley-table and \$parley-line in Codex"

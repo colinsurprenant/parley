@@ -99,7 +99,7 @@ exit 64
 		t.Fatal(err)
 	}
 	// The skill links, to skill directories that hold a SKILL.md.
-	for _, name := range []string{"parley-build", "parley-table"} {
+	for _, name := range []string{"parley-build", "parley-table", "parley-line"} {
 		skill := filepath.Join(dir, "skills", name)
 		if err := os.MkdirAll(skill, 0o755); err != nil {
 			t.Fatal(err)
@@ -264,8 +264,8 @@ func TestDoctorHarnessNarrowsTheChecksToTheNamedInstallation(t *testing.T) {
 			skillLines++
 		}
 	}
-	if !strings.Contains(res.stdout, "codex version") || !strings.Contains(res.stdout, "codex exec") || skillLines != 2 {
-		t.Errorf("want codex's checks and its two skill links (%d skill lines):\n%s", skillLines, res.stdout)
+	if !strings.Contains(res.stdout, "codex version") || !strings.Contains(res.stdout, "codex exec") || skillLines != 3 {
+		t.Errorf("want codex's checks and its three skill links (%d skill lines):\n%s", skillLines, res.stdout)
 	}
 
 	// The other way round: claude alone, no codex line and no ~/.agents link.

@@ -124,8 +124,8 @@ type Options struct {
 	// not be started yet.
 	Server string
 	// Skills adds the check that the skill links install.sh makes exist and
-	// resolve: both skills under the root each harness chosen with Claude and
-	// Codex reads, and under both roots when neither is chosen.
+	// resolve: all three skills under the root each harness chosen with Claude
+	// and Codex reads, and under both roots when neither is chosen.
 	Skills bool
 	// TableSkill adds the narrower check a table needs: the parley-table skill
 	// under the root each harness chosen with Claude and Codex reads (Claude Code
