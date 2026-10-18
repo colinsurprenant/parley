@@ -47,6 +47,9 @@ const bodyIndent = "  "
 // another nick is delivered; with it a message by a seat — any nick that is
 // neither the chair nor this participant — is delivered only while the table's
 // gates are open, and is held until they are. See WithTable for the rules.
+// WithLine gates a line's session the same way with the seal left out: the
+// breaker is the only gate, and everything below about held messages holds for
+// it as it does for a table.
 // Held messages live in this process's memory and nowhere else: parley never
 // persists stream content beyond the transport's own history, and the cursor
 // the caller keeps advances past a held message as it does past any other, so a
@@ -78,8 +81,8 @@ const bodyIndent = "  "
 type Deliverer struct {
 	stream Stream
 	nick   string
-	// gate is nil for a participant that is not at a table, which is every
-	// participant until WithTable says otherwise.
+	// gate is nil for a participant that is not at a table or on a line, which is
+	// every participant until WithTable or WithLine says otherwise.
 	gate *gate
 
 	mu   sync.Mutex
@@ -142,6 +145,36 @@ func WithTable(chair string, cap int) Option {
 	}
 }
 
+// WithLine makes the Deliverer a session on a line, whose human posts as chair,
+// and gates what it delivers by the table's cap breaker alone: there is no seal.
+// A line session receives every other session's post as it arrives, before it
+// has posted itself; the breaker is what keeps two sessions from waking each
+// other forever.
+//
+// The breaker is WithTable's, rule for rule. With cap above zero, every message
+// by anyone but the chair — this participant's own included — counts since the
+// most recent chair message, from zero at creation. The message that takes the
+// count past cap trips the breaker, and it and every later non-chair message are
+// held until the next chair message, which resets the count, un-trips the
+// breaker and releases the held messages in stream order ahead of itself.
+// Messages released that way do not count toward the new count. A cap of zero or
+// less turns the breaker off, and then nothing is held. A history gap discards
+// the held queue and keeps the count, as at a table.
+//
+// chair is checked as WithTable's is, and an empty chair means no line: the
+// Deliverer behaves as if WithLine had not been given.
+func WithLine(chair string, cap int) Option {
+	return func(d *Deliverer) {
+		if chair == "" {
+			return
+		}
+		st := newGateState()
+		// The seal is a table's: a line's gate starts open and stays open.
+		st.open = true
+		d.gate = &gate{chair: chair, cap: cap, state: st}
+	}
+}
+
 // gate is the table of a Deliverer, guarded by the Deliverer's mutex: what never
 // changes, and the installed state, which only a committed delivery changes.
 type gate struct {
@@ -161,6 +194,7 @@ type gate struct {
 // the unit of the transaction.
 type gateState struct {
 	// open is the seal: false until this participant has posted after created.
+	// A line has no seal, and its gate is built open.
 	open bool
 	// count is the non-chair messages seen since the last chair message, and
 	// tripped is whether it has passed cap since then.
