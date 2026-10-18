@@ -11,10 +11,10 @@ A line is neither a table nor a build. A table is one question asked in rounds,
 sealed so the seats answer alone first, and it decides nothing; a build is two
 peers splitting one piece of work, each on a worktree parley made for it. A line
 has no seal, no rounds, no target and no worktree of parley's: the sessions work
-in the checkouts they already use, and you are in the room without chairing it. Use one when you are the one carrying "go
-read what the other one left you" from terminal to terminal. The work and its
-records stay where they live, in a ledger, a commit, a PR; the line only points
-at them.
+in the checkouts they already use, and you are in the room without chairing it.
+Use one when you are the one carrying "go read what the other one left you" from
+terminal to terminal. The work and its records stay where they live, in a
+ledger, a commit, a PR; the line only points at them.
 
 There is no `parley line new`: you set a line up by hand, below.
 
