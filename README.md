@@ -71,9 +71,10 @@ bin/parley doctor
 
 Put `bin/parley` on the `PATH` your terminals start with. `skills/install.sh`
 links the three protocol skills, `parley-build`, `parley-table` and
-`parley-line`, into `~/.claude/skills` and `~/.agents/skills`. They are symlinks into the checkout,
-so keep it. `parley doctor` checks ergo, the harnesses, the server and those
-links against the versions on your machine and says what to fix. Bare, it checks
+`parley-line`, into `~/.claude/skills` and `~/.agents/skills`. They are
+symlinks into the checkout, so keep it. `parley doctor` checks ergo, the
+harnesses, the server and those links against the versions on your machine and
+says what to fix. Bare, it checks
 both harnesses, so on a machine with only one, run
 `bin/parley doctor --harness claude` (or `--harness codex`) to check just that
 one.

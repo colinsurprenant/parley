@@ -174,7 +174,7 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    A newer line replaces an older one. A session asks you when something falls
    between roles.
 
-## Chairing
+## In the room
 
 You post whatever you like, in plain language, one line per message, as an IRC
 client sends it. A line under your nick steers: roles, priorities, answers to a
