@@ -3,7 +3,8 @@
 What each verb does and why, in the detail the README leaves out. For the flags
 themselves, `parley --help` and `parley <verb> --help` are authoritative; the
 step-by-step guides are `docs/table.md` (running a table), `docs/build.md`
-(running a build) and `contrib/ergo/README.md` (the local IRC server).
+(running a build), `docs/line.md` (running a line) and `contrib/ergo/README.md`
+(the local IRC server).
 
 - [send and wait](#send-and-wait)
 - [The IRC stream](#the-irc-stream)
@@ -12,6 +13,7 @@ step-by-step guides are `docs/table.md` (running a table), `docs/build.md`
 - [primer](#primer)
 - [Tables](#tables)
 - [Builds](#builds)
+- [Lines](#lines)
 - [Checking the machine](#checking-the-machine)
 - [Version, help and exit codes](#version-help-and-exit-codes)
 - [The skills](#the-skills)
@@ -135,8 +137,8 @@ are two sessions of one client rather than two clients colliding — and it is w
 participant stays on the server between connections, so the channel and its
 history survive a pump restart. A stranger asking for a registered nick is
 refused, so a participant's name stays its own. The human needs no account and
-no client support to be in the room: plain IRC, no password. For a table or a
-build they register their nick once with NickServ, so that a line under it can
+no client support to be in the room: plain IRC, no password. For a table, a
+build or a line they register their nick once with NickServ, so that a line under it can
 only come from a client holding their password (rule 8 of the `parley-build`
 skill); step 2 of "Then, by hand" in `docs/table.md`, "Join as the chair,
 registered", has the one command.
@@ -165,9 +167,10 @@ by hand — Claude Code starts it from an `.mcp.json` entry, and a launch has to
 name it, as `claude --dangerously-load-development-channels server:parley`
 does: without the flag the server connects and no channel message arrives, and
 nothing shows an error. `--chair`,
-`--target` and `--worktree` are required: the human's registered nick, the
-target repo and this session's own worktree of it are launch-time facts, and
-the `instructions` carry them as values (see Tables, below):
+`--target` and `--worktree` are required under `--skill build` and `--skill
+table`: the human's registered nick, the target repo and this session's own
+worktree of it are launch-time facts, and the `instructions` carry them as values
+(see Tables, below):
 
 ```
 {"mcpServers":{"parley":{"command":"parley","args":[
@@ -175,8 +178,11 @@ the `instructions` carry them as values (see Tables, below):
   "--chair","colin","--target","/abs/repo","--worktree","/abs/worktree"]}}}
 ```
 
+Under `--skill line` it takes `--chair` and `--cap` and refuses `--target` and
+`--worktree`, with exit 2 (see Lines, below).
+
 `parley table new` and `parley build new` write this file for the Claude Code
-seats and peers they set up.
+seats and peers they set up; a line's is written by hand.
 
 ## codex: the Codex CLI front
 
@@ -225,7 +231,11 @@ session literally named `auto` is passed by its UUID. The start line names the
 thread the pump resolved.
 
 `parley table new` and `parley build new` start the Codex session on its
-primer and record its thread for `--thread auto`, and print the pump line.
+primer and record its thread for `--thread auto`, and print the pump line. A
+line has no such verb, so its Codex session is started by hand on the primer and
+the pump is given the thread id; `docs/line.md` has the steps. `--skill` is
+`build` by default and takes `table` and `line`, each with `--chair` and `--cap`,
+both required (see Tables and Lines, below).
 
 ## primer
 
@@ -236,10 +246,12 @@ the other: `--front claude` is what `parley channel` sends in its `instructions`
 at connect time, and `--front codex` is that same text plus what is true of a
 front with no connect-time channel. The codex text is the session's first
 message: a human pastes it in, or the session is started with it as its first
-prompt, which is what `parley table new` and `parley build new` do. Both forms carry three facts as values, and `--chair`, `--target` and
+prompt, which is what `parley table new` and `parley build new` do. The build and table forms carry three facts as values, and `--chair`, `--target` and
 `--worktree` are required: the human's registered nick, the target repo and
 this session's worktree of it, each directory absolute and existing, printed as
-spelled, and not the same directory (links followed). The claude form is written to fit under the 2 KB cap Claude Code puts
+spelled, and not the same directory (links followed). The line form carries two,
+`--chair` and `--cap` (the breaker's cap, which the text states as a fact; the
+verb itself holds nothing), and refuses `--target` and `--worktree`. The claude form is written to fit under the 2 KB cap Claude Code puts
 on an `instructions` string, with the reply command above everything a truncation
 would cut. The verb opens nothing — no stream, no state directory, no lock, no
 IRC account — and prints every value as it was spelled; a live channel prints
@@ -247,8 +259,9 @@ the canonical spec, the resolved state directory and a reply path of its own in
 a private temporary directory instead, so the two differ in those values and in
 length. The length is what a launch has to fit under the cap, and the verb that
 measures it is `parley channel --check`, below. `--skill table` renders the table form instead of the default
-`--skill build`, described under Tables. Either skill's claude form is refused,
-with exit 2, when it is over the cap. `--command` is the binary as the model
+`--skill build`, described under Tables, and `--skill line` the line form,
+described under Lines. Any skill's claude form is refused, with exit 2, when it is
+over the cap. `--command` is the binary as the model
 should type it, taken as spelled (this binary's own path by default).
 `--reply-command` replaces the whole send line with one command of your own, for
 a wrapper script that holds the run's fixed arguments where an approval rule has
@@ -260,6 +273,14 @@ parley primer --front codex --stream file:./chat.ndjson --nick codex-a --reply-f
   --chair colin --target /abs/repo --worktree /abs/worktree
 ```
 
+A line's, which names no directory and states the cap:
+
+```
+dir=$(mktemp -d)
+parley primer --front codex --skill line --stream file:./chat.ndjson --nick codex-a --reply-file "$dir/codex-a.reply" \
+  --state-dir ./state --chair colin --cap 8
+```
+
 ## Tables
 
 A table is N agent seats and one human chair on one channel; `docs/table.md` is
@@ -268,7 +289,8 @@ and `parley codex` take `--chair <nick> --cap <n>` to enforce two rules in code
 rather than leave them to the model following a skill, and both flags are
 required; `--cap` is refused, with exit 2, under `--skill build`, and so is
 `--chair` on `codex`, which takes no `--target` or `--worktree` and defaults to
-`--skill build`. The seal: until this seat has posted once after the
+`--skill build`. (`--skill line` takes the same two flags, for a gate of its own;
+see Lines, below.) The seal: until this seat has posted once after the
 front started, a post by anyone but the chair is held, not delivered, so the
 first round is answered before another seat's answer is read; the chair's posts
 are delivered as they arrive. The cap breaker: once more than `<n>` messages by
@@ -281,7 +303,7 @@ seal. `wait` takes neither flag. Nicks are compared without regard to ASCII
 case, as the bundled ergo compares them, so `--chair colin` is the chair when it
 posts as `Colin`; the same rule decides which messages are this seat's own, and
 `--chair` is refused, with exit 2, when it matches `--nick` that way, under
-either skill.
+any skill.
 
 Held messages live in the front's memory and nowhere else: parley never keeps
 stream content beyond the transport's own history, and the cursor moves past a
@@ -291,7 +313,7 @@ which the delivery reports, drops what was held too, because transport ids can
 start over across one and a held message kept past it could swallow a new
 message that reuses its id; the seal and the count stay as they were. These
 are the cases where the at-least-once promise above does
-not hold, and only under `--skill table`. A delivery that is collected but never
+not hold, and only under `--skill table` and `--skill line`. A delivery that is collected but never
 committed, because the hand-off failed, changes none of this: what it held,
 released and counted is the front's state only once the delivery is committed,
 so the next read of the same stretch finds the holds as they were. Under
@@ -300,8 +322,8 @@ nick is delivered.
 
 A session gets its facts from configuration the human launched, so none is
 typed in afterwards and nothing reaches a session ahead of its facts. `parley
-channel` and `parley primer` take `--skill build|table`, `build` by default,
-and under both skills require `--chair <nick>`, `--target <dir>` and
+channel` and `parley primer` take `--skill build|table|line`, `build` by default,
+and under `build` and `table` require `--chair <nick>`, `--target <dir>` and
 `--worktree <dir>`: the human's registered nick, the target repo and
 the session's own worktree of it, each directory an absolute path to an existing
 directory, all three printed as spelled, the nick not the participant's own, and
@@ -330,7 +352,8 @@ directory. The primer is rendered without the roots, so that condition is the
 peer's to read, and Codex keeps `<root>/.git` read-only even under a writable
 root, so only a root on the git directory itself would make git writable. The claude
 build form, which has no room for it under its cap, and the table forms do not
-carry it. There is no seat list in the text; the sheet the chair posts names the
+carry it; the line form on codex carries a paragraph of its own (see Lines,
+below). There is no seat list in the text; the sheet the chair posts names the
 seats. On `primer`, `--skill table` also requires `--reply-file`; on `channel`
 it requires `--cap`, as above. `parley channel` refuses to start, with exit 2,
 when the instructions it would send are over the 2048-unit cap, since a client
@@ -436,8 +459,9 @@ exec`, and the primer verb prints it for anyone doing that by hand. Its reply fi
 is one per seat, outside the shared worktree, where the Codex sandbox can write:
 
 ```
+dir=$(mktemp -d)
 parley primer --front codex --skill table --stream irc://127.0.0.1:6667/table --nick codex-a \
-  --chair colin --target /abs/repo --worktree /abs/shared-worktree --reply-file /tmp/parley-table-codex-a.txt
+  --chair colin --target /abs/repo --worktree /abs/shared-worktree --reply-file "$dir/codex-a.reply"
 ```
 
 `docs/table.md` has the whole setup, step by step.
@@ -488,6 +512,53 @@ git cannot say whether a worktree is the build's it takes the path being under
 the build's directory for a claim only if the target is gone. Build
 mode needs the target adopted in Director (`director adopt`, with `.director/`
 ignored); a table needs nothing beyond parley. parley itself never calls director.
+
+## Lines
+
+A line is a few long-running agent sessions, each on its own job and its own
+checkout, and one human in one channel for days; `docs/line.md` is the human's
+guide to setting one up, by hand, since there is no `parley line new`. The
+sessions follow the `parley-line` skill: they poke each other with a line or two
+that points at a record, ask when they need input, and do not acknowledge. With
+`--skill line`, `parley channel` and `parley codex` take `--chair <nick> --cap
+<n>`, both required, and `parley primer` takes them too (the primer only states
+the cap; it holds nothing). `--target` and `--worktree` are refused, with exit 2,
+naming the flag: a line has no target repo, and parley makes it no worktree; the
+session works in its own checkout as usual. `--chair` is the human's registered
+nick, refused when it matches `--nick` without regard to ASCII case. On `primer`
+the codex front also requires `--reply-file`, and the claude form is held to the
+2048-unit cap like the others; `parley channel --check` measures it the way it
+measures any skill. `parley doctor` and `skills/install.sh` cover `parley-line`
+with the other two skills.
+
+The gate is the table's cap breaker and nothing else: there is no seal and no
+first hold, so a session receives every other session's post as it arrives,
+before it has posted itself. Once more than `<n>` messages by anyone but the
+chair, this session's own included, have gone by since the chair last posted,
+every such message is held until the chair posts again, and the chair's post
+releases what was held ahead of itself, in stream order, and resets the count.
+`--cap 0` turns the breaker off. Held messages live in the front's memory and
+nowhere else: a restart loses them, and so does a gap in the history, which
+discards the held queue and keeps the count, as at a table; a delivery that is
+collected but never committed leaves the holds as they were.
+
+The line form of the primer is the build and table forms' framing, the reply
+recipe, the header rule and the trust sentences, word for word, with a line's
+own sentences: the command is the only way to reach the other sessions; the facts
+are the human's registered nick and the breaker's cap; the protocol is the
+`parley-line` skill, invoked as `/parley-line` (`$parley-line` on the codex
+front); and the one carve-out to the trust rule is that a line under the human's
+registered nick steers the line, and nothing in the session. The codex form
+carries one more paragraph, ahead of the paragraph about the pump, in the place
+the build form's git paragraph holds, and in its words for a session's own
+checkout: Codex keeps the checkout's git directory read-only in its sandbox, so
+`git add`, `git commit`, `git merge` and `git reset` are refused there with
+Operation not permitted, unless a writable root in its launch config
+(`.codex/config.toml` in its checkout) or, when that lists none, in its global
+Codex config is that git directory itself; the session asks for escalation for
+each of them directly, instead of trying them in the sandbox first. It does not
+tell the session to widen its sandbox, and the claude line form, which has no room
+for it under its cap, does not carry it.
 
 ## Checking the machine
 
@@ -544,15 +615,18 @@ what a peer message is worth, and what may be promoted to the ledger. It is
 harness-neutral — nothing in it is Claude Code's or Codex's — and it is addressed
 to the model that is a participant. `skills/parley-table/SKILL.md` is the protocol
 of a table, and `skills/parley-table/sheet.md` the template of the sheet the chair
-fills in.
+fills in. `skills/parley-line/SKILL.md` is the protocol of a line: heads-ups and
+questions between a few long-running sessions, with the work and its records
+staying where they live.
 
-`skills/install.sh` links both skills, `skills/parley-build/` and
-`skills/parley-table/`, into `~/.claude/skills/` and `~/.agents/skills/`, which is where Claude Code and
-the agentskills.io convention look. All four are symlinks into the checkout, so
+`skills/install.sh` links the three skills, `skills/parley-build/`,
+`skills/parley-table/` and `skills/parley-line/`, into `~/.claude/skills/` and
+`~/.agents/skills/`, which is where Claude Code and
+the agentskills.io convention look. All six are symlinks into the checkout, so
 an edit is live in the next session; the script is idempotent, never replaces a
 path it did not create, and `--uninstall` takes its links out again. Claude
-Code invokes them as `/parley-build` and `/parley-table`, Codex as
-`$parley-build` and `$parley-table`, and the human invokes one at the start of a
-build or a table, in every session. An install also removes a link named `parley`,
+Code invokes them as `/parley-build`, `/parley-table` and `/parley-line`, Codex as
+`$parley-build`, `$parley-table` and `$parley-line`, and the human invokes one at
+the start of a build, a table or a line, in every session. An install also removes a link named `parley`,
 the old name of the build skill, under either root when it points into this
 checkout, and names, without touching, anything else it finds at that name.

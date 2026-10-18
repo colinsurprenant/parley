@@ -40,12 +40,38 @@ func skillHome(t *testing.T) (home, skills string) {
 func TestSkillLinksThatResolveAreOK(t *testing.T) {
 	skillHome(t)
 	rs := Check(context.Background(), Options{Skills: true})
-	if len(rs) != 4 || len(lines(rs, OK)) != 4 {
-		t.Fatalf("want four ok lines:\n%s", render(rs))
+	if len(rs) != 6 || len(lines(rs, OK)) != 6 {
+		t.Fatalf("want six ok lines, three skills under each of two roots:\n%s", render(rs))
+	}
+	for _, name := range []string{"parley-build", "parley-table", "parley-line"} {
+		n := 0
+		for _, r := range rs {
+			if strings.Contains(r.Detail, "/"+name+" ->") {
+				n++
+			}
+		}
+		if n != 2 {
+			t.Errorf("%d ok lines for %s, want one under each root:\n%s", n, name, render(rs))
+		}
 	}
 }
 
-// TestSkillsChecksBothSkillsUnderTheRootOfEachChosenHarness: the doctor of a
+// TestSkillsFailsOnAMissingLineLink: the generic check covers parley-line like
+// the other two, so a machine installed before the line skill existed is told
+// to run install.sh again.
+func TestSkillsFailsOnAMissingLineLink(t *testing.T) {
+	home, _ := skillHome(t)
+	gone := filepath.Join(home, ".claude", "skills", "parley-line")
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	fails := lines(Check(context.Background(), Options{Skills: true}), Fail)
+	if len(fails) != 1 || fails[0].Surface != "skill" || !strings.Contains(fails[0].Detail, gone) || !strings.Contains(fails[0].Detail, "install.sh") {
+		t.Fatalf("want one FAIL naming %s and install.sh, got:\n%s", gone, render(fails))
+	}
+}
+
+// TestSkillsChecksEverySkillUnderTheRootOfEachChosenHarness: the doctor of a
 // machine with one harness is not failed by the other's missing links.
 func TestSkillsChecksBothSkillsUnderTheRootOfEachChosenHarness(t *testing.T) {
 	home, _ := skillHome(t)
@@ -66,15 +92,15 @@ func TestSkillsChecksBothSkillsUnderTheRootOfEachChosenHarness(t *testing.T) {
 			t.Errorf("a skill line for a Claude-only machine: %q", r)
 		}
 	}
-	if skills != 2 {
-		t.Errorf("%d skill lines, want both skills under the Claude root only:\n%s", skills, render(rs))
+	if skills != 3 {
+		t.Errorf("%d skill lines, want all three skills under the Claude root only:\n%s", skills, render(rs))
 	}
 	// The Codex root is checked, and fails, only when Codex is chosen.
 	codexBin, _ := fakeCodex{version: CodexVerified}.install(t, t.TempDir())
 	rs = Check(context.Background(), Options{Codex: true, CodexBin: codexBin, Skills: true})
 	fails := lines(rs, Fail)
-	if len(fails) != 2 {
-		t.Fatalf("want a FAIL for each of the two missing Codex-root links:\n%s", render(rs))
+	if len(fails) != 3 {
+		t.Fatalf("want a FAIL for each of the three missing Codex-root links:\n%s", render(rs))
 	}
 	for _, r := range fails {
 		if r.Surface != "skill" || !strings.Contains(r.Detail, codexRoot) {
@@ -82,7 +108,7 @@ func TestSkillsChecksBothSkillsUnderTheRootOfEachChosenHarness(t *testing.T) {
 		}
 	}
 	// With neither chosen, both roots, as before.
-	if all := Check(context.Background(), Options{Skills: true}); len(lines(all, Fail)) != 2 || len(all) != 4 {
+	if all := Check(context.Background(), Options{Skills: true}); len(lines(all, Fail)) != 3 || len(all) != 6 {
 		t.Errorf("Skills alone checks both roots:\n%s", render(Check(context.Background(), Options{Skills: true})))
 	}
 }
@@ -148,12 +174,12 @@ func TestTableSkillChecksOnlyTheLinkEachChosenHarnessReads(t *testing.T) {
 	if !named {
 		t.Errorf("a table with a Codex seat does not FAIL on the missing %s:\n%s", codexTable, render(both))
 	}
-	// No harness chosen, no skill to check; Skills still checks all four.
+	// No harness chosen, no skill to check; Skills still checks all six.
 	if rs := Check(context.Background(), Options{TableSkill: true}); len(rs) != 0 {
 		t.Errorf("no harness chosen, yet:\n%s", render(rs))
 	}
-	if all := Check(context.Background(), Options{Skills: true}); len(all) != 4 {
-		t.Errorf("Skills checks %d links, want all four:\n%s", len(all), render(all))
+	if all := Check(context.Background(), Options{Skills: true}); len(all) != 6 {
+		t.Errorf("Skills checks %d links, want all six:\n%s", len(all), render(all))
 	}
 }
 

@@ -21,8 +21,8 @@ directory (`$XDG_STATE_HOME/parley`, by default `~/.local/state/parley`, or
    that is not on the `PATH` works too.
 2. **ergo.** Install it as `contrib/ergo/README.md` says, once. `parley server`
    makes its datastore directory itself.
-3. **The skills.** `sh skills/install.sh` links `parley-build` and `parley-table`
-   into `~/.claude/skills` and `~/.agents/skills`. The table skill is then
+3. **The skills.** `sh skills/install.sh` links `parley-build`, `parley-table`
+   and `parley-line` into `~/.claude/skills` and `~/.agents/skills`. The table skill is then
    `/parley-table` in Claude Code and `$parley-table` in Codex.
 4. **The harnesses** your seats run on, `claude` and `codex`, on the `PATH`.
 5. **An IRC client** for the chair, any one that connects to

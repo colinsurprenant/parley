@@ -17,7 +17,7 @@ var (
 	claudeSkillRoot = []string{".claude", "skills"}
 	codexSkillRoot  = []string{".agents", "skills"}
 	skillRoots      = [][]string{claudeSkillRoot, codexSkillRoot}
-	skillNames      = []string{"parley-build", "parley-table"}
+	skillNames      = []string{"parley-build", "parley-table", "parley-line"}
 )
 
 // tableSkillName and buildSkillName are the one skill a table's seats, or a
@@ -30,7 +30,7 @@ const (
 // checkSkills checks each link install.sh makes: it exists, it resolves, and
 // what it resolves to is a skill. A missing or dangling link is a failure — the
 // seat that needs it would start without its protocol and nothing would say so.
-// The links are the ones under the root of each harness chosen, both skills
+// The links are the ones under the root of each harness chosen, all three skills
 // under each, and under both roots when neither is chosen.
 func checkSkills(claude, codex bool) []Result {
 	if !claude && !codex {

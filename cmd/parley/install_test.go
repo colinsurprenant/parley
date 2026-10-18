@@ -33,7 +33,7 @@ func runInstall(t *testing.T, home, path string, args ...string) (stdout, stderr
 func skillLinks(home string) []string {
 	var out []string
 	for _, root := range []string{".claude/skills", ".agents/skills"} {
-		for _, name := range []string{"parley-build", "parley-table"} {
+		for _, name := range []string{"parley-build", "parley-table", "parley-line"} {
 			out = append(out, filepath.Join(home, root, name))
 		}
 	}
@@ -64,11 +64,11 @@ func TestInstallLinksAndUninstallsOnlyWhatIsOurs(t *testing.T) {
 			t.Fatalf("%s is not a link after the install", l)
 		}
 	}
-	if out, _, code := runInstall(t, home, path); code != 0 || strings.Count(out, "already linked:") != 4 {
-		t.Fatalf("a second install exited %d and printed %q, want 4 already-linked lines", code, out)
+	if out, _, code := runInstall(t, home, path); code != 0 || strings.Count(out, "already linked:") != 6 {
+		t.Fatalf("a second install exited %d and printed %q, want 6 already-linked lines", code, out)
 	}
 
-	// A foreign directory at one destination: uninstall removes the other three
+	// A foreign directory at one destination: uninstall removes the other five
 	// links, reports the foreign path, leaves it, and exits 1.
 	foreign := filepath.Join(home, ".agents", "skills", "parley-build")
 	if err := os.Remove(foreign); err != nil {
@@ -136,9 +136,11 @@ exec ` + realMkdir + ` "$@"
 	if !strings.Contains(stderr, "no longer a link") || strings.Contains(stderr, "nothing from this run is left behind") {
 		t.Fatalf("stderr does not say the replaced path was left:\n%s", stderr)
 	}
-	// What was still ours is gone: the other link this run made.
-	if exists(filepath.Join(home, ".claude", "skills", "parley-table")) {
-		t.Fatalf("the rollback left the link it still owned; stderr:\n%s", stderr)
+	// What was still ours is gone: the other links this run made.
+	for _, name := range []string{"parley-table", "parley-line"} {
+		if exists(filepath.Join(home, ".claude", "skills", name)) {
+			t.Fatalf("the rollback left the %s link it still owned; stderr:\n%s", name, stderr)
+		}
 	}
 }
 

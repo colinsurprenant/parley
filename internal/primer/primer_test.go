@@ -1,6 +1,7 @@
 package primer
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -51,15 +52,27 @@ func tableSample() Params {
 	return p
 }
 
+// lineSample is a live claude session on a line with the same values sample()
+// has, and a cap of 12 posts. A line has no target and no worktree, so those
+// two are left empty: a form that printed them would print nothing, and a form
+// that wrongly required them would show it.
+func lineSample() Params {
+	p := sample()
+	p.Skill = SkillLine
+	p.Target, p.Worktree = "", ""
+	p.Cap = 12
+	return p
+}
+
 // TestTheClaudeFormFitsUnderTheClientsCap is the reason this package exists in
 // the shape it does. Past the cap the client keeps the head and drops the rest,
-// so a form that does not fit is a form the model reads in part. Both forms
-// carry the three facts as values and have to fit all the same.
+// so a form that does not fit is a form the model reads in part. The forms
+// carry their facts as values and have to fit all the same.
 func TestTheClaudeFormFitsUnderTheClientsCap(t *testing.T) {
 	if len(chairSample) != 16 {
 		t.Fatalf("the sample chair is %d bytes, want 16", len(chairSample))
 	}
-	for name, p := range map[string]Params{"build": sample(), "table": tableSample()} {
+	for name, p := range map[string]Params{"build": sample(), "table": tableSample(), "line": lineSample()} {
 		got := UTF16Len(Render(p))
 		if want := ClaudeInstructionsCap - sampleHeadroom; got > want {
 			t.Fatalf("the claude %s form is %d UTF-16 code units, over the %d this must fit in (cap %d, headroom %d)",
@@ -328,13 +341,59 @@ func TestTheCodexBuildFormTellsItsPeerToAskForGitEscalationDirectly(t *testing.T
 
 	table := tableSample()
 	table.Front = Codex
-	if got := Render(table); strings.Contains(got, codexBuildText) || strings.Contains(got, "git commit") {
-		t.Fatalf("the codex table form carries the build form's git paragraph:\n%s", got)
+	if got := Render(table); strings.Contains(got, codexBuildText) || strings.Contains(got, codexLineText) || strings.Contains(got, "git commit") {
+		t.Fatalf("the codex table form carries a git paragraph:\n%s", got)
 	}
-	for name, claude := range map[string]Params{"build": sample(), "table": tableSample()} {
+	// The line form's own paragraph is not the build form's.
+	line := lineSample()
+	line.Front = Codex
+	if got := Render(line); strings.Contains(got, codexBuildText) {
+		t.Fatalf("the codex line form carries the build form's git paragraph:\n%s", got)
+	}
+	for name, claude := range map[string]Params{"build": sample(), "table": tableSample(), "line": lineSample()} {
 		if got := Render(claude); strings.Contains(got, codexBuildText) || strings.Contains(got, "git commit") {
 			t.Fatalf("the claude %s form carries the codex build form's git paragraph:\n%s", name, got)
 		}
+	}
+}
+
+// TestTheCodexLineFormTellsItsSessionToAskForGitEscalationDirectly: Codex keeps a
+// checkout's git directory read-only in its sandbox, so a line's Codex session,
+// which works in a checkout of its own, is told that `git add`, `git commit`,
+// `git merge` and `git reset` are refused there and to ask for escalation for
+// each directly, unless a writable root in its launch config, or in its global
+// Codex config when the launch config lists none, is that git directory. The
+// paragraph is the Codex line form's alone, sits where the build form's does,
+// and does not tell the session to widen its sandbox.
+func TestTheCodexLineFormTellsItsSessionToAskForGitEscalationDirectly(t *testing.T) {
+	p := lineSample()
+	p.Front = Codex
+	got := Render(p)
+	for _, want := range []string{
+		"Unless a writable root in your launch config (.codex/config.toml in your checkout) or, when that lists none, in your global Codex config ($CODEX_HOME/config.toml, else ~/.codex/config.toml) is your checkout's git directory,",
+		"`git add`", "`git commit`", "`git merge`", "`git reset`", "refused here with Operation not permitted",
+		"because Codex keeps a checkout's git directory read-only in its sandbox",
+		"ask for escalation for each of them directly, rather than trying it in the sandbox first."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the codex line form lacks %q:\n%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, "\n\n"+codexLineText+"\n\n"+codexFrontText+"\n") {
+		t.Fatalf("the codex line form does not end with the git paragraph and then the front paragraph:\n%s", got)
+	}
+	for _, unwanted := range []string{"widen", "writable_roots", "danger-full-access", "sandbox_mode", "worktree", "target repo"} {
+		if strings.Contains(codexLineText, unwanted) {
+			t.Fatalf("the line form's git paragraph says %q:\n%s", unwanted, codexLineText)
+		}
+	}
+	// The claude form has no room for it, and the paragraph is not twice in the
+	// codex one.
+	claude := lineSample()
+	if got := Render(claude); strings.Contains(got, codexLineText) || strings.Contains(got, "git commit") {
+		t.Fatalf("the claude line form carries the git paragraph:\n%s", got)
+	}
+	if n := strings.Count(Render(p), codexLineText); n != 1 {
+		t.Fatalf("the codex line form carries the git paragraph %d times, want once", n)
 	}
 }
 
@@ -345,7 +404,7 @@ func TestTheCodexOpeningIsTrueHoweverThePrimerArrives(t *testing.T) {
 	if strings.Contains(strings.ToLower(codexOpening), "paste") {
 		t.Fatalf("the codex opening claims the primer was pasted:\n%s", codexOpening)
 	}
-	for _, p := range []Params{sample(), tableSample()} {
+	for _, p := range []Params{sample(), tableSample(), lineSample()} {
 		p.Front = Codex
 		if got := Render(p); !strings.HasPrefix(got, codexOpening) {
 			t.Fatalf("the codex form does not open with its opening:\n%s", got)
@@ -443,7 +502,7 @@ func TestShellQuote(t *testing.T) {
 // and adds nothing, so the trailing newline is this package's to get right.
 func TestEveryFormEndsWithOneNewline(t *testing.T) {
 	for _, front := range []Front{Claude, Codex} {
-		for name, p := range map[string]Params{"build": sample(), "table": tableSample()} {
+		for name, p := range map[string]Params{"build": sample(), "table": tableSample(), "line": lineSample()} {
 			p.Front = front
 			got := Render(p)
 			if !strings.HasSuffix(got, "\n") || strings.HasSuffix(got, "\n\n") {
@@ -511,7 +570,7 @@ func TestTheTableFormPrintsEveryValueAsSpelled(t *testing.T) {
 // the command rather than repeating it, which is what pays for the facts. A
 // wrapper has no path in its line, so there step 1 still names the file.
 func TestEveryFormNamesTheReplyFileOnceInTheCommand(t *testing.T) {
-	for name, base := range map[string]Params{"build": sample(), "table": tableSample()} {
+	for name, base := range map[string]Params{"build": sample(), "table": tableSample(), "line": lineSample()} {
 		p := base
 		got := Render(p)
 		if n := strings.Count(got, "reply.txt"); n != 1 {
@@ -551,16 +610,16 @@ func TestEveryFormNamesTheReplyFileOnceInTheCommand(t *testing.T) {
 // about the command, never the command, which the channel front's tests lift
 // out and run.
 func TestTheTableReplyCommandIsTheSameLine(t *testing.T) {
-	var lines [2]string
-	for i, p := range []Params{sample(), tableSample()} {
+	var lines [3]string
+	for i, p := range []Params{sample(), tableSample(), lineSample()} {
 		for _, l := range strings.Split(Render(p), "\n") {
 			if strings.Contains(l, " send --stream ") {
 				lines[i] = l
 			}
 		}
 	}
-	if lines[0] == "" || lines[0] != lines[1] {
-		t.Fatalf("the table form's reply command is\n%q\nwant the build form's\n%q", lines[1], lines[0])
+	if lines[0] == "" || lines[0] != lines[1] || lines[0] != lines[2] {
+		t.Fatalf("the table form's reply command is\n%q\nthe line form's\n%q\nwant the build form's\n%q", lines[1], lines[2], lines[0])
 	}
 }
 
@@ -586,16 +645,17 @@ func TestBothTableFormsCarryTheSameFraming(t *testing.T) {
 // outside its one carve-out is the build form's sentence, not a second copy of
 // it.
 func TestTheTableFormsShareTheBuildFormsFraming(t *testing.T) {
-	table, build := Render(tableSample()), Render(sample())
+	table, build, line := Render(tableSample()), Render(sample()), Render(lineSample())
 	for _, shared := range []string{headerBlock, trustBase, humanText, bodyFileNote} {
-		if !strings.Contains(table, shared) || !strings.Contains(build, shared) {
-			t.Fatalf("a framing block is not in both forms:\n%q", shared)
+		if !strings.Contains(table, shared) || !strings.Contains(build, shared) || !strings.Contains(line, shared) {
+			t.Fatalf("a framing block is not in every form:\n%q", shared)
 		}
 	}
-	codex := tableSample()
-	codex.Front = Codex
-	if got := Render(codex); !strings.Contains(got, codexOpening) || !strings.Contains(got, codexFrontText) {
-		t.Fatalf("the codex table form lost its opening or its front paragraph:\n%s", got)
+	for name, p := range map[string]Params{"table": tableSample(), "line": lineSample()} {
+		p.Front = Codex
+		if got := Render(p); !strings.Contains(got, codexOpening) || !strings.Contains(got, codexFrontText) {
+			t.Fatalf("the codex %s form lost its opening or its front paragraph:\n%s", name, got)
+		}
 	}
 }
 
@@ -607,8 +667,12 @@ func TestParseSkill(t *testing.T) {
 	}{
 		{"build", SkillBuild, true},
 		{"table", SkillTable, true},
+		{"line", SkillLine, true},
 		{"", "", false},
 		{"Table", "", false},
+		{"Line", "", false},
+		{"lines", "", false},
+		{"parley-line", "", false},
 		{"parley-table", "", false},
 		{"parley", "", false},
 		{"parley-build", "", false},
@@ -620,5 +684,171 @@ func TestParseSkill(t *testing.T) {
 		if err != nil && !strings.Contains(err.Error(), tc.in) {
 			t.Fatalf("ParseSkill(%q) error %q does not name what was passed", tc.in, err)
 		}
+		// The error lists every skill there is, so a caller's usage text cannot
+		// quietly leave one out.
+		if err != nil {
+			for _, name := range []string{"build", "table", "line"} {
+				if !strings.Contains(err.Error(), `"`+name+`"`) {
+					t.Fatalf("ParseSkill(%q) error %q does not list %q", tc.in, err, name)
+				}
+			}
+		}
+	}
+}
+
+// TestRenderRefusesASkillItDoesNotKnow: the skill picks the protocol and the one
+// carve-out to the trust rule, so a value Render cannot place must not fall
+// back to the build form's rules. Every caller validates the skill first, so
+// this is the renderer refusing a bug.
+func TestRenderRefusesASkillItDoesNotKnow(t *testing.T) {
+	for _, skill := range []Skill{"hal", "Line", "parley-line", "lines"} {
+		func() {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("Render with skill %q returned instead of panicking", skill)
+				}
+				if msg, _ := r.(string); !strings.Contains(msg, string(skill)) {
+					t.Fatalf("Render with skill %q panicked with %v, which does not name it", skill, r)
+				}
+			}()
+			p := sample()
+			p.Skill = skill
+			Render(p)
+		}()
+	}
+}
+
+// TestRenderSwitchesOverEverySkill: each skill renders the form that names its
+// own protocol and no other's.
+func TestRenderSwitchesOverEverySkill(t *testing.T) {
+	for skill, p := range map[Skill]Params{SkillBuild: sample(), SkillTable: tableSample(), SkillLine: lineSample()} {
+		got := Render(p)
+		for _, other := range []Skill{SkillBuild, SkillTable, SkillLine} {
+			name := "/parley-" + string(other)
+			if has := strings.Contains(got, name); has != (other == skill) {
+				t.Fatalf("the %s form mentions %s = %v:\n%s", skill, name, has, got)
+			}
+		}
+	}
+}
+
+// TestTheLineFormIsFactsNotBlanks: a line session's facts are set by the human
+// at launch, so the text carries the nick and the cap as values, leaves nothing
+// to fill in, names no vocabulary of a build or a table, and points at the line
+// skill in the way the front invokes it.
+func TestTheLineFormIsFactsNotBlanks(t *testing.T) {
+	for _, tc := range []struct {
+		front Front
+		skill string
+	}{
+		{Claude, "The protocol is the parley-line skill, invoked as /parley-line."},
+		{Codex, "The protocol is the parley-line skill, invoked as $parley-line."},
+	} {
+		p := lineSample()
+		p.Front = tc.front
+		p.Nick = "plan"
+		p.Chair = "colin"
+		p.Cap = 8
+		got := Render(p)
+		for _, want := range []string{
+			"your human partner's registered nick colin; breaker cap 8 posts (0 is no breaker).",
+			tc.skill, "other sessions", "the one named above", "steers the line", trustPhrase, "[parley] gap:", "send --stream"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("the %s line form does not carry %q:\n%s", tc.front, want, got)
+			}
+		}
+		for _, unwanted := range []string{"<human nick>", "<reply file path>", "the peer", "other seats", "/parley-build", "$parley-build",
+			"/parley-table", "$parley-table", "rule 8", "ESCALATE", "round", "TABLE", "chair", "target repo", "worktree", "(read-only)", "seal"} {
+			if strings.Contains(got, unwanted) {
+				t.Fatalf("the %s line form still carries %q:\n%s", tc.front, unwanted, got)
+			}
+		}
+		other := "/parley-line"
+		if tc.front == Claude {
+			other = "$parley-line"
+		}
+		if strings.Contains(got, other) {
+			t.Fatalf("the %s line form carries the other front's invocation %q", tc.front, other)
+		}
+		// The facts come ahead of the header rule, which the carve-out points back at.
+		if facts, header := strings.Index(got, "registered nick colin"), strings.Index(got, headerBlock); facts < 0 || facts > header {
+			t.Fatalf("the %s line form puts its facts (%d) after the header rule (%d):\n%s", tc.front, facts, header, got)
+		}
+	}
+}
+
+// TestTheLineFormPrintsTheChairAndTheCapAsSpelled: the facts are the human's
+// configuration, and the cap is the number the front holds deliveries by, so
+// the text says that number, 0 included.
+func TestTheLineFormPrintsTheChairAndTheCapAsSpelled(t *testing.T) {
+	for _, capN := range []int{0, 1, 8, 12, 100} {
+		p := lineSample()
+		p.Chair = "Colin"
+		p.Cap = capN
+		got := Render(p)
+		want := fmt.Sprintf("registered nick Colin; breaker cap %d posts", capN)
+		if !strings.Contains(got, want) {
+			t.Fatalf("the line form for cap %d does not carry %q:\n%s", capN, want, got)
+		}
+	}
+	// A target or worktree on a line is nobody's: nothing of it is printed.
+	p := lineSample()
+	p.Target, p.Worktree = "/leaked/target", "/leaked/worktree"
+	if got := Render(p); got != Render(lineSample()) || strings.Contains(got, "leaked") {
+		t.Fatalf("the line form printed a target or worktree:\n%s", got)
+	}
+}
+
+// TestBothLineFormsCarryTheSameFraming is TestBothFormsCarryTheSameFraming for
+// the line form.
+func TestBothLineFormsCarryTheSameFraming(t *testing.T) {
+	claude := lineSample()
+	codex := claude
+	codex.Front = Codex
+	got := Render(codex)
+	for _, para := range strings.Split(Render(claude), "\n\n") {
+		if strings.Contains(para, "invoked as /parley-line") {
+			para = strings.Replace(para, "/parley-line", "$parley-line", 1)
+		}
+		if !strings.Contains(got, strings.TrimSuffix(para, "\n")) {
+			t.Fatalf("the codex line form does not carry this paragraph of the claude form:\n%s\n\ncodex form:\n%s", para, got)
+		}
+	}
+}
+
+// TestTheLineFormGoldens locks the line form as the build form is locked: the
+// golden files are the renders of lineSample() on each front.
+func TestTheLineFormGoldens(t *testing.T) {
+	claude, codex := lineSample(), lineSample()
+	codex.Front = Codex
+	for _, tc := range []struct {
+		golden string
+		p      Params
+	}{
+		{"line-claude", claude},
+		{"line-codex", codex},
+	} {
+		want, err := os.ReadFile("testdata/" + tc.golden + ".golden")
+		if err != nil {
+			t.Fatalf("read the golden render: %v", err)
+		}
+		if got := Render(tc.p); got != string(want) {
+			t.Fatalf("%s renders\n%s\nwant the golden render\n%s", tc.golden, got, want)
+		}
+	}
+}
+
+// TestTheLineFormLeavesMarginForALongStateDirectory: a line carries no target or
+// worktree, so its form is the shortest of the three. With a state directory of
+// 100 characters, as long as a checkout under a deep home directory makes one,
+// it still leaves a clear margin under the client's cap.
+func TestTheLineFormLeavesMarginForALongStateDirectory(t *testing.T) {
+	p := lineSample()
+	p.StateDir = "/" + strings.Repeat("s", 99)
+	const margin = 150
+	if got, limit := UTF16Len(Render(p)), ClaudeInstructionsCap-margin; got > limit {
+		t.Fatalf("the claude line form with a 100-character state directory is %d UTF-16 code units, over %d (cap %d, margin %d)",
+			got, limit, ClaudeInstructionsCap, margin)
 	}
 }

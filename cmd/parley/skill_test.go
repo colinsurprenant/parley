@@ -201,17 +201,17 @@ func TestSkillConfigurationErrorsExitTwo(t *testing.T) {
 	cases = append(cases, []tc{
 		{"primer: unknown skill", primerArgs(append([]string{"--skill", "other"}, facts...)...), `unknown skill "other"`},
 		{"primer: empty skill", primerArgs(append([]string{"--skill", ""}, facts...)...), "unknown skill"},
-		{"primer: the old name of build", primerArgs(append([]string{"--skill", "parley"}, facts...)...), `unknown skill "parley": expected "build" or "table"`},
+		{"primer: the old name of build", primerArgs(append([]string{"--skill", "parley"}, facts...)...), `unknown skill "parley": expected "build", "table" or "line"`},
 		{"primer: no reply file", plus([]string{"primer", "--front", "codex", "--stream", chat, "--nick", "fable"}, good...), "--reply-file is required with --skill table"},
 		{"primer: no facts at all", primerArgs(), "--chair is required with --skill build"},
-		{"primer: a cap", primerArgs(plus(good, "--cap", "3")...), "flag provided but not defined"},
+		{"primer: a cap", primerArgs(plus(good, "--cap", "3")...), "--cap is taken by primer with --skill line only"},
 		{"channel: unknown skill", channelArgs(append([]string{"--skill", "other"}, facts...)...), `unknown skill "other"`},
-		{"channel: the old name of build", channelArgs(append([]string{"--skill", "parley"}, facts...)...), `unknown skill "parley": expected "build" or "table"`},
+		{"channel: the old name of build", channelArgs(append([]string{"--skill", "parley"}, facts...)...), `unknown skill "parley": expected "build", "table" or "line"`},
 		{"channel: no facts at all", channelArgs(), "--chair is required with --skill build"},
 		{"channel: table with no cap", channelArgs(good...), "--cap is required with --skill table"},
 		{"channel: table with a negative cap", channelArgs(plus(good, "--cap", "-1")...), "--cap must not be negative"},
-		{"channel: build with a cap", channelArgs(plus(facts, "--cap", "3")...), "--cap applies to --skill table only"},
-		{"channel: build with a cap of zero", channelArgs(plus(buildGood, "--cap", "0")...), "--cap applies to --skill table only"},
+		{"channel: build with a cap", channelArgs(plus(facts, "--cap", "3")...), "--cap applies to --skill table or line only"},
+		{"channel: build with a cap of zero", channelArgs(plus(buildGood, "--cap", "0")...), "--cap applies to --skill table or line only"},
 	}...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -481,7 +481,7 @@ func TestPrimerClaudeFormRefusesWhatTheClientWouldTruncate(t *testing.T) {
 // facts of a launch, and codex only the skill and the gate.
 func TestUsageDocumentsTheReceiptAndTheSkillFlags(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
-	for _, want := range []string{"[parley] sent id=<id> ts=<ts>", `"-"`, "skills:", "--skill build|table",
+	for _, want := range []string{"[parley] sent id=<id> ts=<ts>", `"-"`, "skills:", "--skill build|table|line", "lines:",
 		"--target <dir>", "--worktree <dir>", "--chair <nick>", "parley-table skill", "primer\n  also requires --reply-file",
 		"2048-unit cap", "[--check]"} {
 		if !strings.Contains(top, want) {
@@ -491,8 +491,8 @@ func TestUsageDocumentsTheReceiptAndTheSkillFlags(t *testing.T) {
 	// The text is wrapped, so a phrase that runs over a line break is looked for
 	// with its whitespace folded.
 	flat := strings.Join(strings.Fields(top), " ")
-	for _, want := range []string{"All three are required on both skills", "--cap is for --skill table only",
-		"channel and primer --front claude refuse the text, on either skill, when it is over Claude Code's 2048-unit cap",
+	for _, want := range []string{"All three are required on both skills", "--cap is for --skill table and --skill line only",
+		"channel and primer --front claude refuse the text, on any skill, when it is over Claude Code's 2048-unit cap",
 		"instructions: <n> of 2048 UTF-16 units", "channel <the .mcp.json args> --check", "match without regard to ASCII case",
 		"a human pastes it in, or the session is started with it as its first prompt",
 		"not the same one (links followed; a worktree inside the target is fine)"} {
