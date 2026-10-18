@@ -171,17 +171,24 @@ type Config struct {
 	Debounce time.Duration
 
 	// Skill is the protocol the instructions name: the zero value is the build
-	// skill, the two-session mode. primer.SkillTable makes them the table form.
-	// Both forms are facts and not blanks, so Chair, Target and Worktree are
-	// required either way: the human's registered nick (the chair, at a table),
-	// the target repo and this session's worktree of it, printed as spelled. The
-	// caller has validated them; this package only refuses to render a form with
-	// one missing. The table gate is the Deliverer's, installed by the caller iff
-	// the skill is table.
+	// skill, the two-session mode. primer.SkillTable makes them the table form,
+	// primer.SkillLine the line form. The forms are facts and not blanks, so
+	// Chair is required for all three: the human's registered nick (the chair,
+	// at a table), printed as spelled. The build and table forms also need
+	// Target and Worktree, the target repo and this session's worktree of it,
+	// printed as spelled; a line has neither, and they are not required there.
+	// The caller has validated them; this package only refuses to render a form
+	// with one missing. The gate is the Deliverer's, installed by the caller iff
+	// the skill is table (the seal and the breaker) or line (the breaker). The
+	// line's breaker cap reaches the text through Cap.
 	Skill    primer.Skill
 	Chair    string
 	Target   string
 	Worktree string
+	// Cap is the line breaker's cap, a fact the line form states. The same value
+	// goes to the Deliverer's gate, which the caller builds; this package does
+	// not read it back from there. Other skills ignore it.
+	Cap int
 }
 
 // Server is one MCP channel session.
@@ -193,11 +200,12 @@ type Server struct {
 	command   string
 	stateDir  string
 
-	// skill, chair, target and worktree are Config's, for the instructions.
+	// skill, chair, target, worktree and cap are Config's, for the instructions.
 	skill    primer.Skill
 	chair    string
 	target   string
 	worktree string
+	cap      int
 
 	in  io.Reader
 	log io.Writer
@@ -247,11 +255,18 @@ func New(cfg Config) (*Server, error) {
 	}
 	switch cfg.Skill {
 	case "", primer.SkillBuild, primer.SkillTable:
+		if cfg.Chair == "" || cfg.Target == "" || cfg.Worktree == "" {
+			return nil, errors.New("channel: the instructions need a chair, a target and a worktree")
+		}
+	case primer.SkillLine:
+		if cfg.Chair == "" {
+			return nil, errors.New("channel: the instructions need a chair")
+		}
+		if cfg.Cap < 0 {
+			return nil, errors.New("channel: negative cap")
+		}
 	default:
 		return nil, fmt.Errorf("channel: unknown skill %q", cfg.Skill)
-	}
-	if cfg.Chair == "" || cfg.Target == "" || cfg.Worktree == "" {
-		return nil, errors.New("channel: the instructions need a chair, a target and a worktree")
 	}
 	// A negative duration is refused here as well as at the CLI: a debounce
 	// below zero past the timeout puts the wait deadline in the past, and the
@@ -269,6 +284,7 @@ func New(cfg Config) (*Server, error) {
 		chair:       cfg.Chair,
 		target:      cfg.Target,
 		worktree:    cfg.Worktree,
+		cap:         cfg.Cap,
 		in:          cfg.In,
 		log:         cfg.Log,
 		timeout:     cfg.Timeout,
@@ -357,7 +373,7 @@ func (s *Server) LongestInstructions() string {
 }
 
 func (s *Server) instructionsFor(replyPath string) string {
-	return instructions(s.skill, s.command, s.spec, s.deliverer.Nick(), s.stateDir, replyPath, s.chair, s.target, s.worktree)
+	return instructions(s.skill, s.command, s.spec, s.deliverer.Nick(), s.stateDir, replyPath, s.chair, s.target, s.worktree, s.cap)
 }
 
 // Serve runs the session until the client closes the reader, the context is
@@ -815,7 +831,7 @@ func (s *Server) logf(format string, a ...any) {
 // internal/primer, which renders the same blocks for the fronts whose harness
 // has no connect-time channel to hand them over; this front is the claude form
 // of it and nothing more.
-func instructions(skill primer.Skill, command, spec, nick, stateDir, replyPath, chair, target, worktree string) string {
+func instructions(skill primer.Skill, command, spec, nick, stateDir, replyPath, chair, target, worktree string, cap int) string {
 	return primer.Render(primer.Params{
 		Front:     primer.Claude,
 		Command:   command,
@@ -827,6 +843,7 @@ func instructions(skill primer.Skill, command, spec, nick, stateDir, replyPath, 
 		Chair:     chair,
 		Target:    target,
 		Worktree:  worktree,
+		Cap:       cap,
 	})
 }
 

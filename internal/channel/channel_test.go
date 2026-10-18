@@ -1546,7 +1546,7 @@ cat "$file"
 // buildInstructions is instructions for the build skill with the facts every
 // session is launched with.
 func buildInstructions(command, spec, nick, stateDir, replyPath string) string {
-	return instructions(primer.SkillBuild, command, spec, nick, stateDir, replyPath, humanNick, targetRepo, seatWorktree)
+	return instructions(primer.SkillBuild, command, spec, nick, stateDir, replyPath, humanNick, targetRepo, seatWorktree, 0)
 }
 
 // replyScript pulls the reply command out of the instructions and points it at
@@ -1649,6 +1649,50 @@ func TestTheTableSkillMakesTheInstructionsTheTableForm(t *testing.T) {
 	}
 }
 
+// lineSkill is Config's line-skill fields, for a harness that serves a session on
+// a line: a chair and a cap, and no target or worktree.
+func lineSkill(chair string, capN int) func(*Config) {
+	return func(c *Config) {
+		c.Skill, c.Chair, c.Cap, c.Target, c.Worktree = primer.SkillLine, chair, capN, "", ""
+	}
+}
+
+// TestTheLineSkillMakesTheInstructionsTheLineForm: what the handshake hands the
+// model is the line form of the primer, with the facts the human launched the
+// session with, built without a target or a worktree.
+func TestTheLineSkillMakesTheInstructionsTheLineForm(t *testing.T) {
+	const chair = "colin"
+	h := newConfiguredHarness(t, 0, time.Minute, lineSkill(chair, 8))
+	got := text(t, h.handshake(), "instructions")
+	want := primer.Render(primer.Params{
+		Front:     primer.Claude,
+		Command:   command,
+		Spec:      h.spec,
+		Nick:      selfNick,
+		StateDir:  h.dir.Base(),
+		ReplyPath: h.srv.replyPath(),
+		Skill:     primer.SkillLine,
+		Chair:     chair,
+		Cap:       8,
+	})
+	if got != want {
+		t.Fatalf("the instructions are not the line form of the primer:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	for _, phrase := range []string{"registered nick " + chair + ";", "breaker cap 8 posts", "invoked as /parley-line"} {
+		if !strings.Contains(got, phrase) {
+			t.Fatalf("the line instructions do not carry %q:\n%s", phrase, got)
+		}
+	}
+	for _, unwanted := range []string{"parley-build", "parley-table", "target repo", "worktree"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("the line instructions carry %q:\n%s", unwanted, got)
+		}
+	}
+	if got == buildInstructions(command, h.spec, selfNick, h.dir.Base(), h.srv.replyPath()) {
+		t.Fatal("the line skill rendered the build form")
+	}
+}
+
 // TestTheBuildSkillCarriesItsFactsInTheInstructions: the default skill is the
 // build form of the primer with the same three facts as values, the human's
 // nick among them, and installs nothing else about the session.
@@ -1683,7 +1727,7 @@ func TestTheBuildSkillCarriesItsFactsInTheInstructions(t *testing.T) {
 // primer's own test holds the forms to the cap with headroom; this one is the
 // end-to-end number a launch is refused on.
 func TestTheInstructionsFitUnderTheCap(t *testing.T) {
-	for _, skill := range []primer.Skill{primer.SkillBuild, primer.SkillTable} {
+	for _, skill := range []primer.Skill{primer.SkillBuild, primer.SkillTable, primer.SkillLine} {
 		path := filepath.Join(t.TempDir(), "chat.ndjson")
 		s, err := file.Open(path, selfNick)
 		if err != nil {
@@ -1693,7 +1737,7 @@ func TestTheInstructionsFitUnderTheCap(t *testing.T) {
 		if err != nil {
 			t.Fatalf("state.Open: %v", err)
 		}
-		srv, err := New(Config{
+		cfg := Config{
 			Deliverer: stream.NewDeliverer(s, selfNick),
 			Cursors:   dir,
 			Spec:      "irc://127.0.0.1:6667/#parley",
@@ -1705,12 +1749,24 @@ func TestTheInstructionsFitUnderTheCap(t *testing.T) {
 			Chair:     "colin-the-chair1",
 			Target:    "/home/someone/projects/target/run/data/stat1",
 			Worktree:  "/home/someone/projects/target/run/data/stat2",
-		})
+		}
+		if skill == primer.SkillLine {
+			cfg.Target, cfg.Worktree, cfg.Cap = "", "", 12
+		}
+		srv, err := New(cfg)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
 		t.Cleanup(srv.Close)
 		got := srv.Instructions()
+		if skill == primer.SkillLine {
+			// A line has no target or worktree path in its text, so it fits with
+			// the longest reply directory name a launch can draw, as --check
+			// measures it, and not just with this one's.
+			if n := primer.UTF16Len(srv.LongestInstructions()); n > primer.ClaudeInstructionsCap-100 {
+				t.Fatalf("the longest line instructions are %d UTF-16 code units, without a margin of 100 under the client's cap of %d", n, primer.ClaudeInstructionsCap)
+			}
+		}
 		if n := primer.UTF16Len(got); n > primer.ClaudeInstructionsCap {
 			t.Fatalf("the %s instructions are %d UTF-16 code units, over the client's cap of %d:\n%s", skill, n, primer.ClaudeInstructionsCap, got)
 		} else {
@@ -1749,6 +1805,38 @@ func TestNewRefusesASkillMissingAFact(t *testing.T) {
 				t.Fatalf("%s, skill %q: New accepted it", name, skill)
 			}
 		}
+	}
+	// A line needs a chair, a known skill and a cap of zero or more, and nothing
+	// else: it has no target and no worktree to be missing.
+	line := func() Config {
+		return Config{
+			Deliverer: stream.NewDeliverer(s, selfNick), Cursors: dir, Spec: "file:" + path,
+			In: strings.NewReader(""), Out: io.Discard,
+			Skill: primer.SkillLine, Chair: "colin", Cap: 8,
+		}
+	}
+	for name, mutate := range map[string]func(*Config){
+		"no chair":     func(c *Config) { c.Chair = "" },
+		"negative cap": func(c *Config) { c.Cap = -1 },
+	} {
+		cfg := line()
+		mutate(&cfg)
+		if srv, err := New(cfg); err == nil {
+			srv.Close()
+			t.Fatalf("line, %s: New accepted it", name)
+		}
+	}
+	for name, mutate := range map[string]func(*Config){
+		"no target or worktree": func(c *Config) {},
+		"cap zero":              func(c *Config) { c.Cap = 0 },
+	} {
+		cfg := line()
+		mutate(&cfg)
+		srv, err := New(cfg)
+		if err != nil {
+			t.Fatalf("line, %s: New refused it: %v", name, err)
+		}
+		srv.Close()
 	}
 	// Refused before the reply directory is made, so a refusal leaves nothing.
 	if left, _ := filepath.Glob(filepath.Join(tmp, "parley-reply-*")); len(left) != 0 {
@@ -1818,9 +1906,12 @@ func TestLongestInstructionsCoverEveryReplyDirectoryName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	for _, skill := range []primer.Skill{primer.SkillBuild, primer.SkillTable} {
+	for _, skill := range []primer.Skill{primer.SkillBuild, primer.SkillTable, primer.SkillLine} {
 		cfg := Config{Deliverer: stream.NewDeliverer(s, selfNick), Cursors: dir, Spec: "file:" + path, In: strings.NewReader(""), Out: io.Discard, Skill: skill,
 			Chair: humanNick, Target: targetRepo, Worktree: seatWorktree}
+		if skill == primer.SkillLine {
+			cfg.Target, cfg.Worktree = "", ""
+		}
 		srv, err := New(cfg)
 		if err != nil {
 			t.Fatalf("New(%s): %v", skill, err)
