@@ -274,9 +274,22 @@ func TestChannelCheckMeasuresTheLineForm(t *testing.T) {
 func TestChannelRefusesALineOverTheCapAndNamesWhatToShorten(t *testing.T) {
 	root := shortRoot(t)
 	args := lineChannelArgs(root)
+	// The line form is the shortest, and how far under the cap it starts depends
+	// on the machine's temp paths, so a fixed padding crosses the cap on one OS
+	// and not another. Measure it first, then lengthen the state directory, which
+	// the form names, by what it takes to cross with room to spare, in components
+	// short enough for any file system.
+	fits := runCheck(t, t.TempDir(), args...)
+	if fits.code != 0 {
+		t.Fatalf("the unpadded line form exited %d under --check, want 0\nstderr: %s", fits.code, fits.stderr)
+	}
+	parts := []string{root, "s"}
+	for need := primer.ClaudeInstructionsCap - checkedLength(t, fits) + 64; need > 0; need -= 201 {
+		parts = append(parts, strings.Repeat("d", min(need, 200)))
+	}
 	for i := range args {
 		if args[i] == filepath.Join(root, "s") {
-			args[i] = filepath.Join(root, "s", strings.Repeat("d", 150), strings.Repeat("e", 150))
+			args[i] = filepath.Join(parts...)
 		}
 	}
 	tmp := t.TempDir()
