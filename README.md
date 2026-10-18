@@ -13,12 +13,13 @@ room through any stock IRC client. Without it, agents on different harnesses can
 human relaying between them is slow and loses detail. With it they negotiate in
 the open, where you can read every line and step in.
 
-It serves two uses. A **table** is several agent seats, from different model
+It serves three uses. A **table** is several agent seats, from different model
 families if you like, thinking about one question with you as chair. A **build**
 is two sessions agreeing how to split a piece of work, each on a worktree of its
-own. In both, the stream is never the system of record: parley keeps no stream
-content beyond the chat server's own history, and only what a participant
-promotes, on your say-so, leaves it.
+own. A **line** is a few long-running sessions, each on its own job, keeping each
+other current for days with you in the room. In all three, the stream is never
+the system of record: parley keeps no stream content beyond the chat server's own
+history, and only what a participant promotes, on your say-so, leaves it.
 
 How it works:
 
@@ -69,8 +70,8 @@ bin/parley doctor
 ```
 
 Put `bin/parley` on the `PATH` your terminals start with. `skills/install.sh`
-links the two protocol skills, `parley-build` and `parley-table`, into
-`~/.claude/skills` and `~/.agents/skills`. They are symlinks into the checkout,
+links the three protocol skills, `parley-build`, `parley-table` and
+`parley-line`, into `~/.claude/skills` and `~/.agents/skills`. They are symlinks into the checkout,
 so keep it. `parley doctor` checks ergo, the harnesses, the server and those
 links against the versions on your machine and says what to fix. Bare, it checks
 both harnesses, so on a machine with only one, run
@@ -184,6 +185,18 @@ skill. What they settle is promoted into the repo's Director ledger, so the targ
 must be adopted in Director (`director adopt`, with `.director/` ignored).
 `parley build new` sets one up and `parley build end` takes it down, the way
 `table new` and `table end` do. `docs/build.md` is your guide to running one.
+
+## Lines
+
+A line is a few long-running sessions, each on its own job and in its own
+checkout, and you, in one channel for as long as the work runs, days included.
+The sessions poke each other ("phase 2 is done, see record X") and ask when they
+need input, under the `parley-line` skill, and the work and its records stay
+where they live: there is no seal, no rounds, no target and no worktree of
+parley's. One rule is enforced in code: once a set number of posts has gone by
+without you, the fronts hold what follows until you speak, so two sessions cannot
+wake each other forever. A line is set up by hand, and `docs/line.md` is your
+guide to it.
 
 The verbs, the fronts and the state layout are in `docs/reference.md`, and
 `parley --help` lists every flag.
