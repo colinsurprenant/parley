@@ -10,9 +10,8 @@ running it. The protocol the sessions follow is the `parley-line` skill
 A line is neither a table nor a build. A table is one question asked in rounds,
 sealed so the seats answer alone first, and it decides nothing; a build is two
 peers splitting one piece of work, each on a worktree parley made for it. A line
-has no seal, no rounds, no target and no worktree of parley's: the sessions are
-the ones you already have open, in the checkouts they already work in, and you
-are in the room without chairing it. Use one when you are the one carrying "go
+has no seal, no rounds, no target and no worktree of parley's: the sessions work
+in the checkouts they already use, and you are in the room without chairing it. Use one when you are the one carrying "go
 read what the other one left you" from terminal to terminal. The work and its
 records stay where they live, in a ledger, a commit, a PR; the line only points
 at them.
@@ -126,14 +125,19 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
       network_access = true
       ```
 
-   2. **The primer and the thread.** The primer is the session's first message,
-      with a reply file outside the checkout where the sandbox can write, such as
-      `/tmp/parley-line-<nick>.txt`. Start the thread on it with the network off
-      for that one turn, so the session cannot post before its pump is up:
+   2. **The primer and the thread.** The primer is the session's first message.
+      Its reply file goes in a private directory made with `mktemp -d`, which is
+      under the per-user `$TMPDIR`, outside the checkout and where the sandbox can
+      write, as the reply directory `table new` makes is, and not at a name anyone
+      could guess in a directory everyone shares. The primer carries the path, so
+      the directory is the session's for as long as it runs. Start the thread on
+      the primer with the network off for that one turn, so the session cannot
+      post before its pump is up:
 
       ```
+      dir=$(mktemp -d); echo "$dir"
       primer=$(parley primer --front codex --skill line --stream 'irc://127.0.0.1:6667/#<channel>' --nick <nick> \
-        --state-dir <base> --chair <chair> --cap <cap> --reply-file /tmp/parley-line-<nick>.txt)
+        --state-dir <base> --chair <chair> --cap <cap> --reply-file "$dir/<nick>.reply")
       codex exec --json -C <checkout> -s workspace-write -c sandbox_workspace_write.network_access=false "$primer"
       ```
 
@@ -158,9 +162,12 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
       The resume line carries no `-c`: a `-c` forces Codex in-process, with a
       ten-second queue poll, instead of the shared daemon the pump's `codex queue`
       reaches at once. Each approval prompt in this terminal stops the run until
-      you answer it, because the pump delivers between Codex turns only. Check
-      that `/status` shows `workspace-write` and network on, then type
-      `$parley-line`.
+      you answer it, because the pump delivers between Codex turns only. Codex
+      keeps a checkout's git directory read-only in its sandbox, so `git add`,
+      `git commit`, `git merge` and `git reset` are refused there; the primer
+      tells the session to ask for escalation for each, and each is an approval
+      prompt here. Check that `/status` shows `workspace-write` and network on,
+      then type `$parley-line`.
 
 6. **Give each session its role**, in one line each, at its terminal or in the
    channel as `<chair>`: what the session does, and what it tells the others.
@@ -200,6 +207,13 @@ it is, and a peer's answer to a choice you hold is advice.
   session's next delivery reports, loses the held posts the same way, because the
   transport's ids may start over across it. A delivery that never reaches its
   session loses nothing: the holds are as they were, and it is made again.
+- **A session joining a line that is under way gets the backlog.** A session
+  under a nick with no cursor yet reads whatever history the server still retains
+  as its first delivery, and with no seal nothing holds it back but the breaker,
+  which counts those posts like live ones: a post of yours in it resets the count,
+  and the posts past `<cap>` since your last are held until you post. A session
+  that returns under a nick it used before resumes from its cursor instead, and
+  hears only what is new.
 - **The channel's history lives only in ergo's memory.** Restarting
   `parley server` loses it. A line runs for days, so what a session needs later
   belongs in a record it points at, which is what the skill asks for; the
@@ -213,7 +227,8 @@ There is no `parley line end`: parley made nothing but your state.
 
 - Close the sessions: exit each Claude Code session and Codex terminal, and stop
   each pump with Ctrl-C. A Claude Code session removes its reply directory when it
-  ends; remove a Codex session's reply file.
+  ends; remove each Codex session's reply directory, the one `mktemp -d` printed
+  (`rm -r "$dir"`).
 - Remove the `.mcp.json` you made from each checkout, and the
   `.codex/config.toml` where you made one, and their lines from the exclude file.
   `git status` then shows what it showed before.

@@ -12,9 +12,10 @@
 // front; the build form on codex adds one more before it, about git, which is
 // true only of a build's worktrees and holds unless a writable root in the
 // peer's launch config, or its global Codex config when the launch config lists
-// none, is the target's git directory (see codexBuildText), and the table's and
-// the line's codex forms leave it out. A sentence that differs between the
-// fronts is rendered from one place, with the front choosing which clause it
+// none, is the target's git directory (see codexBuildText), and the table's codex
+// form leaves it out; the line form on codex adds a paragraph of its own about
+// git, for a session's checkout (see codexLineText). A sentence that differs
+// between the fronts is rendered from one place, with the front choosing which clause it
 // carries; no paragraph is written twice, here or anywhere else.
 //
 // A second axis is the skill the text hands the session. The build form is the
@@ -179,7 +180,7 @@ func Render(p Params) string {
 		return renderForm(p, onlyPathTable, facts, tableCarveOut, "")
 	case SkillLine:
 		facts := fmt.Sprintf(lineFacts, p.Chair, p.Cap, invocation(p.Front, "parley-line"))
-		return renderForm(p, onlyPathLine, facts, lineCarveOut, "")
+		return renderForm(p, onlyPathLine, facts, lineCarveOut, codexLineText)
 	}
 	panic(fmt.Sprintf("primer: unknown skill %q", p.Skill))
 }
@@ -389,12 +390,36 @@ func invocation(front Front, skill string) string {
 // only a root on the git directory itself would make git writable.
 //
 // It sits ahead of codexFrontText, which the table's Codex form shares and which
-// both forms end with.
+// every form ends with.
 const codexBuildText = "Unless a writable root in your launch config (.codex/config.toml in your worktree) or, when that " +
 	"lists none, in your global Codex config ($CODEX_HOME/config.toml, else ~/.codex/config.toml) is the target repo's git " +
 	"directory, `git add`, `git commit`, `git merge` and `git reset` are refused here with Operation not permitted, " +
 	"because your worktree's git directory is inside the target repo's, outside this sandbox: ask for escalation for " +
 	"each of them directly, rather than trying it in the sandbox first."
+
+// codexLineText is codexBuildText for a line's Codex session, which works in a
+// checkout of its own: Codex keeps <root>/.git read-only even under a writable
+// root, per its seatbelt rules at rust-v0.161.0
+// (codex-rs/sandboxing/src/seatbelt.rs, lines 540-580), so an index, a commit, a
+// merge or a reset is refused whether the checkout is a repo's main one, whose
+// .git is under the sandbox's root, or a linked worktree, whose git directory is
+// outside it. Trying each in the sandbox first costs a turn and a refusal per
+// command; the session asks for the escalation directly.
+//
+// The one exception is a writable root that is the checkout's git directory
+// itself, in the launch config or, when that lists none, in the global Codex
+// config, and the text puts it to the session as a condition it can read for
+// itself: the primer is rendered without the roots. It does not tell the session
+// to widen its sandbox; the roots are the human's.
+//
+// It sits ahead of codexFrontText, in the same place codexBuildText holds in a
+// build's form, and the claude form carries neither: it has no room for it under
+// its cap.
+const codexLineText = "Unless a writable root in your launch config (.codex/config.toml in your checkout) or, when that " +
+	"lists none, in your global Codex config ($CODEX_HOME/config.toml, else ~/.codex/config.toml) is your checkout's git " +
+	"directory, `git add`, `git commit`, `git merge` and `git reset` are refused here with Operation not permitted, " +
+	"because Codex keeps a checkout's git directory read-only in its sandbox: ask for escalation for each of them " +
+	"directly, rather than trying it in the sandbox first."
 
 // codexFrontText is what is true of the Codex front and of no other: the pump,
 // the shape a delivery arrives in, and the bound past which a message arrives as

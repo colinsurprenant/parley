@@ -1129,6 +1129,9 @@ func cmdCodex(args []string) error {
 	// delivery into a session that does not exist. The one way to find it is the
 	// record the seat's start wrote, and only when asked for by name.
 	if strings.TrimSpace(*thread) == "" {
+		if skill == primer.SkillLine {
+			return cfgErrf("--thread is required: the Codex session UUID or exact session name to deliver into (a line has no thread record, so the pump takes the thread id)")
+		}
 		return cfgErrf("--thread is required: the Codex session UUID or exact session name to deliver into, or auto for the thread recorded by parley table new or parley build new")
 	}
 	// Resolved before the lock is taken, and before anything else can fail: a
@@ -1143,7 +1146,7 @@ func cmdCodex(args []string) error {
 	// not cost the nick an account, a connection or its lock to say so.
 	threadID, source := *thread, ""
 	if *thread == threadAuto {
-		if threadID, source, err = recordedThread(*stateDir, *nick, *spec); err != nil {
+		if threadID, source, err = recordedThread(*stateDir, *nick, *spec, skill); err != nil {
 			return err
 		}
 	}
@@ -1170,7 +1173,7 @@ func cmdCodex(args []string) error {
 	// nothing; a table end or build end that ran in between has released the lock and
 	// removed the record, so it is read again now that this pump holds the nick.
 	if *thread == threadAuto {
-		again, _, err := recordedThread(*stateDir, *nick, *spec)
+		again, _, err := recordedThread(*stateDir, *nick, *spec, skill)
 		if err != nil {
 			return fmt.Errorf("the recorded thread is gone since this pump started (a table end or build end ran meanwhile?): %w", err)
 		}
@@ -1214,7 +1217,7 @@ const codexThreadEnv = "CODEX_THREAD_ID"
 // configuration error: the invocation asked for something that is not there.
 // The spec is canonicalized here as openStream will, and nothing is opened or
 // created.
-func recordedThread(stateDir, nick, spec string) (id, source string, err error) {
+func recordedThread(stateDir, nick, spec string, skill primer.Skill) (id, source string, err error) {
 	canonical, _, err := resolveSpec(spec)
 	if err != nil {
 		return "", "", err
@@ -1228,6 +1231,12 @@ func recordedThread(stateDir, nick, spec string) (id, source string, err error) 
 		return "", "", cfgErrf("--thread %s: %v: pass --thread <id> instead", threadAuto, err)
 	}
 	if id == "" {
+		// parley table new and parley build new make the record; a line is set up by
+		// hand, so the advice to run one of them would send its user to a verb
+		// that cannot start their session.
+		if skill == primer.SkillLine {
+			return "", "", cfgErrf("--thread %s: a line has no thread record (nothing recorded for nick %q on %s, looked for %s): the pump takes the thread id with --thread <id>", threadAuto, nick, canonical, rec.Path())
+		}
 		return "", "", cfgErrf("--thread %s: no Codex thread is recorded for nick %q on %s (looked for %s): run `parley table new` or `parley build new` to start the seat, or pass --thread <id>", threadAuto, nick, canonical, rec.Path())
 	}
 	return id, fmt.Sprintf(" (--thread %s, from %s)", threadAuto, rec.Path()), nil

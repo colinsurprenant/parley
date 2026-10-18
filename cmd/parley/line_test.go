@@ -70,6 +70,11 @@ func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 		if !strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\n\n") {
 			t.Fatalf("the %s line primer does not end in exactly one newline", front)
 		}
+		// Codex keeps a checkout's git directory read-only in its sandbox, so only
+		// the codex front is told to ask for escalation for git's writes.
+		if has := strings.Contains(out, "ask for escalation for each of them directly"); has != (front == "codex") {
+			t.Fatalf("the %s line primer carries the git escalation paragraph = %v:\n%s", front, has, out)
+		}
 	}
 	// The cap is printed as spelled, 0 included.
 	args := append([]string(nil), linePrimerArgs("claude")...)
@@ -388,5 +393,48 @@ func TestCodexLineDeliversPeerPostsAtOnceAndTheBreakerHolds(t *testing.T) {
 	held, chair := strings.Index(msg, "phase two done"), strings.Index(msg, "chair talk")
 	if held < 0 || chair < 0 || held > chair {
 		t.Fatalf("the chair's post delivered\n%s\nwant the held post ahead of the chair's", msg)
+	}
+}
+
+// TestCodexThreadAutoUnderALineSaysTheLineHasNoRecord: parley table new and
+// parley build new make the thread record --thread auto reads, and a line is set
+// up by hand, so the error under --skill line does not send its user to either.
+// It says there is no record and that the pump takes the thread id, and a
+// missing --thread says the same, before anything is opened.
+func TestCodexThreadAutoUnderALineSaysTheLineHasNoRecord(t *testing.T) {
+	spec := "file:" + filepath.Join(t.TempDir(), "chat.ndjson")
+	stateDir := t.TempDir()
+	base := []string{"codex", "--stream", spec, "--nick", "codex-a", "--state-dir", stateDir,
+		"--codex-bin", "/bin/echo", "--skill", "line", "--chair", "colin", "--cap", "3"}
+	for name, thread := range map[string][]string{"auto": {"--thread", "auto"}, "no thread": nil} {
+		res := runParley(t, "", append(append([]string(nil), base...), thread...)...)
+		if res.code != 2 {
+			t.Fatalf("%s: codex exited %d, want 2\nstderr: %s", name, res.code, res.stderr)
+		}
+		for _, want := range []string{"a line has no thread record", "--thread"} {
+			if !strings.Contains(res.stderr, want) {
+				t.Fatalf("%s: the error does not say %q: %s", name, want, res.stderr)
+			}
+		}
+		if name == "auto" && !strings.Contains(res.stderr, "--thread <id>") {
+			t.Fatalf("auto: the error does not offer --thread <id>: %s", res.stderr)
+		}
+		for _, unwanted := range []string{"parley table new", "parley build new"} {
+			if strings.Contains(res.stderr, unwanted) {
+				t.Fatalf("%s: the error sends a line to %q: %s", name, unwanted, res.stderr)
+			}
+		}
+		if res.stdout != "" {
+			t.Fatalf("%s: a refused invocation printed %q", name, res.stdout)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "codex-a")); err == nil {
+		t.Fatal("the refused invocations made the nick's state directory")
+	}
+	// The table's and the build's keep their advice.
+	table := []string{"codex", "--stream", spec, "--nick", "codex-a", "--state-dir", stateDir,
+		"--codex-bin", "/bin/echo", "--skill", "table", "--chair", "colin", "--cap", "3", "--thread", "auto"}
+	if res := runParley(t, "", table...); res.code != 2 || !strings.Contains(res.stderr, "parley table new") {
+		t.Fatalf("the table's error exited %d and says %q", res.code, res.stderr)
 	}
 }

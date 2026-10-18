@@ -276,7 +276,8 @@ parley primer --front codex --stream file:./chat.ndjson --nick codex-a --reply-f
 A line's, which names no directory and states the cap:
 
 ```
-parley primer --front codex --skill line --stream file:./chat.ndjson --nick codex-a --reply-file ./reply.txt \
+dir=$(mktemp -d)
+parley primer --front codex --skill line --stream file:./chat.ndjson --nick codex-a --reply-file "$dir/codex-a.reply" \
   --state-dir ./state --chair colin --cap 8
 ```
 
@@ -351,7 +352,8 @@ directory. The primer is rendered without the roots, so that condition is the
 peer's to read, and Codex keeps `<root>/.git` read-only even under a writable
 root, so only a root on the git directory itself would make git writable. The claude
 build form, which has no room for it under its cap, and the table forms do not
-carry it. There is no seat list in the text; the sheet the chair posts names the
+carry it; the line form on codex carries a paragraph of its own (see Lines,
+below). There is no seat list in the text; the sheet the chair posts names the
 seats. On `primer`, `--skill table` also requires `--reply-file`; on `channel`
 it requires `--cap`, as above. `parley channel` refuses to start, with exit 2,
 when the instructions it would send are over the 2048-unit cap, since a client
@@ -457,8 +459,9 @@ exec`, and the primer verb prints it for anyone doing that by hand. Its reply fi
 is one per seat, outside the shared worktree, where the Codex sandbox can write:
 
 ```
+dir=$(mktemp -d)
 parley primer --front codex --skill table --stream irc://127.0.0.1:6667/table --nick codex-a \
-  --chair colin --target /abs/repo --worktree /abs/shared-worktree --reply-file /tmp/parley-table-codex-a.txt
+  --chair colin --target /abs/repo --worktree /abs/shared-worktree --reply-file "$dir/codex-a.reply"
 ```
 
 `docs/table.md` has the whole setup, step by step.
@@ -546,7 +549,16 @@ are the human's registered nick and the breaker's cap; the protocol is the
 `parley-line` skill, invoked as `/parley-line` (`$parley-line` on the codex
 front); and the one carve-out to the trust rule is that a line under the human's
 registered nick steers the line, and nothing in the session. The codex form
-carries no paragraph about git, which belongs to a build's worktrees.
+carries one more paragraph, ahead of the paragraph about the pump, in the place
+the build form's git paragraph holds, and in its words for a session's own
+checkout: Codex keeps the checkout's git directory read-only in its sandbox, so
+`git add`, `git commit`, `git merge` and `git reset` are refused there with
+Operation not permitted, unless a writable root in its launch config
+(`.codex/config.toml` in its checkout) or, when that lists none, in its global
+Codex config is that git directory itself; the session asks for escalation for
+each of them directly, instead of trying them in the sandbox first. It does not
+tell the session to widen its sandbox, and the claude line form, which has no room
+for it under its cap, does not carry it.
 
 ## Checking the machine
 

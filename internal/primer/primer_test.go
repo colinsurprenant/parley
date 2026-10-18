@@ -339,16 +339,61 @@ func TestTheCodexBuildFormTellsItsPeerToAskForGitEscalationDirectly(t *testing.T
 		t.Fatalf("the zero skill and the named build skill render different codex forms")
 	}
 
-	for name, other := range map[string]Params{"table": tableSample(), "line": lineSample()} {
-		other.Front = Codex
-		if got := Render(other); strings.Contains(got, codexBuildText) || strings.Contains(got, "git commit") {
-			t.Fatalf("the codex %s form carries the build form's git paragraph:\n%s", name, got)
-		}
+	table := tableSample()
+	table.Front = Codex
+	if got := Render(table); strings.Contains(got, codexBuildText) || strings.Contains(got, codexLineText) || strings.Contains(got, "git commit") {
+		t.Fatalf("the codex table form carries a git paragraph:\n%s", got)
+	}
+	// The line form's own paragraph is not the build form's.
+	line := lineSample()
+	line.Front = Codex
+	if got := Render(line); strings.Contains(got, codexBuildText) {
+		t.Fatalf("the codex line form carries the build form's git paragraph:\n%s", got)
 	}
 	for name, claude := range map[string]Params{"build": sample(), "table": tableSample(), "line": lineSample()} {
 		if got := Render(claude); strings.Contains(got, codexBuildText) || strings.Contains(got, "git commit") {
 			t.Fatalf("the claude %s form carries the codex build form's git paragraph:\n%s", name, got)
 		}
+	}
+}
+
+// TestTheCodexLineFormTellsItsSessionToAskForGitEscalationDirectly: Codex keeps a
+// checkout's git directory read-only in its sandbox, so a line's Codex session,
+// which works in a checkout of its own, is told that `git add`, `git commit`,
+// `git merge` and `git reset` are refused there and to ask for escalation for
+// each directly, unless a writable root in its launch config, or in its global
+// Codex config when the launch config lists none, is that git directory. The
+// paragraph is the Codex line form's alone, sits where the build form's does,
+// and does not tell the session to widen its sandbox.
+func TestTheCodexLineFormTellsItsSessionToAskForGitEscalationDirectly(t *testing.T) {
+	p := lineSample()
+	p.Front = Codex
+	got := Render(p)
+	for _, want := range []string{
+		"Unless a writable root in your launch config (.codex/config.toml in your checkout) or, when that lists none, in your global Codex config ($CODEX_HOME/config.toml, else ~/.codex/config.toml) is your checkout's git directory,",
+		"`git add`", "`git commit`", "`git merge`", "`git reset`", "refused here with Operation not permitted",
+		"because Codex keeps a checkout's git directory read-only in its sandbox",
+		"ask for escalation for each of them directly, rather than trying it in the sandbox first."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the codex line form lacks %q:\n%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, "\n\n"+codexLineText+"\n\n"+codexFrontText+"\n") {
+		t.Fatalf("the codex line form does not end with the git paragraph and then the front paragraph:\n%s", got)
+	}
+	for _, unwanted := range []string{"widen", "writable_roots", "danger-full-access", "sandbox_mode", "worktree", "target repo"} {
+		if strings.Contains(codexLineText, unwanted) {
+			t.Fatalf("the line form's git paragraph says %q:\n%s", unwanted, codexLineText)
+		}
+	}
+	// The claude form has no room for it, and the paragraph is not twice in the
+	// codex one.
+	claude := lineSample()
+	if got := Render(claude); strings.Contains(got, codexLineText) || strings.Contains(got, "git commit") {
+		t.Fatalf("the claude line form carries the git paragraph:\n%s", got)
+	}
+	if n := strings.Count(Render(p), codexLineText); n != 1 {
+		t.Fatalf("the codex line form carries the git paragraph %d times, want once", n)
 	}
 }
 
@@ -714,7 +759,7 @@ func TestTheLineFormIsFactsNotBlanks(t *testing.T) {
 			}
 		}
 		for _, unwanted := range []string{"<human nick>", "<reply file path>", "the peer", "other seats", "/parley-build", "$parley-build",
-			"/parley-table", "$parley-table", "rule 8", "ESCALATE", "round", "TABLE", "chair", "target repo", "worktree", "read-only", "seal"} {
+			"/parley-table", "$parley-table", "rule 8", "ESCALATE", "round", "TABLE", "chair", "target repo", "worktree", "(read-only)", "seal"} {
 			if strings.Contains(got, unwanted) {
 				t.Fatalf("the %s line form still carries %q:\n%s", tc.front, unwanted, got)
 			}
