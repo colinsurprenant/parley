@@ -95,11 +95,15 @@ usage:
   parley wait    --stream <spec> --nick <nick> [--timeout 30s] [--debounce 250ms] [--state-dir <dir>]
   parley channel --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir> [--debounce 250ms]
                  [--state-dir <dir>] [--skill build|table --cap <n>] [--check]
+  parley channel --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--debounce 250ms]
+                 [--state-dir <dir>] [--check]
   parley codex   --stream <spec> --nick <nick> --thread <thread>|auto [--debounce 250ms] [--state-dir <dir>] [--codex-bin codex]
-                 [--skill build|table --chair <nick> --cap <n>]
+                 [--skill build|table|line --chair <nick> --cap <n>]
   parley primer  --front claude|codex --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir>
                  [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]
                  [--skill build|table]
+  parley primer  --front claude|codex --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n>
+                 [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]
   parley server  [--listen 127.0.0.1:6667] [--datastore <dir>] [--ergo-bin ergo]
   parley doctor  [--harness claude|codex]... [--live] [--server 127.0.0.1:6667] [--codex-bin codex] [--claude-bin claude] [--ergo-bin ergo]
   parley table   new <id> --target <repo> --chair <nick> --rounds <n> --seat <nick>=<claude|codex>[:<model>] [--seat ...]
@@ -364,21 +368,27 @@ verbs:
            exits 2
 
 skills:
-  primer and channel take --skill build|table, build by default. build is
-  the two-session mode. table is a seat at a table: the rules are the
-  parley-table skill's, which the human starts at the seat. Either way the
-  text carries three facts as values, set at launch and not by the channel:
-  --chair <nick>, your human partner's registered nick (the chair, at a
-  table), --target <dir>, the target repo, and --worktree <dir>, the
-  session's own worktree of it. All three are required on both skills; the two
-  directories are each an absolute path to an existing directory, not the
+  primer and channel take --skill build|table|line, build by default. build
+  is the two-session mode. table is a seat at a table: the rules are the
+  parley-table skill's, which the human starts at the seat. line is a session
+  on a line, a few long-running sessions and one human in one channel, with no
+  target and no worktree: the rules are the parley-line skill's. Under build
+  and table the text carries three facts as values, set at launch and not by
+  the channel: --chair <nick>, your human partner's registered nick (the
+  chair, at a table), --target <dir>, the target repo, and --worktree <dir>,
+  the session's own worktree of it. All three are required on both skills; the
+  two directories are each an absolute path to an existing directory, not the
   same one (links followed; a worktree inside the target is fine), and all
   three are printed as spelled. The chair is another voice than --nick. primer
-  also requires --reply-file with --skill table. --cap is for --skill table
-  only. channel and primer --front claude refuse the text, on either skill,
-  when it is over Claude Code's 2048-unit cap, which would cut its end; primer
-  measures a shorter text than channel does, which has a resolved state
-  directory and a reply directory of its own.
+  also requires --reply-file with --skill table or line. Under line the facts
+  are --chair <nick>, your human partner's registered nick, and --cap <n>, the
+  breaker's cap, both required; --target and --worktree are refused. primer
+  takes --cap under line only, to state it: the text is printed, nothing is
+  held. --cap is for --skill table and --skill line only. channel and primer
+  --front claude refuse the text, on any skill, when it is over Claude Code's
+  2048-unit cap, which would cut its end; primer measures a shorter text than
+  channel does, which has a resolved state directory and a reply directory of
+  its own.
   The pre-check for a launch is the channel's own, with the launch's arguments:
   PARLEY_NICK=<nick> parley channel <the .mcp.json args> --check
   with the nick written out where an arg is ${PARLEY_NICK}, which the shell
@@ -388,7 +398,7 @@ tables:
   With --skill table, channel and codex take --chair <nick> --cap <n>, both
   required, for a table of several agents and one human chair on one channel.
   codex takes --skill too, build by default, and neither flag without
-  table; it takes no --target or --worktree. Until this participant has
+  table or line; it takes no --target or --worktree. Until this participant has
   posted once, posts by anyone but the chair are held back; after that they
   arrive as usual until more than <n> messages by anyone but the chair have
   followed the chair's last post, and then they are held again until the chair
@@ -399,6 +409,18 @@ tables:
   loses them, and so does a gap in the stream's history, which the delivery
   says. A delivery that is never handed over leaves the holds as they were.
   wait takes neither flag. --skill build holds nothing back.
+
+lines:
+  With --skill line, channel and codex take --chair <nick> --cap <n>, both
+  required, for a few long-running sessions and one human on one channel.
+  The gate is the table's breaker and nothing else: there is no first hold, so
+  this participant receives every other session's post at once, before it has
+  posted. After more than <n> messages by anyone but the chair have followed
+  the chair's last post, further posts are held until the chair posts, which
+  releases them in order ahead of itself and resets the count; --cap 0 turns
+  the breaker off. Held posts live in this process's memory only, so a restart
+  loses them, and so does a gap in the stream's history, which the delivery
+  says. The chair is the human's registered nick, another voice than --nick.
 
 stream specs:
   file:<path>              one append-only NDJSON file, which stock tools can
@@ -459,31 +481,36 @@ func given(fs *flag.FlagSet, name string) bool {
 }
 
 // skillFlags are the flags channel and primer share for the skill a session is
-// handed: which one, and the three facts its text carries as values. cap is the
-// table gate's and is nil on primer, which installs no gate.
+// handed: which one, and the facts its text carries as values. gate says whether
+// the verb installs the skill's gate, as channel does; primer prints the text
+// and holds nothing, and takes --cap under the line skill only, to state it.
 type skillFlags struct {
 	skill    *string
 	chair    *string
 	target   *string
 	worktree *string
 	cap      *int
+	gate     bool
 }
 
 func addSkillFlags(fs *flag.FlagSet, gate bool) skillFlags {
 	k := skillFlags{
-		skill:    fs.String("skill", string(primer.SkillBuild), "the protocol the text names: build (two peers) or table (a seat at a table, which also needs --cap on channel)"),
-		chair:    fs.String("chair", "", "required: your human partner's registered nick, matched without regard to ASCII case, which the text names as the one whose channel lines carry their authority (at a table, the chair, whose posts also pass the gate)"),
-		target:   fs.String("target", "", "required: the target repo, an absolute path to an existing directory, printed as spelled"),
-		worktree: fs.String("worktree", "", "required: this session's own worktree of the target repo, an absolute path to an existing directory, printed as spelled"),
+		skill:    fs.String("skill", string(primer.SkillBuild), "the protocol the text names: build (two peers), table (a seat at a table, which also needs --cap on channel) or line (a session on a line, which needs --chair and --cap and takes no --target or --worktree)"),
+		chair:    fs.String("chair", "", "required: your human partner's registered nick, matched without regard to ASCII case, which the text names as the one whose channel lines carry their authority (at a table, the chair, whose posts also pass the gate; on a line, the human, whose posts release the breaker)"),
+		target:   fs.String("target", "", "required with --skill build or table, refused with --skill line: the target repo, an absolute path to an existing directory, printed as spelled"),
+		worktree: fs.String("worktree", "", "required with --skill build or table, refused with --skill line: this session's own worktree of the target repo, an absolute path to an existing directory, printed as spelled"),
+		gate:     gate,
 	}
 	if gate {
 		k.cap = addCapFlag(fs)
+	} else {
+		k.cap = fs.Int("cap", 0, "required with --skill line, refused with the others: the breaker's cap, the number the text states as a fact; primer holds nothing, so set the same value on the channel or codex front; 0 is no breaker")
 	}
 	return k
 }
 
 func addCapFlag(fs *flag.FlagSet) *int {
-	return fs.Int("cap", 0, "with --skill table: hold every post by anyone but the chair once more than this many have gone by since the chair last posted, until the chair posts; 0 turns the cap off; required with --skill table. "+
+	return fs.Int("cap", 0, "with --skill table or line: hold every post by anyone but the chair once more than this many have gone by since the chair last posted, until the chair posts; 0 turns the cap off; required with --skill table and --skill line. "+
 		"Held posts are kept in memory only, so a restart or a gap in the history loses them")
 }
 
@@ -493,15 +520,19 @@ type launch struct {
 	chair    string
 	target   string
 	worktree string
-	// gate is the table gate, installed iff the skill is table.
+	// cap is the line's breaker cap, which the line text states.
+	cap int
+	// gate is the skill's gate, installed iff the skill is table or line.
 	gate []stream.Option
 }
 
 // resolve validates the flags. Everything refused is a bad invocation. The
-// three facts are values the text prints for the model, so the chair must be a
-// nick another voice than this participant's, and each directory must exist and
-// be a directory the way the human spelled it, with no control character that
-// would break the text it lands in.
+// facts are values the text prints for the model, so the chair must be a nick
+// another voice than this participant's, and under build and table each
+// directory must exist and be a directory the way the human spelled it, with no
+// control character that would break the text it lands in. A line has no target
+// and no worktree, and is refused either one: a path it was handed would be one
+// nobody reads.
 func (k skillFlags) resolve(fs *flag.FlagSet, nick string) (launch, error) {
 	skill, err := parseSkill(*k.skill)
 	if err != nil {
@@ -510,25 +541,46 @@ func (k skillFlags) resolve(fs *flag.FlagSet, nick string) (launch, error) {
 	if err := checkChair(fs, *k.chair, nick, skill); err != nil {
 		return launch{}, err
 	}
-	targetInfo, err := checkDir("target", *k.target, skill)
-	if err != nil {
-		return launch{}, err
+	l := launch{skill: skill, chair: *k.chair}
+	if skill == primer.SkillLine {
+		for _, name := range []string{"target", "worktree"} {
+			if given(fs, name) {
+				return launch{}, cfgErrf("--%s is not taken with --skill line: a line has no target repo and no worktree of the session's, the session works in its own checkout", name)
+			}
+		}
+	} else {
+		targetInfo, err := checkDir("target", *k.target, skill)
+		if err != nil {
+			return launch{}, err
+		}
+		worktreeInfo, err := checkDir("worktree", *k.worktree, skill)
+		if err != nil {
+			return launch{}, err
+		}
+		// The worktree is a checkout of the target made for this session, so it is
+		// another directory; one inside the target, as under .claude/worktrees, is
+		// normal. os.SameFile compares what the paths resolve to, links followed.
+		if os.SameFile(targetInfo, worktreeInfo) {
+			return launch{}, cfgErrf("--target %q and --worktree %q are the same directory (links followed): the worktree is this session's own checkout of the target, a directory of its own", *k.target, *k.worktree)
+		}
+		l.target, l.worktree = *k.target, *k.worktree
 	}
-	worktreeInfo, err := checkDir("worktree", *k.worktree, skill)
-	if err != nil {
-		return launch{}, err
-	}
-	// The worktree is a checkout of the target made for this session, so it is
-	// another directory; one inside the target, as under .claude/worktrees, is
-	// normal. os.SameFile compares what the paths resolve to, links followed.
-	if os.SameFile(targetInfo, worktreeInfo) {
-		return launch{}, cfgErrf("--target %q and --worktree %q are the same directory (links followed): the worktree is this session's own checkout of the target, a directory of its own", *k.target, *k.worktree)
-	}
-	l := launch{skill: skill, chair: *k.chair, target: *k.target, worktree: *k.worktree}
-	if k.cap != nil {
+	switch {
+	case k.gate:
 		if l.gate, err = gateOptions(fs, skill, *k.chair, *k.cap); err != nil {
 			return launch{}, err
 		}
+	case skill == primer.SkillLine:
+		// primer installs no gate, but the text states the cap, so it is as
+		// required and as checked as it is where the gate is built.
+		if err := checkCap(fs, skill, *k.cap); err != nil {
+			return launch{}, err
+		}
+	case given(fs, "cap"):
+		return launch{}, cfgErrf("--cap is taken by primer with --skill line only: the text states a line's cap, and %s has none to state", skill)
+	}
+	if skill == primer.SkillLine {
+		l.cap = *k.cap
 	}
 	return l, nil
 }
@@ -542,7 +594,7 @@ func parseSkill(s string) (primer.Skill, error) {
 }
 
 // checkChair validates the chair the text names, which the long-running fronts
-// also hand to the table gate. It is the human's nick, so it is never this
+// also hand to the table or line gate. It is the human's nick, so it is never this
 // participant's own, and nicks are the same without regard to ASCII case.
 func checkChair(fs *flag.FlagSet, chair, nick string, skill primer.Skill) error {
 	if !given(fs, "chair") {
@@ -557,25 +609,41 @@ func checkChair(fs *flag.FlagSet, chair, nick string, skill primer.Skill) error 
 	return nil
 }
 
-// gateOptions returns the Deliverer options the table skill stands for: the
-// gate is installed iff the skill is table, and then --cap is required. The cap
-// has no default: a table whose limit was never named would be one whose limit
-// nobody chose, so "no limit" is spelled --cap 0. The chair is the caller's, and
-// checked by it.
-func gateOptions(fs *flag.FlagSet, skill primer.Skill, chair string, capN int) ([]stream.Option, error) {
-	if skill != primer.SkillTable {
+// checkCap validates the cap a gated skill is launched with: required, not
+// negative. The cap has no default: a table or a line whose limit was never
+// named would be one whose limit nobody chose, so "no limit" is spelled --cap 0.
+// A build has no gate, and is refused a cap.
+func checkCap(fs *flag.FlagSet, skill primer.Skill, capN int) error {
+	if skill != primer.SkillTable && skill != primer.SkillLine {
 		if given(fs, "cap") {
-			return nil, cfgErrf("--cap applies to --skill table only: the gate it sets is a table's")
+			return cfgErrf("--cap applies to --skill table or line only: a build holds nothing back")
 		}
-		return nil, nil
+		return nil
 	}
 	if !given(fs, "cap") {
-		return nil, cfgErrf("--cap is required with --skill table: name the cap, or --cap 0 for none")
+		return cfgErrf("--cap is required with --skill %s: name the cap, or --cap 0 for none", skill)
 	}
 	if capN < 0 {
-		return nil, cfgErrf("--cap must not be negative")
+		return cfgErrf("--cap must not be negative")
 	}
-	return []stream.Option{stream.WithTable(chair, capN)}, nil
+	return nil
+}
+
+// gateOptions returns the Deliverer options the skill stands for: the gate is
+// installed iff the skill is table (the seal and the breaker) or line (the
+// breaker alone), and then --cap is required. The chair is the caller's, and
+// checked by it.
+func gateOptions(fs *flag.FlagSet, skill primer.Skill, chair string, capN int) ([]stream.Option, error) {
+	if err := checkCap(fs, skill, capN); err != nil {
+		return nil, err
+	}
+	switch skill {
+	case primer.SkillTable:
+		return []stream.Option{stream.WithTable(chair, capN)}, nil
+	case primer.SkillLine:
+		return []stream.Option{stream.WithLine(chair, capN)}, nil
+	}
+	return nil, nil
 }
 
 // checkDir validates one of the skill text's directories: given, absolute, free
@@ -605,7 +673,10 @@ func checkDir(flagName, path string, skill primer.Skill) (os.FileInfo, error) {
 // channel, which refuses to start and under --check, and primer's claude form,
 // which refuses the same text for the same reason but measures a shorter one:
 // it is not the pre-check for a launch, channel --check is.
-func overCap(n int) error {
+func overCap(skill primer.Skill, n int) error {
+	if skill == primer.SkillLine {
+		return overCapBy(n, "--state-dir, --stream or the path of the parley binary")
+	}
 	return overCapBy(n, "--target, --worktree, --state-dir, --stream or the path of the parley binary")
 }
 
@@ -826,6 +897,7 @@ func cmdChannel(args []string) error {
 	fs := flag.NewFlagSet("parley channel", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: parley channel --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir> [--debounce 250ms] [--state-dir <dir>] [--skill build|table --cap <n>] [--check]")
+		fmt.Fprintln(fs.Output(), "       parley channel --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--debounce 250ms] [--state-dir <dir>] [--check]")
 		fs.PrintDefaults()
 	}
 	spec := fs.String("stream", "", "stream to read, e.g. file:/path/to/chat.ndjson")
@@ -850,8 +922,8 @@ func cmdChannel(args []string) error {
 		return cfgErrf("--debounce must not be negative")
 	}
 	// The gate is the skill's: a seat at a table is told who the chair is, and
-	// the gates that make the chair's word first travel with that, while a build
-	// holds nothing back.
+	// the gates that make the chair's word first travel with that, a line session
+	// gets the breaker of those and no seal, while a build holds nothing back.
 	l, err := skills.resolve(fs, *nick)
 	if err != nil {
 		return err
@@ -863,6 +935,7 @@ func cmdChannel(args []string) error {
 			Chair:    l.chair,
 			Target:   l.target,
 			Worktree: l.worktree,
+			Cap:      l.cap,
 		}, *nick, *stateDir, l.gate)
 	}
 
@@ -906,16 +979,17 @@ func cmdChannel(args []string) error {
 		Chair:    l.chair,
 		Target:   l.target,
 		Worktree: l.worktree,
+		Cap:      l.cap,
 	})
 	if err != nil {
 		return err
 	}
 	// A session is refused at launch rather than served truncated: the text
-	// carries three of the user's paths, and the client keeps the head of
-	// anything over its cap and drops the tail, which is the trust rule.
+	// carries the user's paths, and the client keeps the head of anything over
+	// its cap and drops the tail, which is the trust rule.
 	if n := primer.UTF16Len(srv.Instructions()); n > primer.ClaudeInstructionsCap {
 		srv.Close()
-		return overCap(n)
+		return overCap(l.skill, n)
 	}
 	ctx, stop := signalContext()
 	defer stop()
@@ -992,7 +1066,7 @@ func checkChannel(cfg channel.Config, nick, stateDir string, gate []stream.Optio
 	if n <= primer.ClaudeInstructionsCap {
 		return nil
 	}
-	return overCap(n)
+	return overCap(cfg.Skill, n)
 }
 
 // cmdCodex runs the Codex front: a foreground pump that blocks on the stream
@@ -1006,7 +1080,7 @@ func checkChannel(cfg channel.Config, nick, stateDir string, gate []stream.Optio
 func cmdCodex(args []string) error {
 	fs := flag.NewFlagSet("parley codex", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: parley codex --stream <spec> --nick <nick> --thread <thread>|auto [--debounce 250ms] [--state-dir <dir>] [--codex-bin codex] [--skill build|table --chair <nick> --cap <n>]")
+		fmt.Fprintln(fs.Output(), "usage: parley codex --stream <spec> --nick <nick> --thread <thread>|auto [--debounce 250ms] [--state-dir <dir>] [--codex-bin codex] [--skill build|table|line --chair <nick> --cap <n>]")
 		fs.PrintDefaults()
 	}
 	spec := fs.String("stream", "", "stream to read, e.g. file:/path/to/chat.ndjson")
@@ -1015,8 +1089,8 @@ func cmdCodex(args []string) error {
 	debounce := fs.Duration("debounce", 250*time.Millisecond, "quiet window that joins a burst into one delivery")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ (default $XDG_STATE_HOME/parley)")
 	codexBin := fs.String("codex-bin", codex.DefaultBin, "the codex CLI to run, resolved on PATH unless it holds a separator")
-	skillFlag := fs.String("skill", string(primer.SkillBuild), "the skill the session was started with: build (two peers, nothing held back) or table (a seat at a table, which needs --chair and --cap)")
-	chair := fs.String("chair", "", "with --skill table, required: the human chair's nick, matched without regard to ASCII case: its posts always pass, and hold the other agents' posts until this participant has posted once")
+	skillFlag := fs.String("skill", string(primer.SkillBuild), "the skill the session was started with: build (two peers, nothing held back), table (a seat at a table, which needs --chair and --cap) or line (a session on a line, which needs --chair and --cap)")
+	chair := fs.String("chair", "", "with --skill table or line, required: the human's nick, matched without regard to ASCII case: its posts always pass and release what the cap held; at a table they also hold the other agents' posts until this participant has posted once")
 	capN := addCapFlag(fs)
 	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -1034,18 +1108,18 @@ func cmdCodex(args []string) error {
 		return cfgErrf("--debounce must not be negative")
 	}
 	// The pump holds what the skill says is held: the gate is installed iff the
-	// skill is table. It is told the chair for that and nothing else; the facts
-	// the session's text carries are the primer's and the channel's.
+	// skill is table or line. It is told the chair for that and nothing else; the
+	// facts the session's text carries are the primer's and the channel's.
 	skill, err := parseSkill(*skillFlag)
 	if err != nil {
 		return err
 	}
-	if skill == primer.SkillTable {
+	if skill == primer.SkillTable || skill == primer.SkillLine {
 		if err := checkChair(fs, *chair, *nick, skill); err != nil {
 			return err
 		}
 	} else if given(fs, "chair") {
-		return cfgErrf("--chair applies to --skill table only: a build has no chair to hold the other seats back for")
+		return cfgErrf("--chair applies to --skill table or line only: a build has no chair to hold the others back for")
 	}
 	gate, err := gateOptions(fs, skill, *chair, *capN)
 	if err != nil {
@@ -1210,6 +1284,7 @@ func cmdPrimer(args []string) error {
 	fs := flag.NewFlagSet("parley primer", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: parley primer --front claude|codex --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir> [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>] [--skill build|table]")
+		fmt.Fprintln(fs.Output(), "       parley primer --front claude|codex --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]")
 		fs.PrintDefaults()
 	}
 	front := fs.String("front", "", "the front the text is for: claude or codex")
@@ -1272,10 +1347,10 @@ func cmdPrimer(args []string) error {
 	if err != nil {
 		return err
 	}
-	// The table form is all values, and the reply file is one of them: the
-	// placeholder is a blank, and the table form has none.
-	if l.skill == primer.SkillTable && *replyFile == "" {
-		return cfgErrf("--reply-file is required with --skill table: the text names the file, and there are no blanks in it")
+	// The table and line forms are all values, and the reply file is one of them:
+	// the placeholder is a blank, and those forms have none.
+	if (l.skill == primer.SkillTable || l.skill == primer.SkillLine) && *replyFile == "" {
+		return cfgErrf("--reply-file is required with --skill %s: the text names the file, and there are no blanks in it", l.skill)
 	}
 	reply := *replyFile
 	if reply == "" {
@@ -1298,6 +1373,7 @@ func cmdPrimer(args []string) error {
 		Chair:        l.chair,
 		Target:       l.target,
 		Worktree:     l.worktree,
+		Cap:          l.cap,
 	})
 	// The claude form is what the channel front sends at connect time, so it is
 	// held to the cap the channel front holds it to: this is the way to find out
@@ -1305,7 +1381,7 @@ func cmdPrimer(args []string) error {
 	// capped.
 	if f == primer.Claude {
 		if n := primer.UTF16Len(text); n > primer.ClaudeInstructionsCap {
-			return overCap(n)
+			return overCap(l.skill, n)
 		}
 	}
 	if _, err := io.WriteString(os.Stdout, text); err != nil {

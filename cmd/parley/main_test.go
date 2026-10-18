@@ -1557,17 +1557,17 @@ func TestTheGateFollowsTheSkill(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"channel: cap with the default skill", append(append([]string(nil), channel...), "--cap", "3"), "--cap applies to --skill table only"},
-		{"channel: cap zero with the default skill", append(append([]string(nil), channel...), "--cap", "0"), "--cap applies to --skill table only"},
-		{"channel: cap with the named build skill", append(append([]string(nil), channel...), "--skill", "build", "--cap", "3"), "--cap applies to --skill table only"},
-		{"codex: cap with the default skill", append(append([]string(nil), codex...), "--cap", "3"), "--cap applies to --skill table only"},
-		{"codex: cap with the named build skill", append(append([]string(nil), codex...), "--skill", "build", "--cap", "0"), "--cap applies to --skill table only"},
-		{"codex: chair with the default skill", append(append([]string(nil), codex...), "--chair", "colin"), "--chair applies to --skill table only"},
-		{"codex: chair and cap with the default skill", append(append([]string(nil), codex...), "--chair", "colin", "--cap", "3"), "applies to --skill table only"},
+		{"channel: cap with the default skill", append(append([]string(nil), channel...), "--cap", "3"), "--cap applies to --skill table or line only"},
+		{"channel: cap zero with the default skill", append(append([]string(nil), channel...), "--cap", "0"), "--cap applies to --skill table or line only"},
+		{"channel: cap with the named build skill", append(append([]string(nil), channel...), "--skill", "build", "--cap", "3"), "--cap applies to --skill table or line only"},
+		{"codex: cap with the default skill", append(append([]string(nil), codex...), "--cap", "3"), "--cap applies to --skill table or line only"},
+		{"codex: cap with the named build skill", append(append([]string(nil), codex...), "--skill", "build", "--cap", "0"), "--cap applies to --skill table or line only"},
+		{"codex: chair with the default skill", append(append([]string(nil), codex...), "--chair", "colin"), "--chair applies to --skill table or line only"},
+		{"codex: chair and cap with the default skill", append(append([]string(nil), codex...), "--chair", "colin", "--cap", "3"), "applies to --skill table or line only"},
 		{"codex: table without a chair", append(append([]string(nil), codex...), "--skill", "table"), "--chair is required with --skill table"},
 		{"codex: table with a chair and no cap", append(append([]string(nil), codex...), "--skill", "table", "--chair", "colin"), "--cap is required with --skill table"},
 		{"codex: unknown skill", append(append([]string(nil), codex...), "--skill", "other"), `unknown skill "other"`},
-		{"codex: the old name of build", append(append([]string(nil), codex...), "--skill", "parley"), `unknown skill "parley": expected "build" or "table"`},
+		{"codex: the old name of build", append(append([]string(nil), codex...), "--skill", "parley"), `unknown skill "parley": expected "build", "table" or "line"`},
 		{"codex: a target", append(append([]string(nil), codex...), "--target", f.target), "flag provided but not defined"},
 		{"codex: a worktree", append(append([]string(nil), codex...), "--worktree", f.worktree), "flag provided but not defined"},
 	} {
@@ -1606,13 +1606,13 @@ func TestWaitTakesNeitherTableFlag(t *testing.T) {
 func TestUsageDocumentsTheTableFlags(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{"--chair <nick> --cap <n>", "tables:", "--cap 0 turns the cap", "in this process's memory only", "wait takes neither flag",
-		"[--skill build|table --chair <nick> --cap <n>]", "it takes no --target or --worktree"} {
+		"[--skill build|table|line --chair <nick> --cap <n>]", "it takes no --target or --worktree"} {
 		if !strings.Contains(top, want) {
 			t.Fatalf("usage does not mention %q:\n%s", want, top)
 		}
 	}
 	// The per-verb help prints the flags with their own descriptions, on stdout.
-	for front, usage := range map[string]string{"channel": "[--skill build|table --cap <n>]", "codex": "[--skill build|table --chair <nick> --cap <n>]"} {
+	for front, usage := range map[string]string{"channel": "[--skill build|table --cap <n>]", "codex": "[--skill build|table|line --chair <nick> --cap <n>]"} {
 		help := runParley(t, "", front, "-h").stdout
 		for _, want := range []string{"-chair", "-cap", "-skill", usage, "memory only"} {
 			if !strings.Contains(help, want) {

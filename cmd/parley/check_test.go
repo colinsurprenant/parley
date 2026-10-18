@@ -302,7 +302,7 @@ func TestChannelCheckValidatesTheFlags(t *testing.T) {
 		{"no stream", f.verb("channel", "--nick", "fable"), "--stream is required"},
 		{"bad scheme", f.verb("channel", "--stream", "ftp:x", "--nick", "fable"), "unknown stream scheme"},
 		{"no chair", []string{"channel", "--stream", "file:" + filepath.Join(root, "c"), "--nick", "fable", "--target", f.target, "--worktree", f.worktree}, "--chair is required with --skill build"},
-		{"cap with the build skill", append(f.verb("channel", "--stream", "file:"+filepath.Join(root, "c"), "--nick", "fable"), "--cap", "3"), "--cap applies to --skill table only"},
+		{"cap with the build skill", append(f.verb("channel", "--stream", "file:"+filepath.Join(root, "c"), "--nick", "fable"), "--cap", "3"), "--cap applies to --skill table or line only"},
 		{"chair is the nick", with("--chair", "FABLE"), "own --nick"},
 		{"nick tables", with("--nick", "Tables"), "cannot be a nick"},
 		{"chair builds", with("--chair", "BUILDS"), "cannot be a nick"},
