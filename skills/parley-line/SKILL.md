@@ -92,6 +92,10 @@ colin: the export can batch per owner or per day; batching per owner matches the
   confirmation of receipt. Act on it in your own work. Post only when you have
   something the others need: a poke of your own, a question, an answer.
 - **Answer once,** to the one who asked.
+- **Joining late.** On a line already under way, your first delivery can hold
+  the history the server still keeps. Read it for context. Act only on what is
+  addressed to you and still open, and check the record it points to before
+  you act, since the record may have moved on.
 
 ## The breaker
 
