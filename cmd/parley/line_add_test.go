@@ -478,7 +478,10 @@ func TestLineAddInterruptedRollsEverythingBack(t *testing.T) {
 	co := b.gitCheckout(t, "co")
 	script := string(mustRead(t, b.codex))
 	hold := "\techo '{\"type\":\"turn.started\"}'\n\tif [ -f \"$d/items\" ]"
-	patched := strings.Replace(script, hold, "\tif [ -f \"$d/hold\" ]; then sleep 3; fi\n"+hold, 1)
+	// The fake marks "announced" once it has printed thread.started, so the
+	// interrupt below lands only after the thread exists: otherwise a slow runner
+	// can signal before the announcement, and there is no thread to delete.
+	patched := strings.Replace(script, hold, "\tif [ -f \"$d/hold\" ]; then : > \"$d/announced\"; sleep 3; fi\n"+hold, 1)
 	if patched == script {
 		t.Fatal("could not patch the fake codex")
 	}
@@ -500,6 +503,16 @@ func TestLineAddInterruptedRollsEverythingBack(t *testing.T) {
 	done := joinCmd(cmd)
 	b.waitCall(t, 1, stderr)
 	waitForStderr(t, stderr, "starting Codex session build")
+	announced := filepath.Join(b.fake, "announced")
+	for deadline := time.Now().Add(childDeadline); ; {
+		if _, err := os.Stat(announced); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the fake codex never announced its thread:\n%s", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
