@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -368,5 +369,151 @@ func TestLineEndClearsALineDirectoryThatHasNoRecord(t *testing.T) {
 			}
 			lineUp(t, b, "demo")
 		})
+	}
+}
+
+// TestLineDropRefusesACheckoutThatWasMovedAndReplacedByALink: the record holds the
+// checkout resolved, so a checkout renamed and replaced by a link to the moved
+// directory (or a link put in a directory above it) is another directory behind
+// the same name. drop and end refuse, naming the checkout and what it resolves to,
+// before anything is removed; --force leaves the session's files where they are.
+func TestLineDropRefusesACheckoutThatWasMovedAndReplacedByALink(t *testing.T) {
+	for _, harness := range []string{"claude", "codex"} {
+		for _, verb := range []string{"drop", "end"} {
+			t.Run(harness+"/"+verb, func(t *testing.T) {
+				b := newLineBench(t)
+				lineUp(t, b, "demo")
+				co := b.gitCheckout(t, "co")
+				b.mustAdd(t, "demo", "worker", harness, co)
+				file := filepath.Join(co, ".mcp.json")
+				if harness == "codex" {
+					file = filepath.Join(co, ".codex", "config.toml")
+				}
+				moved := co + "-moved"
+				if err := os.Rename(co, moved); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(moved, co); err != nil {
+					t.Fatal(err)
+				}
+				movedFile := filepath.Join(moved, strings.TrimPrefix(file, co))
+				before := b.lsnap(t, moved)
+				args := b.ldrop("demo", "worker")
+				if verb == "end" {
+					args = b.lend("demo")
+				}
+				res := b.run(t, args...)
+				if res.code != 1 || !strings.Contains(res.stderr, co) || !strings.Contains(res.stderr, "now resolves to "+moved) || !strings.Contains(res.stderr, "--force") {
+					t.Fatalf("exit %d, want 1 naming the checkout and where it leads, and --force\n%s", res.code, res.stderr)
+				}
+				b.wantLineUnchanged(t, before, moved)
+
+				force := append(args, "--force")
+				res = mustLine(t, b, force...)
+				if !strings.Contains(res.stdout, "Left in place:") || !strings.Contains(res.stdout, "now resolves to "+moved) {
+					t.Errorf("stdout does not say the files are left:\n%s", res.stdout)
+				}
+				if _, err := os.Lstat(movedFile); err != nil {
+					t.Errorf("--force removed %s: %v", movedFile, err)
+				}
+				if verb == "drop" {
+					if rec := b.record(t, "demo"); len(rec.Sessions) != 0 {
+						t.Errorf("sessions left: %+v", rec.Sessions)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestLineDropOfACheckoutThatIsGoneIsNotARefusal: a checkout that is simply gone has no
+// file to remove, and is not a refusal.
+func TestLineDropOfACheckoutThatIsGoneIsNotARefusal(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.plainCheckout(t, "co")
+	b.mustAdd(t, "demo", "worker", "claude", co)
+	if err := os.RemoveAll(co); err != nil {
+		t.Fatal(err)
+	}
+	mustLine(t, b, b.ldrop("demo", "worker")...)
+}
+
+// TestLineAddRollbackLeavesAFileAloneWhenTheCheckoutWasMoved is the same guard in
+// the add's rollback.
+func TestLineAddRollbackLeavesAFileAloneWhenTheCheckoutWasMoved(t *testing.T) {
+	b := newLineBench(t)
+	co := b.plainCheckout(t, "co")
+	file := filepath.Join(co, ".mcp.json")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest := tableDigest([]byte("x"))
+	if err := removeIfDigest(file, digest, co); err != nil {
+		t.Fatalf("a file that is the run's, in place: %v", err)
+	}
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	moved := co + "-moved"
+	if err := os.Rename(co, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, co); err != nil {
+		t.Fatal(err)
+	}
+	var left leftAlone
+	if err := removeIfDigest(file, digest, co); !errors.As(err, &left) || !strings.Contains(string(left), "now resolves to "+moved) {
+		t.Fatalf("removeIfDigest = %v, want it left alone, naming where the checkout leads", err)
+	}
+	if _, err := os.Lstat(filepath.Join(moved, ".mcp.json")); err != nil {
+		t.Errorf("the file was removed: %v", err)
+	}
+}
+
+// TestLineDropKeepsTheExcludeLineForAWorktreeItCannotLookAt: only a not-exist
+// error shows a worktree has no file at the pattern's path; any other leaves the
+// line, and says which worktree and why.
+func TestLineDropKeepsTheExcludeLineForAWorktreeItCannotLookAt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root is not stopped by a directory's mode")
+	}
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitCheckout(t, "co")
+	wt2 := b.worktreeOf(t, co, "co-wt2")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	if err := os.Chmod(wt2, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(wt2, 0o755) })
+	res := mustLine(t, b, b.ldrop("demo", "plan")...)
+	if !strings.Contains(readExcludeForTest(t, co), "/.mcp.json\n") {
+		t.Error("the line was taken out although a worktree could not be looked at")
+	}
+	if !strings.Contains(res.stdout, "the worktree "+wt2+" cannot be looked at") || !strings.Contains(res.stdout, "permission denied") {
+		t.Errorf("stdout does not name the worktree and the error:\n%s", res.stdout)
+	}
+}
+
+// TestLineAddCodexInANonGitCheckoutSkipsCodexsGitCheck: codex exec refuses a
+// directory that is no git checkout unless told not to look, and a line accepts
+// one. Only a line session's turn carries the flag.
+func TestLineAddCodexInANonGitCheckoutSkipsCodexsGitCheck(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.plainCheckout(t, "plain")
+	mustLine(t, b, b.ladd("demo", "build", "codex", co)...)
+	argv := b.call(t, 1)
+	if len(argv) < 4 || argv[0] != "exec" || argv[1] != "--json" || argv[2] != "--skip-git-repo-check" || argv[3] != "-C" || argv[4] != co {
+		t.Fatalf("codex argv %q, want exec --json --skip-git-repo-check -C %s ...", argv, co)
+	}
+	// A table's seat keeps its argv.
+	tb := newTableBench(t)
+	mustTable(t, tb, tb.newArgs("t1", []string{"codex-a=codex"})...)
+	for _, a := range tb.call(t, 1) {
+		if a == "--skip-git-repo-check" {
+			t.Errorf("table new passes --skip-git-repo-check: %q", tb.call(t, 1))
+		}
 	}
 }

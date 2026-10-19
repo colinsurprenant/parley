@@ -201,6 +201,10 @@ type codexSession struct {
 	// a build's peer runs in a worktree parley made for it, a line's session in the
 	// user's own checkout.
 	sandbox string
+	// skipGitRepoCheck passes --skip-git-repo-check: a line session's checkout need
+	// not be in git, and codex exec refuses a directory that is not unless told not
+	// to look.
+	skipGitRepoCheck bool
 }
 
 // startCodexSession starts a session with its primer as the first prompt, reads
@@ -214,7 +218,11 @@ func startCodexSession(ctx context.Context, env setupEnv, c codexSession) (threa
 	if sandbox == "" {
 		sandbox = "workspace-write"
 	}
-	args := []string{"exec", "--json", "-C", c.dir, "-s", sandbox, "-c", "sandbox_workspace_write.network_access=false"}
+	args := []string{"exec", "--json"}
+	if c.skipGitRepoCheck {
+		args = append(args, "--skip-git-repo-check")
+	}
+	args = append(args, "-C", c.dir, "-s", sandbox, "-c", "sandbox_workspace_write.network_access=false")
 	if c.model != "" {
 		args = append(args, "-m", c.model)
 	}

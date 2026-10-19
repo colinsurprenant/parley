@@ -122,15 +122,53 @@ func appendExcludeLine(path, line string) (res excludeAdd, note string, err erro
 	if err != nil {
 		return excludeAdd{}, "", fmt.Errorf("open %s to append %s: %w", path, line, err)
 	}
-	if _, err := f.WriteString(text); err != nil {
-		f.Close()
-		return excludeAdd{}, "", fmt.Errorf("append to %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return excludeAdd{}, "", fmt.Errorf("close %s: %w", path, err)
+	if err := appendText(f, path, text, res.made); err != nil {
+		return excludeAdd{}, "", err
 	}
 	res.added = true
 	return res, "", nil
+}
+
+// appendFile is the open exclude file appendText writes to; a test supplies one
+// whose write or close fails.
+type appendFile interface {
+	io.WriteCloser
+	Stat() (fs.FileInfo, error)
+}
+
+// appendText appends text to f, the exclude file at path just opened for appending.
+// If the write or the close fails it undoes exactly what it did, so that the file is
+// as it was and nothing else of it is touched: a file it created (made) is removed,
+// and any other is cut back to the size it had when it was opened.
+func appendText(f appendFile, path, text string, made bool) error {
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("look at %s: %w", path, err)
+	}
+	before := fi.Size()
+	fail := func(cause error) error {
+		var uerr error
+		if made {
+			if uerr = os.Remove(path); errors.Is(uerr, fs.ErrNotExist) {
+				uerr = nil
+			}
+		} else {
+			uerr = os.Truncate(path, before)
+		}
+		if uerr != nil {
+			return fmt.Errorf("%w (and the partial change to %s could not be undone: %v)", cause, path, uerr)
+		}
+		return cause
+	}
+	if _, err := f.Write([]byte(text)); err != nil {
+		f.Close()
+		return fail(fmt.Errorf("append to %s: %w", path, err))
+	}
+	if err := f.Close(); err != nil {
+		return fail(fmt.Errorf("close %s: %w", path, err))
+	}
+	return nil
 }
 
 // removeExcludeLine takes the first line of the exclude file at path that is
@@ -225,23 +263,27 @@ func worktreeRoots(ctx context.Context, checkout, excludeFile string) (roots []s
 	return roots, len(roots) > 0
 }
 
-// excludeLineStillNeeded reports whether a file exists at the pattern's path, the
-// exclude line without its leading slash, at the root of any worktree of the
-// repository: the exclude file is shared by all of them, so the line a session of
-// this line added hides the launch files of the others, this line's or another
-// line's or the user's own. where names the worktree and the file that does; when
-// git cannot list the worktrees it is "" and needed is true, since nothing then
-// shows the line is not wanted.
-func excludeLineStillNeeded(ctx context.Context, checkout, excludeFile, line string) (needed bool, where string) {
+// excludeLineStillNeeded reports whether the exclude line should stay: a file
+// exists at the pattern's path, the line without its leading slash, at the root
+// of any worktree of the repository. The exclude file is shared by all of them, so
+// the line a session of this line added hides the launch files of the others, this
+// line's or another line's or the user's own. why says what keeps it: the file, a
+// worktree that could not be looked at (only a not-exist error shows a worktree has
+// no such file; any other leaves the line kept, naming the error), or git, which
+// could not list the worktrees.
+func excludeLineStillNeeded(ctx context.Context, checkout, excludeFile, line string) (needed bool, why string) {
 	roots, ok := worktreeRoots(ctx, checkout, excludeFile)
 	if !ok {
-		return true, ""
+		return true, "git cannot list the worktrees of the repository, so nothing shows the line is not needed"
 	}
 	rel := strings.TrimPrefix(line, "/")
 	for _, root := range roots {
 		path := filepath.Join(root, filepath.FromSlash(rel))
-		if _, err := os.Lstat(path); err == nil {
-			return true, path
+		switch _, err := os.Lstat(path); {
+		case err == nil:
+			return true, "a file at " + path + " is kept out of git status by it"
+		case !errors.Is(err, fs.ErrNotExist):
+			return true, fmt.Sprintf("the worktree %s cannot be looked at (%v), so nothing shows the line is not needed", root, err)
 		}
 	}
 	return false, ""

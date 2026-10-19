@@ -300,6 +300,23 @@ func claimSession(base string, rec lineRecord, s lineSession, remaining []lineSe
 	return c, nil
 }
 
+// checkoutMoved says, in words that complete "it ...", what a recorded checkout
+// now resolves to when that is not the path recorded, which was resolved when the
+// session was added; "" when it still is, and when there is nothing at the path
+// any more, since nothing is then there to remove.
+func checkoutMoved(checkout string) string {
+	now, err := filepath.EvalSymlinks(checkout)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return ""
+	case err != nil:
+		return fmt.Sprintf("its checkout %s cannot be resolved (%v)", checkout, err)
+	case now != filepath.Clean(checkout):
+		return fmt.Sprintf("its checkout %s now resolves to %s: a directory on the way, or the checkout, was replaced by a link or moved, so what is behind the recorded path is not shown to be the line's", checkout, now)
+	}
+	return ""
+}
+
 // sharingOf are the sessions among of that use the launch file s does.
 func sharingOf(of []lineSession, s lineSession) []lineSession {
 	var out []lineSession
@@ -316,6 +333,13 @@ func sharingOf(of []lineSession, s lineSession) []lineSession {
 // digest in a directory that is a real one, and otherwise a problem, in words
 // that complete "it ...", for the caller to refuse or to leave the file for.
 func claimLaunchFile(s lineSession, f lineFile) (act fileAction, problem string, err error) {
+	// The record holds the checkout resolved, so a path above it that has since
+	// become a link, or a checkout that was moved and replaced, is a different
+	// directory behind the same name: nothing at the recorded path is shown to be
+	// the line's.
+	if moved := checkoutMoved(s.Checkout); moved != "" {
+		return 0, moved, nil
+	}
 	dir := filepath.Dir(f.Path)
 	if s.Harness == harnessCodex {
 		switch fi, lerr := os.Lstat(dir); {
@@ -435,7 +459,11 @@ func (t *teardown) drop(c sessionClaim) error {
 func (t *teardown) removeLaunchFile(s lineSession, f lineFile, act fileAction) error {
 	if act == fileRemove {
 		// Looked at again, as close to the removal as can be: the file is only the
-		// line's if it still hashes to the digest.
+		// line's if the checkout is still where it was recorded and the file still
+		// hashes to the digest.
+		if moved := checkoutMoved(s.Checkout); moved != "" {
+			return fmt.Errorf("will not remove %s: %s", f.Path, moved)
+		}
 		if got, err := fileDigest(f.Path); errors.Is(err, fs.ErrNotExist) {
 			act = fileGone
 		} else if err != nil || got != f.SHA256 {
@@ -469,16 +497,12 @@ func (t *teardown) removeLaunchFile(s lineSession, f lineFile, act fileAction) e
 		// line hides the launch files of the others, and goes only when no worktree
 		// has a file at its path any more, this line's, another line's or the user's.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		needed, where := excludeLineStillNeeded(ctx, s.Checkout, f.ExcludeFile, line)
+		needed, why := excludeLineStillNeeded(ctx, s.Checkout, f.ExcludeFile, line)
 		cancel()
 		if needed {
 			// A whole line takes its other sessions next, and the last of them to
 			// go is the one to take the line out; nothing is left to say then.
 			if !(t.whole && t.otherOwner(s, f.ExcludeFile, line)) {
-				why := "git cannot list the worktrees of the repository, so nothing shows the line is not needed"
-				if where != "" {
-					why = "a file at " + where + " is kept out of git status by it"
-				}
 				t.left = append(t.left, fmt.Sprintf("the line %s in %s: %s, so it stays", line, f.ExcludeFile, why))
 			}
 			return nil

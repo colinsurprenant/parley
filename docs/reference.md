@@ -661,7 +661,8 @@ exit 2.
   `.parley-line` marker holding the id and the nick; and a thread started as `table
   new` starts a seat's, by `codex exec --json -C <checkout>` on the line's primer,
   but in a read-only sandbox (`-s read-only`), since the checkout is the user's own
-  and not a worktree parley made, stdin closed, network off for the turn, `-m
+  and not a worktree parley made, with `--skip-git-repo-check`, since it need not
+  be a git checkout, stdin closed, network off for the turn, `-m
   <model>` if given, a five-minute limit and a turn that must have completed, the
   thread recorded in `codex-thread`.
   Files are created with no overwrite and never through a link. When the checkout
@@ -698,7 +699,10 @@ exit 2.
   and the last session dropped takes it out. An exclude file that has become a link
   is not written through; the line stays, and is said to. A launch file that is not
   that is refused, exit 1, naming it; `--force` leaves it and its exclude line in
-  place instead, and says so. The session is then removed from the record, and a
+  place instead, and says so; so is a recorded checkout that now resolves to
+  another path (it was moved and replaced by a link, or a directory above it
+  became one), checked before any file is judged and again before it is removed.
+  The session is then removed from the record, and a
   `codex delete <thread>` line is printed for a Codex session and never run.
 - `line end <id> [--force] [--state-dir <dir>]` takes the id's lock and every
   session's nick lock, refusing (exit 1) if any is held, judges every session by

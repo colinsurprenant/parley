@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -388,4 +389,144 @@ func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 	if res := runParley(t, "", "line", "frob"); res.code != 2 || !strings.Contains(res.stderr, "unknown line verb") {
 		t.Errorf("parley line frob exited %d: %s", res.code, res.stderr)
 	}
+}
+
+// failingFile is an open file whose write, after a number of bytes, or close
+// fails, standing in for a full disk.
+type failingFile struct {
+	*os.File
+	failWrite, failClose bool
+	partial              int
+}
+
+var errInjected = errors.New("injected failure")
+
+func (f *failingFile) Write(p []byte) (int, error) {
+	if !f.failWrite {
+		return f.File.Write(p)
+	}
+	n := min(f.partial, len(p))
+	f.File.Write(p[:n])
+	return n, errInjected
+}
+
+func (f *failingFile) Close() error {
+	err := f.File.Close()
+	if f.failClose {
+		return errInjected
+	}
+	return err
+}
+
+// TestWriteAndCloseRemovesTheFileItMadeWhenTheWriteFails: no caller is left with
+// an empty or partial launch file; the file removed is the one created a moment
+// before, and a file that was already there is never touched.
+func TestWriteAndCloseRemovesTheFileItMadeWhenTheWriteFails(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fail func(f *failingFile)
+	}{
+		{"the write fails at once", func(f *failingFile) { f.failWrite = true }},
+		{"the write fails partway", func(f *failingFile) { f.failWrite, f.partial = true, 3 }},
+		{"the close fails", func(f *failingFile) { f.failClose = true }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "made")
+			real, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &failingFile{File: real}
+			c.fail(f)
+			err = writeAndClose(f, path, []byte("0123456789"))
+			if !errors.Is(err, errInjected) {
+				t.Fatalf("writeAndClose = %v, want the injected failure", err)
+			}
+			if _, err := os.Lstat(path); err == nil {
+				t.Error("the partial file is still there")
+			}
+		})
+	}
+	t.Run("it succeeds", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "made")
+		if err := writeNewFile(path, []byte("whole"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(mustRead(t, path)); got != "whole" {
+			t.Errorf("file = %q", got)
+		}
+	})
+	t.Run("a file that is there is refused and kept", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "mine")
+		if err := os.WriteFile(path, []byte("mine"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeNewFile(path, []byte("other"), 0o644); err == nil {
+			t.Fatal("writeNewFile over an existing file succeeded")
+		}
+		if got := string(mustRead(t, path)); got != "mine" {
+			t.Errorf("file = %q, want it untouched", got)
+		}
+	})
+}
+
+// TestAppendTextUndoesExactlyWhatItDidWhenTheWriteFails: a file it created is
+// removed, and any other is cut back to the size it had, every other byte kept.
+func TestAppendTextUndoesExactlyWhatItDidWhenTheWriteFails(t *testing.T) {
+	const original = "# mine\n*.swp\n"
+	for _, c := range []struct {
+		name string
+		fail func(f *failingFile)
+	}{
+		{"the write fails at once", func(f *failingFile) { f.failWrite = true }},
+		{"the write fails partway", func(f *failingFile) { f.failWrite, f.partial = true, 4 }},
+		{"the close fails", func(f *failingFile) { f.failClose = true }},
+	} {
+		t.Run("an existing file/"+c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "exclude")
+			if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			real, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &failingFile{File: real}
+			c.fail(f)
+			if err := appendText(f, path, "/.mcp.json\n", false); !errors.Is(err, errInjected) {
+				t.Fatalf("appendText = %v, want the injected failure", err)
+			}
+			if got := string(mustRead(t, path)); got != original {
+				t.Errorf("file = %q, want it as it was: %q", got, original)
+			}
+		})
+		t.Run("a file it made/"+c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "exclude")
+			real, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &failingFile{File: real}
+			c.fail(f)
+			if err := appendText(f, path, "/.mcp.json\n", true); !errors.Is(err, errInjected) {
+				t.Fatalf("appendText = %v, want the injected failure", err)
+			}
+			if _, err := os.Lstat(path); err == nil {
+				t.Error("the file the append created is still there")
+			}
+		})
+	}
+	t.Run("it succeeds", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "exclude")
+		real, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := appendText(real, path, "/x\n", true); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(mustRead(t, path)); got != "/x\n" {
+			t.Errorf("file = %q", got)
+		}
+	})
 }
