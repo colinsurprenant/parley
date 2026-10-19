@@ -83,8 +83,8 @@ checkout, or whose HEAD already tracks a `.mcp.json` of any kind, a
 `.codex/config.toml`, a `.parley-build`, or a `.codex` that is not a directory;
 a chair or peer nick that is not a valid nick, a peer that repeats the other's or
 the chair's (nicks match without regard to ASCII case, as the server's do), and
-`tables` and `builds`, the directories the state base keeps beside the per-nick
-ones, and `.ids`, which no nick can be (a nick holds no `.`); a model that is
+`tables`, `builds` and `lines`, the directories the state base keeps beside the
+per-nick ones, and `.ids`, which no nick can be (a nick holds no `.`); a model that is
 over the bound above or holds a character outside the set; a state directory inside the
 target, which would put the worktrees inside it, or a `$TMPDIR` that holds the
 reply directory inside the target or a worktree; a `$` in the target, a worktree
@@ -110,14 +110,15 @@ so far has made no file there.
 
 **The id's lock, and what the base and the target hold for the id.** The first
 look at the state base is the id's lock, `<base>/.ids/<id>.lock`, which `table
-new`, `table end`, `build new` and `build end` all take, for the whole of their
-run, before anything else of theirs (see "One lock per id" below). A `build new`
+new`, `table end`, `build new`, `build end` and the `line` verbs all take, for
+the whole of their run, before anything else of theirs (see "One lock per id" below). A `build new`
 that finds it held refuses at once (exit 1, nothing changed), naming the id and
-the file: another table or build command for this id is running, and it is run
+the file: another table, build or line command for this id is running, and it is run
 again once that one is done. Under the lock it checks what the id may not
 already be: a build under `<base>/builds/<id>/` ("build end takes it down"), a
-table under `<base>/tables/<id>/` (the id is the channel and a directory name,
-and `table new` refuses an id that is live as a build, in turn); a peer that
+table under `<base>/tables/<id>/` or a line under `<base>/lines/<id>/` (the id is
+the channel and a directory name, and `table new` refuses an id that is live as a
+build, in turn); a peer that
 already has state for this stream under `<base>/<nick>/<stream key>/` (`<nick>`
 with its ASCII capitals folded to lower case, so `Claude-A` and `claude-a` are
 one directory), because a
@@ -206,18 +207,20 @@ same.
 
 #### One lock per id
 
-The id is one namespace for a table and a build: it is the channel `#<id>`, a
-directory under `<base>/tables/` or `<base>/builds/`, and a branch prefix. Nothing
+The id is one namespace for a table, a build and a line: it is the channel
+`#<id>`, a directory under `<base>/tables/`, `<base>/builds/` or `<base>/lines/`,
+and, for a build, a branch prefix. Nothing
 about the nicks tells a `table new` and a `build new` for one id apart when their
 nicks are disjoint, and nothing else orders two `build end` and a `build new`.
-So `table new`, `table end`, `build new` and `build end` each take
+So `table new`, `table end`, `build new`, `build end` and the `line` verbs each
+take
 `<base>/.ids/<id>.lock` first (the same non-blocking flock a nick's lock is,
 in a directory no nick can be: a nick holds no `.`) and hold it to the end of
 the run, rollback and the report included. The checks of what the base holds for
 the id are made only under it, and an end reads its record only under it. A
 command that finds the lock held **refuses at once and does not wait**, exit 1,
-naming the id and the file, and changes nothing; the lock is another table or
-build command for the id that is still running, and this one is run again after
+naming the id and the file, and changes nothing; the lock is another table,
+build or line command for the id that is still running, and this one is run again after
 it. The lock file is outside the table's and the build's own directory, which an
 end removes, and stays, released, as a nick's does: no parley code unlinks a
 lock file, because a lock is held on the file and not on its path. An end for an

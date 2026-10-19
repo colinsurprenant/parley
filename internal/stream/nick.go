@@ -11,12 +11,12 @@ import (
 const MaxNick = 64
 
 // ReservedNicks are the names no nick may take, in any case: the directories the
-// state base keeps the tables and the builds in, beside the per-nick ones. This
-// package cannot import internal/state, which imports it in its tests, so the
-// names are spelled here and state's tests hold them equal to state.TablesDir
-// and state.BuildsDir. A nick of either name would put its lock, cursor and
-// credentials inside that directory.
-var ReservedNicks = [...]string{"tables", "builds"}
+// state base keeps the tables, the builds and the lines in, beside the per-nick
+// ones. This package cannot import internal/state, which imports it in its
+// tests, so the names are spelled here and state's tests hold them equal to
+// state.TablesDir, state.BuildsDir and state.LinesDir. A nick of any of the
+// three names would put its lock, cursor and credentials inside that directory.
+var ReservedNicks = [...]string{"tables", "builds", "lines"}
 
 // NickRune reports whether r may appear in a nick: letters, digits, '_' and
 // '-'. Nothing else — no whitespace or control character to break the peer
@@ -36,8 +36,8 @@ func NickRune(r rune) bool {
 // since it knows where it came from.
 //
 // A nick is one to MaxNick bytes of NickRune runes — letters, digits, '_' and
-// '-' — and nothing else, and it is not "tables" or "builds" in any case, the
-// two directories the state base keeps beside the per-nick ones. It is one
+// '-' — and nothing else, and it is not "tables", "builds" or "lines" in any
+// case, the three directories the state base keeps beside the per-nick ones. It is one
 // grammar for every adapter rather than a widest-common one with exceptions: an
 // IRC server refuses a nick holding a '.' (ergo answers 432 Erroneous nickname),
 // so a nick a file: stream carried would be a nick an irc: stream could not, and

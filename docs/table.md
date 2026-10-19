@@ -59,8 +59,8 @@ a `.mcp.json` of any kind, a `.codex/config.toml`, a `.parley-table`, or a
 which `table new` writes into the worktree;
 a chair or seat nick that is not a valid nick, a seat that repeats another's or
 the chair's (nicks match without regard to ASCII case, as the server's do), and
-`tables` and `builds`, the directories the state base keeps beside the per-nick
-ones; a
+`tables`, `builds` and `lines`, the directories the state base keeps beside the
+per-nick ones; a
 `--worktree` that is not absolute, exists already, or is inside the target (which
 includes the target itself); a
 `$` in the target, the worktree or the binary's path, because Claude Code
@@ -85,14 +85,15 @@ so far has made no file there.
 
 **The id's lock, and what the base holds for the id.** The first look at the
 state base is the id's lock, `<base>/.ids/<id>.lock`, which `table new`, `table
-end`, `build new` and `build end` all take, for the whole of their run, before
-anything else of theirs: the id is one namespace for a table and a build (the
-channel `#<id>` and a directory name), and nothing else orders two commands on
+end`, `build new`, `build end` and the `line` verbs all take, for the whole of
+their run, before anything else of theirs: the id is one namespace for a table,
+a build and a line (the channel `#<id>` and a directory name), and nothing else orders two commands on
 it. A `table new` that finds the lock held refuses at once, and does not wait
-(exit 1, nothing changed), naming the id and the file: another table or build
-command for this id is still running, and this one is run again after it. Under
+(exit 1, nothing changed), naming the id and the file: another table, build or
+line command for this id is still running, and this one is run again after it. Under
 the lock it refuses an id that already has a table under `<base>/tables/<id>/`
-("table end takes it down") or a build under `<base>/builds/<id>/` (exit 2,
+("table end takes it down"), a build under `<base>/builds/<id>/` or a line
+under `<base>/lines/<id>/` (exit 2,
 nothing changed but the lock file). The lock file is in `<base>/.ids/`, which no
 nick can be (a nick holds no `.`), and outside the table's own directory, which
 `table end` removes. It stays, released, as the seats' lock files do, for the same

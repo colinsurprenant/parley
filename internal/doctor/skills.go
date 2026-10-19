@@ -20,11 +20,12 @@ var (
 	skillNames      = []string{"parley-build", "parley-table", "parley-line"}
 )
 
-// tableSkillName and buildSkillName are the one skill a table's seats, or a
-// build's peers, are started on.
+// tableSkillName, buildSkillName and lineSkillName are the one skill a table's
+// seats, a build's peers, or a line's sessions are started on.
 const (
 	tableSkillName = "parley-table"
 	buildSkillName = "parley-build"
+	lineSkillName  = "parley-line"
 )
 
 // checkSkills checks each link install.sh makes: it exists, it resolves, and
@@ -58,6 +59,12 @@ func checkTableSkill(claude, codex bool) []Result {
 // under the root each harness reads, and not the parley-table one.
 func checkBuildSkill(claude, codex bool) []Result {
 	return checkHarnessSkill(buildSkillName, claude, codex)
+}
+
+// checkLineSkill is checkTableSkill for a line's sessions: the parley-line link
+// under the root each harness reads, and neither of the others.
+func checkLineSkill(claude, codex bool) []Result {
+	return checkHarnessSkill(lineSkillName, claude, codex)
 }
 
 func checkHarnessSkill(name string, claude, codex bool) []Result {

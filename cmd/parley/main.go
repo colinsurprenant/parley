@@ -65,6 +65,8 @@ func run(args []string) int {
 		err = cmdTable(args[1:])
 	case "build":
 		err = cmdBuild(args[1:])
+	case "line":
+		err = cmdLine(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "parley: unknown verb %q\n\n", args[0])
 		usage(os.Stderr)
@@ -112,6 +114,10 @@ usage:
   parley build   new <id> --target <repo> --chair <nick> --peer <nick>=<claude|codex>[:<model>] --peer <nick>=<claude|codex>[:<model>]
                  [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--writable-root <abs dir>]...
   parley build   end <id> [--force] [--state-dir <dir>]
+  parley line    new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]
+  parley line    add <id> --nick <nick> --harness claude|codex [--model <model>] --checkout <absolute dir> [--state-dir <dir>]
+  parley line    drop <id> <nick> [--force] [--state-dir <dir>]
+  parley line    end <id> [--force] [--state-dir <dir>]
   parley version
 
 verbs:
@@ -215,7 +221,7 @@ verbs:
            HEAD tracks no .mcp.json of any kind, no .codex that is not a
            directory, no .codex/config.toml and no .parley-table; the seats'
            nicks are valid, distinct from each other and from the chair, none
-           of them "tables" or "builds"; no opencode seats yet; a model
+           of them "tables" or "builds", nor "lines"; no opencode seats yet; a model
            of at most 128 bytes of letters, digits and . _ - : / @ [ ] + ;
            no '$' in the target, the worktree or
            this binary's path; no whitespace in the state directory, which
@@ -228,8 +234,8 @@ verbs:
            the id's lock (<state base>/.ids/<id>.lock, which table new and end
            and build new and end all take, first, and hold to the end of the
            run): a second command for the id refuses at once, exit 1, and does
-           not wait. Under it an id that is live as a table or a build is
-           refused, exit 2. Then it makes a detached
+           not wait. Under it an id that is live as a table, a build or a line
+           is refused, exit 2. Then it makes a detached
            worktree of the target's HEAD at --worktree (default <state
            base>/tables/<id>/worktree); a .parley-table in it, for every
            table, holding the table's id on its first line and the seats'
@@ -305,7 +311,7 @@ verbs:
            and no .parley-build; exactly two --peer <nick>=<claude|codex>[:<model>]
            (a third is refused, the protocol being two-peer), their nicks valid,
            distinct from each other and the chair,
-           none of them "tables" or "builds", each model at most 128 bytes of
+           none of them "tables" or "builds", nor "lines", each model at most 128 bytes of
            letters, digits and . _ - : / @ [ ] + ; each --writable-root
            absolute, an existing directory, resolved to its physical path; and
            parley doctor's static checks, with the parley-build skill under the
@@ -313,7 +319,7 @@ verbs:
            base>/.ids/<id>.lock, which table new and end and build new and end
            all take, first, and hold to the end of the run; a second command for
            the id refuses at once, exit 1, and does not wait), and under it
-           refuses an id that is live as a table or a build, a branch
+           refuses an id that is live as a table, a build or a line, a branch
            parley/<id>/<nick> that exists, and a peer with state on this
            stream, since a stale cursor ends a run at its first delivery with a
            history gap (exit 2). Then, for each peer: a branch parley/<id>/<nick>
@@ -357,6 +363,96 @@ verbs:
            directory and the build directory, never a branch or a Codex
            session: it prints the kept branches and the git branch -D line for
            each, and a codex delete line for each Codex peer
+  line     set up a line, put sessions on it, take them off and take it down.
+           A line is a few long-running sessions, each in a checkout of its
+           own, and one human on one channel, under --skill line: no seal, a
+           rate breaker, no target and no worktree. Its record is
+           lines/<id>/line.json under the state base. new <id> checks its flags
+           (the id as a table's, one namespace with the tables and the builds;
+           --chair a valid nick; --cap required, 0 for no breaker; --window
+           above zero, 10m by default; --server a loopback IP:port; --codex-bin,
+           when given, resolved and recorded for the Codex sessions added later)
+           and runs parley doctor's static checks for the server and, when
+           nothing answers there, ergo, a FAIL ending it before any change. It
+           takes the id's lock (<state base>/.ids/<id>.lock, which every table,
+           build and line verb takes first and holds to the end: a second
+           command for the id refuses at once, exit 1, and does not wait),
+           refuses an id that is live as a table, a build or a line (exit 2),
+           and writes the record with no sessions, taking it down again if a
+           step fails or it is interrupted. It prints the remaining steps: the
+           server when nothing answers, the chair's join and NickServ steps, and
+           that each session is added with line add. add <id> adds one session
+           and inherits the chair, cap, window, server and state directory from
+           the record (--state-dir only finds the record). It refuses, exit 2
+           and nothing changed: an unknown line; a nick that is invalid,
+           reserved (tables, builds, lines), the chair's or already in the line,
+           without regard to ASCII case; a model over 128 bytes or outside
+           letters, digits and . _ - : / @ [ ] + ; a --checkout that is not an
+           absolute existing directory, holds or resolves to a path that holds
+           a '$' or a control character, or is not UTF-8 (as is the binary,
+           state and temp path; the checkout is resolved, links and all, and
+           the resolved path is the one recorded and printed); a state directory
+           inside the checkout; a Claude session's .mcp.json that is in the
+           checkout and is not the one this line wrote (the record holds the
+           sha256 of its exact bytes), and a Codex session's
+           .codex/config.toml likewise, or a .codex that is not a real
+           directory; a Claude launch whose instructions are over
+           Claude Code's cap, measured in process as channel --check does; a Codex
+           nick that already has a thread record for the stream. Exit 1, nothing
+           changed: a machine on which doctor's static checks fail, the
+           parley-line skill missing under the root the harness reads among them,
+           and a nick whose lock a running session or pump holds. A Claude session
+           gets a .mcp.json in its checkout with one server, parley, whose args
+           are the channel's launch flags with --nick ${PARLEY_NICK}, --skill
+           line, the chair, --cap and --window; a second Claude session in the
+           same checkout shares the file. A Codex session gets
+           .codex/config.toml (workspace-write, on-request and network_access =
+           true, which turns network on for Codex in that checkout, behind a
+           first comment line naming the line and carrying a nonce, so that its
+           digest proves the line wrote it), a reply
+           directory parley-line-<id>-* under $TMPDIR at 0700 with a marker naming
+           the line and the nick, and a thread started by codex exec --json on
+           the line's primer in a read-only sandbox (-s read-only, the checkout
+           being the user's own) with stdin closed, network off for that turn,
+           -m when a model is given and a 5-minute limit, recorded in the
+           codex-thread file --thread auto reads. Files are created with no
+           overwrite and never through a link. When the checkout is the root of
+           a git checkout, /.mcp.json or /.codex/config.toml is appended to the
+           file git rev-parse --git-path info/exclude names (created if the
+           repository has none), unless the line is there already; the record
+           says whether the line added it, and a line put there by another
+           session of the line, as in another worktree of the repository, is
+           taken as the line's own. A failure
+           or an interrupt takes down what the run made, a started Codex thread
+           (codex delete --force) included. The output is what is left for that
+           session: for Claude the cd and the launch line (plus --model), the
+           same plus --resume <session-id> for a conversation under way,
+           /parley-line, the /mcp and Channels-notice checks; for Codex the
+           network notice, the pump line with --thread auto, the codex resume
+           line, $parley-line and the /status check. drop <id> <nick> takes the
+           id's lock and the session's nick lock without waiting and refuses,
+           exit 1, while either is held. It removes the session's thread record
+           (only if it holds the recorded thread), its reply directory (only if
+           directly in $TMPDIR, named for the line, with the marker), and, when
+           no other session of the line uses that checkout with that harness,
+           the launch file (only if its bytes still hash to the recorded digest
+           and its directory is not a link; otherwise it refuses, exit 1,
+           naming it, and --force leaves the file and its exclude line in place
+           and says so) and the exclude line (only if the line added it, that
+           exact line and nothing else, the rest of the file byte for byte but
+           for a final newline add supplied to end a last line, which stays when
+           another line was appended after it; a file add created goes when it
+           is empty; and only when no worktree of the repository has a file at
+           its path any more, else it stays and the output says which file needs
+           it; an exclude file that is a link is left alone and said). It
+           prints a codex delete line for a
+           Codex session and never runs one. end <id> drops every session on
+           the same rules with every lock taken and every claim judged first,
+           then removes the line's directory; a failure partway leaves
+           line.json describing what is still there, so running it again
+           finishes. A line directory with no line.json and nothing else in it,
+           left by a line new that was killed, is removed by end, and line new
+           for that id says to run it
   version  print one line, "parley <version> rev <revision> <go version>", from
            the build information the Go toolchain stamped into the binary: the
            module version ((devel) for a build made from a checkout), the first
@@ -456,9 +552,10 @@ state:
   the thread's UUID.
   Tables live in <dir>/tables/<id>/, beside the per-nick directories, which is
   why no participant is called tables; builds live in <dir>/builds/<id>/ the same
-  way, and no participant is called builds. A table or a build id has a lock of
-  its own, <dir>/.ids/<id>.lock, that table new and end and build new and end
-  hold while they run; no nick can be .ids, a nick holding no '.'.
+  way, and no participant is called builds, and lines in <dir>/lines/<id>/, and no
+  participant is called lines. A table, build or line id has a lock of its own,
+  <dir>/.ids/<id>.lock, that table new and end, build new and end and every line
+  verb hold while they run; no nick can be .ids, a nick holding no '.'.
   An irc: stream also keeps the participant's own account password there, in
   irc/<host>_<port>/password, which parley generates and nobody types
 
@@ -1143,7 +1240,7 @@ func cmdCodex(args []string) error {
 	}
 	spec := fs.String("stream", "", "stream to read, e.g. file:/path/to/chat.ndjson")
 	nick := fs.String("nick", "", "this participant's nick")
-	thread := fs.String("thread", "", "the live Codex thread to deliver into: a session UUID or an exact session name, or auto for the thread id recorded for this nick and stream by parley table new or parley build new; auto is reserved, so a session literally named auto must be passed by its UUID")
+	thread := fs.String("thread", "", "the live Codex thread to deliver into: a session UUID or an exact session name, or auto for the thread id recorded for this nick and stream by parley table new, parley build new or parley line add; auto is reserved, so a session literally named auto must be passed by its UUID")
 	debounce := fs.Duration("debounce", 250*time.Millisecond, "quiet window that joins a burst into one delivery")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ (default $XDG_STATE_HOME/parley)")
 	codexBin := fs.String("codex-bin", codex.DefaultBin, "the codex CLI to run, resolved on PATH unless it holds a separator")
@@ -1189,7 +1286,7 @@ func cmdCodex(args []string) error {
 	// record the seat's start wrote, and only when asked for by name.
 	if strings.TrimSpace(*thread) == "" {
 		if skill == primer.SkillLine {
-			return cfgErrf("--thread is required: the Codex session UUID or exact session name to deliver into (a line has no thread record, so the pump takes the thread id)")
+			return cfgErrf("--thread is required: the Codex session UUID or exact session name to deliver into, or auto for the thread recorded by parley line add")
 		}
 		return cfgErrf("--thread is required: the Codex session UUID or exact session name to deliver into, or auto for the thread recorded by parley table new or parley build new")
 	}
@@ -1290,11 +1387,12 @@ func recordedThread(stateDir, nick, spec string, skill primer.Skill) (id, source
 		return "", "", cfgErrf("--thread %s: %v: pass --thread <id> instead", threadAuto, err)
 	}
 	if id == "" {
-		// parley table new and parley build new make the record; a line is set up by
-		// hand, so the advice to run one of them would send its user to a verb
-		// that cannot start their session.
+		// parley table new and parley build new make the record for a table's seat
+		// and a build's peer, and parley line add for a line's session; the advice
+		// to run one of the others would send its user to a verb that cannot start
+		// their session.
 		if skill == primer.SkillLine {
-			return "", "", cfgErrf("--thread %s: a line has no thread record (nothing recorded for nick %q on %s, looked for %s): the pump takes the thread id with --thread <id>", threadAuto, nick, canonical, rec.Path())
+			return "", "", cfgErrf("--thread %s: no Codex thread is recorded for nick %q on %s (looked for %s): run `parley line add` to start the session, or pass --thread <id> for one you started by hand", threadAuto, nick, canonical, rec.Path())
 		}
 		return "", "", cfgErrf("--thread %s: no Codex thread is recorded for nick %q on %s (looked for %s): run `parley table new` or `parley build new` to start the seat, or pass --thread <id>", threadAuto, nick, canonical, rec.Path())
 	}

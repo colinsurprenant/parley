@@ -428,7 +428,7 @@ func (p *tablePlan) checkIDFree() error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("look for %s: %w", buildDirOf(p.base, p.id), err)
 	}
-	return nil
+	return checkNotALine(p.base, p.id, "a table")
 }
 
 // parseMember parses one --seat or --peer value (flagName), <nick>=<harness>[:<model>].
@@ -452,22 +452,34 @@ func parseMember(flagName, raw string) (*seatPlan, error) {
 		return nil, cfgErrf("%s %q: unknown harness %q: the harnesses are claude and codex", flagName, raw, harness)
 	}
 	if hasModel {
-		switch {
-		case model == "":
+		if model == "" {
 			return nil, cfgErrf("%s %q: the model after ':' is empty", flagName, raw)
-		case hasControl(model):
-			return nil, cfgErrf("%s %q: the model holds a control character", flagName, raw)
-		case strings.HasPrefix(model, "-"):
-			return nil, cfgErrf("%s %q: the model begins with '-', which a command line would take for a flag", flagName, raw)
-		case len(model) > modelMax:
-			return nil, cfgErrf("%s: the model is %d bytes, over the %d bytes of the longest model id a harness takes (it is kept in the record, printed into commands and handed to `codex exec -m` and `claude --model`)", flagName, len(model), modelMax)
 		}
-		if i := strings.IndexFunc(model, func(r rune) bool { return !modelRune(r) }); i >= 0 {
-			bad, _ := utf8.DecodeRuneInString(model[i:])
-			return nil, cfgErrf("%s %q: the model holds %q, which no model id of Claude Code or Codex has: a model is letters, digits and . _ - : / @ [ ] +", flagName, raw, bad)
+		if err := checkModel(flagName, raw, model); err != nil {
+			return nil, err
 		}
 	}
 	return &seatPlan{nick: nick, harness: harness, model: model}, nil
+}
+
+// checkModel refuses a model (not empty) that no command line or record should
+// carry: a control character, a leading '-', more than modelMax bytes, or a
+// character outside modelRune. flagName and raw name where it came from in the
+// refusal: the --seat or --peer value, or the --model value itself.
+func checkModel(flagName, raw, model string) error {
+	switch {
+	case hasControl(model):
+		return cfgErrf("%s %q: the model holds a control character", flagName, raw)
+	case strings.HasPrefix(model, "-"):
+		return cfgErrf("%s %q: the model begins with '-', which a command line would take for a flag", flagName, raw)
+	case len(model) > modelMax:
+		return cfgErrf("%s: the model is %d bytes, over the %d bytes of the longest model id a harness takes (it is kept in the record, printed into commands and handed to `codex exec -m` and `claude --model`)", flagName, len(model), modelMax)
+	}
+	if i := strings.IndexFunc(model, func(r rune) bool { return !modelRune(r) }); i >= 0 {
+		bad, _ := utf8.DecodeRuneInString(model[i:])
+		return cfgErrf("%s %q: the model holds %q, which no model id of Claude Code or Codex has: a model is letters, digits and . _ - : / @ [ ] +", flagName, raw, bad)
+	}
+	return nil
 }
 
 // modelMax bounds a --seat or --peer model: the longest ids Claude Code and Codex
@@ -871,21 +883,45 @@ func writeNewFile(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", path, err)
 	}
+	return writeAndClose(f, path, data)
+}
+
+// writeAndClose writes data to f, the file writeNewFile has just created at path
+// with O_EXCL, and closes it. When the write or the close fails the file is removed:
+// it is this call's own, made a moment ago, and a caller must not be left with an
+// empty or partial one that a later run would take for someone's file. f is a
+// parameter so that a test can make the write fail.
+func writeAndClose(f io.WriteCloser, path string, data []byte) error {
 	if _, err := f.Write(data); err != nil {
 		f.Close()
-		return fmt.Errorf("write %s: %w", path, err)
+		return removeMade(path, fmt.Errorf("write %s: %w", path, err))
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", path, err)
+		return removeMade(path, fmt.Errorf("close %s: %w", path, err))
 	}
 	return nil
+}
+
+// removeMade removes the file a failed write left at path, and says so in cause,
+// or says that it could not.
+func removeMade(path string, cause error) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w (and the partial file could not be removed: %v)", cause, err)
+	}
+	return cause
 }
 
 // writeNewFileIn is writeNewFile for a file that has to land inside root: the
 // directory it is made in, as the filesystem resolves it, must be root or under
 // it, so that a link along the way cannot send the write elsewhere.
 func writeNewFileIn(root, path string, data []byte, mode os.FileMode) error {
-	if err := checkParentIn(root, "the worktree", path); err != nil {
+	return writeNewFileWithin(root, "the worktree", path, data, mode)
+}
+
+// writeNewFileWithin is writeNewFileIn for a root that is not a worktree (a line
+// session's checkout): what names root in the refusal.
+func writeNewFileWithin(root, what, path string, data []byte, mode os.FileMode) error {
+	if err := checkParentIn(root, what, path); err != nil {
 		return err
 	}
 	return writeNewFile(path, data, mode)

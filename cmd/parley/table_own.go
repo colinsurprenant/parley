@@ -537,3 +537,41 @@ func claimReplyDirBy(c replyClaim) (string, error) {
 	}
 	return dir, nil
 }
+
+// removeDirMarkerLast removes dir, a directory an end has shown is its own by the
+// marker file in it, taking the marker out only once everything else is gone. A
+// removal that fails partway, on a file it may not delete, then leaves the marker
+// in place, so the next end still finds the directory to be its own and can
+// finish once the cause is fixed. os.RemoveAll gives no such order.
+func removeDirMarkerLast(dir, marker string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == marker {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	// The marker's bytes are kept until the directory is gone: a directory that
+	// cannot be removed after its marker, its parent no longer writable for one,
+	// gets the marker back, so the next end still recognises it.
+	mpath := filepath.Join(dir, marker)
+	mdata, rerr := os.ReadFile(mpath)
+	mfi, serr := os.Lstat(mpath)
+	if err := os.Remove(mpath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.Remove(dir); err != nil {
+		if rerr == nil && serr == nil {
+			if werr := writeNewFile(mpath, mdata, mfi.Mode().Perm()); werr != nil {
+				return fmt.Errorf("%w; and its marker %s could not be put back: %v", err, mpath, werr)
+			}
+		}
+		return err
+	}
+	return nil
+}

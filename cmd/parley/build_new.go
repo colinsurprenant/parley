@@ -410,6 +410,9 @@ func (p *buildPlan) checkIDFree(ctx context.Context) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("look for %s: %w", tableDirOf(p.base, p.id), err)
 	}
+	if err := checkNotALine(p.base, p.id, "a build"); err != nil {
+		return err
+	}
 	if err := p.checkNoCursorState(); err != nil {
 		return err
 	}

@@ -303,7 +303,7 @@ func takeDown(base string, rec tableRecord, replyDir string, threads []claimedTh
 	if replyDir == "" {
 		removed = append(removed, "reply directory "+rec.ReplyDir+" (already gone)")
 	} else {
-		if err := os.RemoveAll(replyDir); err != nil {
+		if err := removeDirMarkerLast(replyDir, tableReplyMarker); err != nil {
 			return removed, left, fmt.Errorf("remove the reply directory %s: %w", replyDir, err)
 		}
 		removed = append(removed, "reply directory "+rec.ReplyDir)

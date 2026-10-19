@@ -166,12 +166,12 @@ func lockNicksMaking(base string, nicks []string, mkdirAll func(string) error, h
 	return lockNicks(base, nicks, held)
 }
 
-// lockID takes the lock of a table or build id under base, without blocking, and
-// returns what releases it. It is the first thing `table new`, `table end`,
-// `build new` and `build end` take once they know the state base, and each holds
-// it for its whole run (before the nick locks, in that order everywhere): the id
-// is one namespace for a table and a build, and nothing else serializes two
-// commands on it. A command that finds it held refuses and does not wait; the one
+// lockID takes the lock of a table, build or line id under base, without
+// blocking, and returns what releases it. It is the first thing `table new`,
+// `table end`, `build new`, `build end` and the line verbs take once they know
+// the state base, and each holds it for its whole run (before the nick locks, in
+// that order everywhere): the id is one namespace for a table, a build and a
+// line, and nothing else serializes two commands on it. A command that finds it held refuses and does not wait; the one
 // holding it is a command of this kind that is still running, and running this
 // one again once it is done is what the message asks for. The lock file is
 // <base>/.ids/<id>.lock, outside the table's or the build's own directory, and
@@ -181,7 +181,7 @@ func lockID(base, id string) (release func(), err error) {
 	if err != nil {
 		var held *state.IDLockedError
 		if errors.As(err, &held) {
-			return nil, fmt.Errorf("%q is in use by another parley table or build command (new or end): its lock %s is held; wait for that command to finish, then run this again", id, held.Path)
+			return nil, fmt.Errorf("%q is in use by another parley table or build command (new or end), or line command (new, add, drop or end): its lock %s is held; wait for that command to finish, then run this again", id, held.Path)
 		}
 		return nil, err
 	}
@@ -197,6 +197,14 @@ type codexSession struct {
 	bin, name    string // the resolved codex, and how the human spells it
 	prompt       string // the primer
 	base, stream string // where the thread is recorded
+	// sandbox is the -s of the turn, workspace-write when empty: a table's seat or
+	// a build's peer runs in a worktree parley made for it, a line's session in the
+	// user's own checkout.
+	sandbox string
+	// skipGitRepoCheck passes --skip-git-repo-check: a line session's checkout need
+	// not be in git, and codex exec refuses a directory that is not unless told not
+	// to look.
+	skipGitRepoCheck bool
 }
 
 // startCodexSession starts a session with its primer as the first prompt, reads
@@ -206,7 +214,15 @@ type codexSession struct {
 // id is known, whatever becomes of the turn. It returns the thread and the
 // session's answer to the primer.
 func startCodexSession(ctx context.Context, env setupEnv, c codexSession) (thread, answer string, err error) {
-	args := []string{"exec", "--json", "-C", c.dir, "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=false"}
+	sandbox := c.sandbox
+	if sandbox == "" {
+		sandbox = "workspace-write"
+	}
+	args := []string{"exec", "--json"}
+	if c.skipGitRepoCheck {
+		args = append(args, "--skip-git-repo-check")
+	}
+	args = append(args, "-C", c.dir, "-s", sandbox, "-c", "sandbox_workspace_write.network_access=false")
 	if c.model != "" {
 		args = append(args, "-m", c.model)
 	}

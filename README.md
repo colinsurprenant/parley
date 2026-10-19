@@ -199,8 +199,8 @@ parley's. One rule is enforced in code, in two parts: once more than a set
 number of posts arrives within a short window, or more than five times that
 number since you last spoke, however slowly, the fronts hold what follows until
 you speak, so two sessions cannot wake each other forever, while pokes spread over
-hours never trip it. A line is set up by hand, and `docs/line.md` is your guide
-to it.
+hours never trip it. `parley line new` and `parley line add` set one up and
+`parley line end` takes it down, and `docs/line.md` is your guide to it.
 
 The verbs, the fronts and the state layout are in `docs/reference.md`, and
 `parley --help` lists every flag.

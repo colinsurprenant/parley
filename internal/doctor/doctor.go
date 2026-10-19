@@ -136,6 +136,10 @@ type Options struct {
 	// each harness chosen with Claude and Codex reads, and nothing else. Skills,
 	// when it is set too, covers all of it.
 	BuildSkill bool
+	// LineSkill is TableSkill for a line: the parley-line skill under the root
+	// each harness chosen with Claude and Codex reads, and nothing else. Skills,
+	// when it is set too, covers all of it.
+	LineSkill bool
 	// Live adds what costs something: for Codex one model turn, for ergo (when
 	// ErgoBin is set) a throwaway server and a message through it.
 	Live bool
@@ -171,6 +175,8 @@ func Check(ctx context.Context, o Options) []Result {
 		rs = append(rs, checkTableSkill(o.Claude, o.Codex)...)
 	case o.BuildSkill:
 		rs = append(rs, checkBuildSkill(o.Claude, o.Codex)...)
+	case o.LineSkill:
+		rs = append(rs, checkLineSkill(o.Claude, o.Codex)...)
 	}
 	if o.Live {
 		if codexOK {
