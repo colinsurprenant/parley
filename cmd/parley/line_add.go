@@ -83,11 +83,8 @@ func cmdLineAdd(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "parley line add: checking the machine (parley doctor's static checks)\n")
 	if err := p.checkMachine(ctx, os.Stderr); err != nil {
-		// A machine that cannot host the session is refused before anything is
-		// made, as a bad flag is: exit 2. (An interrupt is not a refusal.)
-		if ctx.Err() == nil {
-			return &configError{err: err}
-		}
+		// A machine that cannot host the session fails before anything is made,
+		// exit 1, as `table new` and `line new` fail on doctor's FAIL.
 		return err
 	}
 	if err := p.measureClaude(); err != nil {

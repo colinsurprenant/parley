@@ -250,8 +250,14 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 				beforeLong = treeListing(t, filepath.Join(b.root, strings.Repeat("a", 200)))
 			}
 			res := runParleyEnvIn(t, "", append(b.env(), e.env...), e.args...)
-			if res.code != 2 {
-				t.Fatalf("exit %d, want 2\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+			// A missing skill link is doctor's FAIL, which fails the run with exit
+			// 1, as table new's does; every other case is a refusal, exit 2.
+			code := 2
+			if strings.HasPrefix(c.name, "no parley-line skill") {
+				code = 1
+			}
+			if res.code != code {
+				t.Fatalf("exit %d, want %d\nstdout: %s\nstderr: %s", res.code, code, res.stdout, res.stderr)
 			}
 			if !strings.Contains(res.stderr, c.want) {
 				t.Errorf("stderr does not say %q:\n%s", c.want, res.stderr)
@@ -326,7 +332,8 @@ func TestLineAddReadsOnlyTheRootItsHarnessReads(t *testing.T) {
 }
 
 // TestLineAddDoctorFailRefusesBeforeAnyChange: a machine that cannot host the
-// session is a refusal, with nothing changed.
+// session fails with exit 1, as table new does on doctor's FAIL, with nothing
+// changed.
 func TestLineAddDoctorFailRefusesBeforeAnyChange(t *testing.T) {
 	t.Run("no claude", func(t *testing.T) {
 		b := newLineBench(t)
@@ -334,8 +341,8 @@ func TestLineAddDoctorFailRefusesBeforeAnyChange(t *testing.T) {
 		co := b.gitCheckout(t, "co")
 		before := b.lsnap(t, co)
 		res := runParleyEnvIn(t, "", b.envWithPath(b.pathWith(t, "codex", "ergo", "git", "cat", "mv")), b.ladd("demo", "plan", "claude", co)...)
-		if res.code != 2 || !strings.Contains(res.stderr, "FAIL") || !strings.Contains(res.stderr, "claude") {
-			t.Fatalf("exit %d, want 2 with doctor's claude FAIL\n%s", res.code, res.stderr)
+		if res.code != 1 || !strings.Contains(res.stderr, "FAIL") || !strings.Contains(res.stderr, "claude") {
+			t.Fatalf("exit %d, want 1 with doctor's claude FAIL\n%s", res.code, res.stderr)
 		}
 		b.wantLineUnchanged(t, before, co)
 	})
@@ -350,8 +357,8 @@ func TestLineAddDoctorFailRefusesBeforeAnyChange(t *testing.T) {
 		}
 		before := b.lsnap(t, co)
 		res := b.run(t, b.ladd("demo", "build", "codex", co)...)
-		if res.code != 2 || !strings.Contains(res.stderr, "FAIL") || !strings.Contains(res.stderr, "--force") {
-			t.Fatalf("exit %d, want 2 with doctor's delete FAIL\n%s", res.code, res.stderr)
+		if res.code != 1 || !strings.Contains(res.stderr, "FAIL") || !strings.Contains(res.stderr, "--force") {
+			t.Fatalf("exit %d, want 1 with doctor's delete FAIL\n%s", res.code, res.stderr)
 		}
 		b.wantLineUnchanged(t, before, co)
 	})
