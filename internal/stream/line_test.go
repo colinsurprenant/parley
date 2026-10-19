@@ -8,21 +8,39 @@ import (
 )
 
 // The line tests drive a Deliverer built with WithLine over the in-memory fake
-// from deliver_test.go, with the helpers table_test.go defines. A line is a
-// table without the seal: the breaker behaves as it does there, and every post
-// by another session is delivered at once, before this one has posted.
+// from deliver_test.go, with the helpers table_test.go defines. A line has no
+// seal, so every post by another session is delivered at once, before this one
+// has posted, and its breaker is a rate: more than cap non-chair posts within
+// the window. Time is pinned through the messages' own TS. f.post stamps every
+// post with one instant, so the tests that use it alone see the cap count posts
+// since the chair spoke; the tests that spread posts in time say so, with
+// postOffset, and a post with no TS is timed by the clock the test injects.
 
 const (
-	lineChair = tableChair
-	lineSelf  = "plan"
+	lineChair  = tableChair
+	lineSelf   = "plan"
+	lineWindow = 10 * time.Minute
 )
 
 // newLine is a line session's Deliverer and the cursor its front would keep.
 func newLine(t *testing.T, f *fake, cap int) *table {
 	t.Helper()
-	d := NewDeliverer(f, lineSelf, WithLine(lineChair, cap))
+	return newLineWindow(t, f, cap, lineWindow)
+}
+
+func newLineWindow(t *testing.T, f *fake, cap int, window time.Duration) *table {
+	t.Helper()
+	d := NewDeliverer(f, lineSelf, WithLine(lineChair, cap, window))
 	d.gate.created = tableStart
+	// The clock a post with no time of its own is timed by: the instant f.post
+	// stamps, so nothing here depends on the wall clock.
+	d.gate.now = func() time.Time { return tableStart.Add(time.Second) }
 	return &table{t: t, d: d}
+}
+
+// postOffset appends a message stamped d after tableStart.
+func (f *fake) postOffset(author, body string, d time.Duration) {
+	f.postAt(author, body, tableStart.Add(d))
 }
 
 func TestLineHasNoSealAFreshSessionGetsPeerPostsBeforePosting(t *testing.T) {
@@ -158,9 +176,9 @@ func TestLineAGapDiscardsTheHeldQueue(t *testing.T) {
 	tb.want("new two", "chair two")
 }
 
-// TestLineAGapKeepsTheCount: the gap says history was lost, not that the breaker
-// was reset; only a chair message resets it.
-func TestLineAGapKeepsTheCount(t *testing.T) {
+// TestLineAGapKeepsTheHistory: the gap says history was lost, not that the
+// breaker was reset; only a chair message resets it.
+func TestLineAGapKeepsTheHistoryOfTimes(t *testing.T) {
 	f := &fake{nick: lineSelf}
 	tb := newLine(t, f, 1)
 
@@ -174,6 +192,26 @@ func TestLineAGapKeepsTheCount(t *testing.T) {
 	tb.want()
 	f.post(lineChair, "chair one")
 	tb.want("two", "chair one")
+}
+
+// TestLineAGapKeepsTheHistoryOfTimesWhenNothingIsTripped: the times before the
+// gap still count toward the posts after it, spread in time or not.
+func TestLineAGapKeepsTheHistoryOfTimesWhenNothingIsTripped(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 2)
+
+	f.postOffset("build", "one", 0)
+	f.postOffset("review", "two", time.Minute)
+	tb.want("one", "two")
+	f.mu.Lock()
+	f.msgs = nil
+	f.gapPending = true
+	f.mu.Unlock()
+	// Three posts within the window, across the gap.
+	f.postOffset("build", "three", 2*time.Minute)
+	tb.want()
+	f.postOffset(lineChair, "chair one", 3*time.Minute)
+	tb.want("three", "chair one")
 }
 
 func TestLineHeldAndDeliveredPostsAreNotCountedTwice(t *testing.T) {
@@ -282,7 +320,7 @@ func TestNoLineDeliversEveryPeerPost(t *testing.T) {
 		f.post("build", "one")
 	}
 	f.post(lineSelf, "mine")
-	d := NewDeliverer(f, lineSelf, WithLine("", 1))
+	d := NewDeliverer(f, lineSelf, WithLine("", 1, lineWindow))
 	if d.gate != nil {
 		t.Fatal("an empty chair built a gate")
 	}
@@ -295,10 +333,11 @@ func TestNoLineDeliversEveryPeerPost(t *testing.T) {
 	}
 }
 
-// TestLineAndTableAgreeOnceTheTableSealIsOpen: the line's breaker is the table's,
-// so the same stream read by a table seat whose seal is open and by a line
-// session delivers the same posts in the same order.
-func TestLineAndTableAgreeOnceTheTableSealIsOpen(t *testing.T) {
+// TestLineAndTableAgreeOnceTheTableSealIsOpenAndPostsShareAnInstant: posts that
+// carry one instant are all within any window, so the line's rate counts them as
+// the table's breaker does, and the same stream read by a table seat whose seal
+// is open and by a line session delivers the same posts in the same order.
+func TestLineAndTableAgreeOnceTheTableSealIsOpenAndPostsShareAnInstant(t *testing.T) {
 	post := func(f *fake) {
 		f.post(tableSelf, "answer") // opens the table's seal; counts for both
 		for i := range 8 {
@@ -314,10 +353,243 @@ func TestLineAndTableAgreeOnceTheTableSealIsOpen(t *testing.T) {
 	post(ft)
 	post(fl)
 	seat := newTable(t, ft, 3)
-	d := NewDeliverer(fl, tableSelf, WithLine(tableChair, 3))
+	d := NewDeliverer(fl, tableSelf, WithLine(tableChair, 3, lineWindow))
 	d.gate.created = tableStart
 	line := &table{t: t, d: d}
 	if a, b := seat.read(), line.read(); !equal(a, b) {
 		t.Fatalf("the table seat delivered %q, the line session %q", a, b)
+	}
+}
+
+// TestLinePostsSpreadBeyondTheWindowNeverTripHoweverMany: a line runs for days,
+// and a count of posts since the human spoke would trip on ordinary pokes. A
+// rate does not: with every post farther from the last than the window can hold
+// cap of them, none is held, however many there are.
+func TestLinePostsSpreadBeyondTheWindowNeverTripHoweverMany(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 2)
+
+	var want []string
+	for i := range 60 {
+		body := "poke " + strconv.Itoa(i)
+		// Each pair is 11 minutes apart, so no three of them fit in ten.
+		f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*11*time.Minute)
+		want = append(want, body)
+	}
+	tb.want(want...)
+}
+
+// TestLineTripsOnCapPlusOnePostsWithinTheWindowAndHoldsTheRestUntilTheChair: the
+// post that makes more than cap within the window is held with every later one,
+// whatever time passes: nothing releases a tripped breaker but the chair.
+func TestLineTripsOnCapPlusOnePostsWithinTheWindowAndHoldsTheRestUntilTheChair(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 2)
+
+	f.postOffset("build", "one", 0)
+	f.postOffset("review", "two", 3*time.Minute)
+	f.postOffset("build", "three", 6*time.Minute) // the third within ten minutes: trips, held
+	tb.want("one", "two")
+
+	// An hour later, and a day: still held, and so is a post that on its own
+	// would have been nowhere near a window of the others.
+	f.postOffset("review", "four", time.Hour)
+	f.postOffset("build", "five", 30*time.Hour)
+	tb.want()
+	tb.want()
+
+	f.postOffset(lineChair, "chair one", 31*time.Hour)
+	tb.want("three", "four", "five", "chair one")
+}
+
+// TestLineTheWindowSlides: it is the cap+1 most recent posts that are measured,
+// not the posts since some fixed start.
+func TestLineTheWindowSlides(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 2)
+
+	f.postOffset("build", "one", 0)
+	f.postOffset("review", "two", 6*time.Minute)
+	f.postOffset("build", "three", 12*time.Minute) // one..three span 12 minutes: no trip
+	tb.want("one", "two", "three")
+	f.postOffset("review", "four", 14*time.Minute) // two..four span 8 minutes: trips
+	tb.want()
+	f.postOffset(lineChair, "chair one", 15*time.Minute)
+	tb.want("four", "chair one")
+}
+
+// TestLineTheWindowIncludesItsEdge: cap+1 posts that span exactly the window trip
+// it, and one nanosecond more does not.
+func TestLineTheWindowIncludesItsEdge(t *testing.T) {
+	for name, tc := range map[string]struct {
+		span time.Duration
+		want []string
+	}{
+		"exactly the window":   {lineWindow, []string{"one"}},
+		"just over the window": {lineWindow + time.Nanosecond, []string{"one", "two"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fake{nick: lineSelf}
+			tb := newLine(t, f, 1)
+			f.postOffset("build", "one", 0)
+			f.postOffset("review", "two", tc.span)
+			tb.want(tc.want...)
+		})
+	}
+}
+
+// TestLineTheChairClearsTheHistoryAndReleasedPostsDoNotCount: after the chair
+// speaks the count of the window starts empty, and the posts it released, which
+// were within the window of the next ones, are not in it.
+func TestLineTheChairClearsTheHistoryAndReleasedPostsDoNotCount(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 2)
+
+	f.postOffset("build", "one", 0)
+	f.postOffset("review", "two", time.Minute)
+	f.postOffset("build", "three", 2*time.Minute) // trips, held
+	f.postOffset("review", "four", 2*time.Minute+time.Second)
+	tb.want("one", "two")
+
+	f.postOffset(lineChair, "chair one", 3*time.Minute)
+	tb.want("three", "four", "chair one")
+
+	// Cap posts right after the chair's: delivered, though three more of the
+	// released ones were within the window of them.
+	f.postOffset("build", "five", 4*time.Minute)
+	f.postOffset("review", "six", 5*time.Minute)
+	tb.want("five", "six")
+	f.postOffset("build", "seven", 6*time.Minute) // the third since the chair: trips
+	tb.want()
+	f.postOffset(lineChair, "chair two", 7*time.Minute)
+	tb.want("seven", "chair two")
+}
+
+func TestLineCapZeroNeverTripsHoweverFastTheyComeInTime(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 0)
+
+	var want []string
+	for i := range 100 {
+		body := "peer " + strconv.Itoa(i)
+		f.postOffset("build", body, time.Duration(i)*time.Millisecond)
+		want = append(want, body)
+	}
+	tb.want(want...)
+}
+
+// TestLineAPostWithNoTimeIsTimedByTheClock: a transport that reports no TS has
+// its messages timed when the Deliverer receives them.
+func TestLineAPostWithNoTimeIsTimedByTheClock(t *testing.T) {
+	post := func(f *fake) {
+		for i := range 3 {
+			f.postAt("build", "poke "+strconv.Itoa(i), time.Time{})
+		}
+	}
+	// The clock moves a minute a message: three within the window, and trips.
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 2)
+	now := tableStart
+	tb.d.gate.now = func() time.Time { now = now.Add(time.Minute); return now }
+	post(f)
+	tb.want("poke 0", "poke 1")
+
+	// An hour a message: never within the window of each other.
+	f = &fake{nick: lineSelf}
+	tb = newLine(t, f, 2)
+	now = tableStart
+	tb.d.gate.now = func() time.Time { now = now.Add(time.Hour); return now }
+	post(f)
+	tb.want("poke 0", "poke 1", "poke 2")
+
+	// A post with a time of its own is not timed by the clock, and one without is
+	// timed against it in the same window.
+	f = &fake{nick: lineSelf}
+	tb = newLine(t, f, 1)
+	tb.d.gate.now = func() time.Time { return tableStart.Add(time.Minute) }
+	f.postOffset("build", "stamped", 0)
+	f.postAt("review", "unstamped", time.Time{})
+	tb.want("stamped")
+}
+
+// TestLineABacklogSpreadOverDaysDoesNotTrip: a session that joins a line under
+// way reads the history the server retains as its first delivery, and posts days
+// apart are not a loop.
+func TestLineABacklogSpreadOverDaysDoesNotTrip(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	var want []string
+	for i := range 200 {
+		body := "poke " + strconv.Itoa(i)
+		f.postOffset([]string{"build", "review"}[i%2], body, -time.Duration(200-i)*time.Hour)
+		want = append(want, body)
+	}
+	tb := newLine(t, f, 3)
+	tb.want(want...)
+}
+
+// TestLineABurstInTheBacklogTripsAtTheBurst: the first delivery is gated like any
+// other, so a burst in the history holds what follows it.
+func TestLineABurstInTheBacklogTripsAtTheBurst(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	f.postOffset("build", "days ago", -72*time.Hour)
+	f.postOffset("build", "burst 1", -time.Hour)
+	f.postOffset("review", "burst 2", -time.Hour+time.Second)
+	f.postOffset("build", "burst 3", -time.Hour+2*time.Second)
+	f.postOffset("review", "later", -time.Minute)
+	tb := newLine(t, f, 2)
+	// The three burst posts are the third within the window, and it is held, and
+	// so is the one after it.
+	tb.want("days ago", "burst 1", "burst 2")
+	f.postOffset(lineChair, "chair one", time.Minute)
+	tb.want("burst 3", "later", "chair one")
+}
+
+// TestLineOwnPostsAreTimedAndCounted: the session's own posts are in the rate,
+// by the TS the transport gave them, and one from a previous run counts only
+// where it falls.
+func TestLineOwnPostsAreTimedAndCounted(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 1)
+	f.postOffset(lineSelf, "mine", 0)
+	f.postOffset("build", "one", time.Minute) // two within the window: trips
+	tb.want()
+	f.postOffset(lineChair, "chair one", 2*time.Minute)
+	tb.want("one", "chair one")
+
+	f = &fake{nick: lineSelf}
+	f.postBefore(lineSelf, "last run's post") // an hour before: out of the window
+	tb = newLine(t, f, 1)
+	f.postOffset("build", "one", time.Minute)
+	tb.want("one")
+}
+
+// TestLineTimesOutOfOrderCannotHideABurst: the span of the posts measured is the
+// latest time less the earliest, not the last less the first.
+func TestLineTimesOutOfOrderCannotHideABurst(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 1)
+	f.postOffset("build", "one", 30*time.Minute)
+	f.postOffset("review", "two", 25*time.Minute) // five minutes apart, the wrong way round
+	tb.want("one")
+}
+
+// TestLineRepeatedHandOversAreNotTimedTwice: the same post handed over twice is
+// one post in the window.
+func TestLineRepeatedHandOversAreNotTimedTwice(t *testing.T) {
+	for name, f := range map[string]*fake{
+		"repeats within a read": {nick: lineSelf, twice: true},
+		"repeats across reads":  {nick: lineSelf, atLeastOnce: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tb := newLine(t, f, 2)
+			f.postOffset("build", "one", 0)
+			f.postOffset("review", "two", time.Minute)
+			tb.want("one", "two")
+			tb.want()
+			f.postOffset("build", "three", 2*time.Minute) // the third: trips
+			tb.want()
+			f.postOffset(lineChair, "chair one", 3*time.Minute)
+			tb.want("three", "chair one")
+		})
 	}
 }

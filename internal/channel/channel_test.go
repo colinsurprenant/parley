@@ -1546,7 +1546,7 @@ cat "$file"
 // buildInstructions is instructions for the build skill with the facts every
 // session is launched with.
 func buildInstructions(command, spec, nick, stateDir, replyPath string) string {
-	return instructions(primer.SkillBuild, command, spec, nick, stateDir, replyPath, humanNick, targetRepo, seatWorktree, 0)
+	return instructions(primer.SkillBuild, command, spec, nick, stateDir, replyPath, humanNick, targetRepo, seatWorktree, 0, 0)
 }
 
 // replyScript pulls the reply command out of the instructions and points it at
@@ -1650,10 +1650,11 @@ func TestTheTableSkillMakesTheInstructionsTheTableForm(t *testing.T) {
 }
 
 // lineSkill is Config's line-skill fields, for a harness that serves a session on
-// a line: a chair and a cap, and no target or worktree.
-func lineSkill(chair string, capN int) func(*Config) {
+// a line: a chair and a breaker, a cap within a window, and no target or
+// worktree.
+func lineSkill(chair string, capN int, window time.Duration) func(*Config) {
 	return func(c *Config) {
-		c.Skill, c.Chair, c.Cap, c.Target, c.Worktree = primer.SkillLine, chair, capN, "", ""
+		c.Skill, c.Chair, c.Cap, c.Window, c.Target, c.Worktree = primer.SkillLine, chair, capN, window, "", ""
 	}
 }
 
@@ -1662,7 +1663,7 @@ func lineSkill(chair string, capN int) func(*Config) {
 // session with, built without a target or a worktree.
 func TestTheLineSkillMakesTheInstructionsTheLineForm(t *testing.T) {
 	const chair = "colin"
-	h := newConfiguredHarness(t, 0, time.Minute, lineSkill(chair, 8))
+	h := newConfiguredHarness(t, 0, time.Minute, lineSkill(chair, 8, 10*time.Minute))
 	got := text(t, h.handshake(), "instructions")
 	want := primer.Render(primer.Params{
 		Front:     primer.Claude,
@@ -1674,11 +1675,12 @@ func TestTheLineSkillMakesTheInstructionsTheLineForm(t *testing.T) {
 		Skill:     primer.SkillLine,
 		Chair:     chair,
 		Cap:       8,
+		Window:    10 * time.Minute,
 	})
 	if got != want {
 		t.Fatalf("the instructions are not the line form of the primer:\ngot:\n%s\nwant:\n%s", got, want)
 	}
-	for _, phrase := range []string{"registered nick " + chair + ";", "breaker cap 8 posts", "invoked as /parley-line"} {
+	for _, phrase := range []string{"registered nick " + chair + ";", "breaker: more than 8 posts within 10m hold deliveries until colin posts.", "invoked as /parley-line"} {
 		if !strings.Contains(got, phrase) {
 			t.Fatalf("the line instructions do not carry %q:\n%s", phrase, got)
 		}
@@ -1751,7 +1753,7 @@ func TestTheInstructionsFitUnderTheCap(t *testing.T) {
 			Worktree:  "/home/someone/projects/target/run/data/stat2",
 		}
 		if skill == primer.SkillLine {
-			cfg.Target, cfg.Worktree, cfg.Cap = "", "", 12
+			cfg.Target, cfg.Worktree, cfg.Cap, cfg.Window = "", "", 12, 10*time.Minute
 		}
 		srv, err := New(cfg)
 		if err != nil {
@@ -1806,18 +1808,21 @@ func TestNewRefusesASkillMissingAFact(t *testing.T) {
 			}
 		}
 	}
-	// A line needs a chair, a known skill and a cap of zero or more, and nothing
-	// else: it has no target and no worktree to be missing.
+	// A line needs a chair, a cap of zero or more and a window above zero, and
+	// nothing else: it has no target and no worktree to be missing.
 	line := func() Config {
 		return Config{
 			Deliverer: stream.NewDeliverer(s, selfNick), Cursors: dir, Spec: "file:" + path,
 			In: strings.NewReader(""), Out: io.Discard,
-			Skill: primer.SkillLine, Chair: "colin", Cap: 8,
+			Skill: primer.SkillLine, Chair: "colin", Cap: 8, Window: 10 * time.Minute,
 		}
 	}
 	for name, mutate := range map[string]func(*Config){
-		"no chair":     func(c *Config) { c.Chair = "" },
-		"negative cap": func(c *Config) { c.Cap = -1 },
+		"no chair":         func(c *Config) { c.Chair = "" },
+		"negative cap":     func(c *Config) { c.Cap = -1 },
+		"no window":        func(c *Config) { c.Window = 0 },
+		"negative window":  func(c *Config) { c.Window = -time.Minute },
+		"no window, cap 0": func(c *Config) { c.Window, c.Cap = 0, 0 },
 	} {
 		cfg := line()
 		mutate(&cfg)
@@ -1910,7 +1915,7 @@ func TestLongestInstructionsCoverEveryReplyDirectoryName(t *testing.T) {
 		cfg := Config{Deliverer: stream.NewDeliverer(s, selfNick), Cursors: dir, Spec: "file:" + path, In: strings.NewReader(""), Out: io.Discard, Skill: skill,
 			Chair: humanNick, Target: targetRepo, Worktree: seatWorktree}
 		if skill == primer.SkillLine {
-			cfg.Target, cfg.Worktree = "", ""
+			cfg.Target, cfg.Worktree, cfg.Window = "", "", 10*time.Minute
 		}
 		srv, err := New(cfg)
 		if err != nil {

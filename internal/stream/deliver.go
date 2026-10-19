@@ -47,9 +47,9 @@ const bodyIndent = "  "
 // another nick is delivered; with it a message by a seat — any nick that is
 // neither the chair nor this participant — is delivered only while the table's
 // gates are open, and is held until they are. See WithTable for the rules.
-// WithLine gates a line's session the same way with the seal left out: the
-// breaker is the only gate, and everything below about held messages holds for
-// it as it does for a table.
+// WithLine gates a line's session by a breaker of its own, a rate, with the seal
+// left out: the breaker is the only gate, and everything below about held
+// messages holds for it as it does for a table.
 // Held messages live in this process's memory and nowhere else: parley never
 // persists stream content beyond the transport's own history, and the cursor
 // the caller keeps advances past a held message as it does past any other, so a
@@ -146,24 +146,32 @@ func WithTable(chair string, cap int) Option {
 }
 
 // WithLine makes the Deliverer a session on a line, whose human posts as chair,
-// and gates what it delivers by the table's cap breaker alone: there is no seal.
-// A line session receives every other session's post as it arrives, before it
-// has posted itself; the breaker is what keeps two sessions from waking each
-// other forever.
+// and gates what it delivers by a rate breaker alone: there is no seal. A line
+// session receives every other session's post as it arrives, before it has
+// posted itself; the breaker is what keeps two sessions from waking each other
+// forever, and it is a rate because a loop is fast while a line, which runs for
+// days, is slow: a count of posts since the human last spoke would trip on
+// ordinary sparse pokes.
 //
-// The breaker is WithTable's, rule for rule. With cap above zero, every message
-// by anyone but the chair — this participant's own included — counts since the
-// most recent chair message, from zero at creation. The message that takes the
-// count past cap trips the breaker, and it and every later non-chair message are
-// held until the next chair message, which resets the count, un-trips the
-// breaker and releases the held messages in stream order ahead of itself.
-// Messages released that way do not count toward the new count. A cap of zero or
-// less turns the breaker off, and then nothing is held. A history gap discards
-// the held queue and keeps the count, as at a table.
+// With cap above zero, every message by anyone but the chair — this
+// participant's own included — is timed by its TS, or by the local receive time
+// when the transport reported none. A message trips the breaker when it makes
+// more than cap non-chair messages within window: the cap+1 most recent
+// non-chair messages, it included, span no more than window. Once tripped, it
+// and every later non-chair message are held until the next chair message,
+// which un-trips the breaker, clears the history of times and releases the held
+// messages in stream order ahead of itself; messages released that way do not
+// count. Nothing releases on time passing: a loop stays stopped until the human
+// looks. A cap of zero or less turns the breaker off, and then nothing is held.
+// A history gap discards the held queue and keeps the history of times, as at a
+// table the count survives one. A backlog spread over days, with never more
+// than cap messages in a window, does not trip it however long it is.
 //
-// chair is checked as WithTable's is, and an empty chair means no line: the
-// Deliverer behaves as if WithLine had not been given.
-func WithLine(chair string, cap int) Option {
+// window must be positive; the caller checks it, and a window of zero or less
+// trips only on messages that carry one instant. chair is checked as
+// WithTable's is, and an empty chair means no line: the Deliverer behaves as if
+// WithLine had not been given.
+func WithLine(chair string, cap int, window time.Duration) Option {
 	return func(d *Deliverer) {
 		if chair == "" {
 			return
@@ -171,7 +179,7 @@ func WithLine(chair string, cap int) Option {
 		st := newGateState()
 		// The seal is a table's: a line's gate starts open and stays open.
 		st.open = true
-		d.gate = &gate{chair: chair, cap: cap, state: st}
+		d.gate = &gate{chair: chair, cap: cap, state: st, line: true, window: window, now: time.Now}
 	}
 }
 
@@ -181,6 +189,13 @@ type gate struct {
 	chair   string
 	cap     int
 	created time.Time
+
+	// line makes the breaker a rate over window, WithLine's, where it is a count
+	// since the chair last posted, WithTable's. now is the clock a message with
+	// no time of its own is timed by, and a test's to replace.
+	line   bool
+	window time.Duration
+	now    func() time.Time
 
 	// state is the installed gate state; a delivery works on a copy of it.
 	state gateState
@@ -200,6 +215,9 @@ type gateState struct {
 	// tripped is whether it has passed cap since then.
 	count   int
 	tripped bool
+	// times is the line breaker's history: the times of the most recent cap+1
+	// non-chair messages since the chair last posted, oldest first.
+	times []time.Time
 
 	// held is the FIFO of seat messages not yet delivered, and heldIDs the set
 	// of their IDs, so a repeat of a held message is not held a second time.
@@ -219,6 +237,7 @@ func newGateState() gateState {
 func (s *gateState) clone() *gateState {
 	c := *s
 	c.held = append([]Message(nil), s.held...)
+	c.times = append([]time.Time(nil), s.times...)
 	c.heldIDs = make(map[string]struct{}, len(s.heldIDs))
 	for id := range s.heldIDs {
 		c.heldIDs[id] = struct{}{}
@@ -228,8 +247,8 @@ func (s *gateState) clone() *gateState {
 }
 
 // discard drops what a history gap makes meaningless: the held queue and the ID
-// sets. The seal and the count stay; they say what this seat has done, and a gap
-// does not undo it.
+// sets. The seal, the count and a line's history of times stay; they say what
+// this seat has done, and a gap does not undo it.
 func (s *gateState) discard() {
 	s.held = nil
 	clear(s.heldIDs)
@@ -243,6 +262,49 @@ func (s *gateState) tally(cap int) {
 	if cap > 0 && s.count > cap {
 		s.tripped = true
 	}
+}
+
+// rate times one non-chair message and trips a line's breaker when it makes more
+// than cap of them within the window ending at it. The messages timed are the
+// cap+1 most recent, and the span is the latest time less the earliest of them,
+// so a transport that reports times out of order cannot hide a burst.
+func (s *gateState) rate(g *gate, m Message) {
+	if g.cap <= 0 {
+		return
+	}
+	t := m.TS
+	if t.IsZero() {
+		t = g.now()
+	}
+	s.times = append(s.times, t)
+	if extra := len(s.times) - (g.cap + 1); extra > 0 {
+		s.times = append(s.times[:0], s.times[extra:]...)
+	}
+	if len(s.times) < g.cap+1 {
+		return
+	}
+	lo, hi := s.times[0], s.times[0]
+	for _, u := range s.times[1:] {
+		if u.Before(lo) {
+			lo = u
+		}
+		if u.After(hi) {
+			hi = u
+		}
+	}
+	if hi.Sub(lo) <= g.window {
+		s.tripped = true
+	}
+}
+
+// tally counts one non-chair message toward the gate's breaker: a table's count
+// since the chair last posted, or a line's rate.
+func (g *gate) tally(s *gateState, m Message) {
+	if g.line {
+		s.rate(g, m)
+		return
+	}
+	s.tally(g.cap)
 }
 
 // NewDeliverer wraps s for the participant known as nick.
@@ -484,12 +546,12 @@ func (d *Deliverer) admit(out *Delivery, m Message) {
 		if m.TS.IsZero() || !m.TS.Before(g.created) {
 			st.open = true
 		}
-		st.tally(g.cap)
+		g.tally(st, m)
 	case NickEqual(m.Author, g.chair):
 		if d.repeated(out, m.ID) {
 			return
 		}
-		st.count, st.tripped = 0, false
+		st.count, st.tripped, st.times = 0, false, nil
 		d.release(out)
 		d.deliver(out, m)
 		return
@@ -497,7 +559,7 @@ func (d *Deliverer) admit(out *Delivery, m Message) {
 		if _, held := st.heldIDs[m.ID]; held || d.repeated(out, m.ID) {
 			return
 		}
-		st.tally(g.cap)
+		g.tally(st, m)
 		st.held = append(st.held, m)
 		st.heldIDs[m.ID] = struct{}{}
 	}

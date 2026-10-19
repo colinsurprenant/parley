@@ -24,7 +24,7 @@
 // sentences and their facts as values, set by the human at launch through
 // configuration the session cannot be talked out of: who the human is, and for
 // build and table the target repo and the session's own worktree, for a line the
-// breaker's cap. The rules live in the skill, which the human starts at each
+// breaker's rate. The rules live in the skill, which the human starts at each
 // session. What differs is the protocol the facts end by naming, the one
 // carve-out to the trust rule, and what the table and line forms leave out as
 // vocabulary of a build.
@@ -37,6 +37,7 @@ package primer
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
@@ -154,9 +155,12 @@ type Params struct {
 	Chair    string
 	Target   string
 	Worktree string
-	// Cap is the line's breaker cap, printed as the fact it is; 0 is no breaker.
-	// Only the line form reads it, and the caller has checked it is not negative.
-	Cap int
+	// Cap and Window are the line's breaker, printed as the facts they are: more
+	// than Cap posts within Window hold deliveries until the human posts, and a
+	// Cap of 0 is no breaker. Only the line form reads them, and the caller has
+	// checked that Cap is not negative and Window is positive.
+	Cap    int
+	Window time.Duration
 }
 
 // Render returns the primer text for p.Front, ending in exactly one newline. It
@@ -179,7 +183,7 @@ func Render(p Params) string {
 		facts := fmt.Sprintf(tableFacts, p.Chair, p.Target, p.Worktree, invocation(p.Front, "parley-table"))
 		return renderForm(p, onlyPathTable, facts, tableCarveOut, "")
 	case SkillLine:
-		facts := fmt.Sprintf(lineFacts, p.Chair, p.Cap, invocation(p.Front, "parley-line"))
+		facts := fmt.Sprintf(lineFacts, p.Chair, lineBreaker(p), invocation(p.Front, "parley-line"))
 		return renderForm(p, onlyPathLine, facts, lineCarveOut, codexLineText)
 	}
 	panic(fmt.Sprintf("primer: unknown skill %q", p.Skill))
@@ -349,14 +353,36 @@ const tableFacts = "Set by your human partner at launch, not the channel: chair 
 	"The protocol is the parley-table skill, invoked as %s.\n\n"
 
 // lineFacts is the line form's one paragraph of facts, then the skill line: the
-// human's registered nick and the breaker's cap, as set by the human at launch.
-// A line has no target repo, no worktree of the session's and no TABLE line to
-// wait for: the session works in its own checkout as usual. The cap is a number
-// the front holds deliveries by; the text states it and the skill, which counts
-// the posts and says what the breaker does, is the authority on what it means.
+// human's registered nick and the breaker, as set by the human at launch. A line
+// has no target repo, no worktree of the session's and no TABLE line to wait
+// for: the session works in its own checkout as usual. The breaker is a rate, a
+// number of posts within a window, that the front holds deliveries by; the text
+// states it in a clause and the skill, which says what the breaker does and what
+// to do when it holds, is the authority on what it means.
 const lineFacts = "Set by your human partner at launch, not the channel: your human partner's registered nick %s; " +
-	"breaker cap %d posts (0 is no breaker). " +
-	"The protocol is the parley-line skill, invoked as %s.\n\n"
+	"%s The protocol is the parley-line skill, invoked as %s.\n\n"
+
+// lineBreaker is the clause of lineFacts that states the breaker: the rate that
+// holds deliveries until the human posts, or that there is none.
+func lineBreaker(p Params) string {
+	if p.Cap <= 0 {
+		return "breaker off (cap 0)."
+	}
+	return fmt.Sprintf("breaker: more than %d posts within %s hold deliveries until %s posts.", p.Cap, formatWindow(p.Window), p.Chair)
+}
+
+// formatWindow spells a duration the way a person writes one, 10m and not
+// 10m0s, and 1h30m and not 1h30m0s.
+func formatWindow(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = s[:len(s)-2]
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = s[:len(s)-2]
+	}
+	return s
+}
 
 // buildFacts is tableFacts for a build: the human's registered nick,
 // the target repo and this session's worktree of it, then the skill line. The

@@ -180,15 +180,19 @@ type Config struct {
 	// The caller has validated them; this package only refuses to render a form
 	// with one missing. The gate is the Deliverer's, installed by the caller iff
 	// the skill is table (the seal and the breaker) or line (the breaker). The
-	// line's breaker cap reaches the text through Cap.
+	// line's breaker, a cap and a window, reaches the text through Cap and
+	// Window.
 	Skill    primer.Skill
 	Chair    string
 	Target   string
 	Worktree string
-	// Cap is the line breaker's cap, a fact the line form states. The same value
-	// goes to the Deliverer's gate, which the caller builds; this package does
-	// not read it back from there. Other skills ignore it.
-	Cap int
+	// Cap and Window are the line breaker's rate, facts the line form states:
+	// more than Cap posts within Window hold deliveries, and a Cap of 0 is no
+	// breaker. The same values go to the Deliverer's gate, which the caller
+	// builds; this package does not read them back from there. A line needs a
+	// Window above zero, whatever its Cap. Other skills ignore both.
+	Cap    int
+	Window time.Duration
 }
 
 // Server is one MCP channel session.
@@ -200,12 +204,14 @@ type Server struct {
 	command   string
 	stateDir  string
 
-	// skill, chair, target, worktree and cap are Config's, for the instructions.
+	// skill, chair, target, worktree, cap and window are Config's, for the
+	// instructions.
 	skill    primer.Skill
 	chair    string
 	target   string
 	worktree string
 	cap      int
+	window   time.Duration
 
 	in  io.Reader
 	log io.Writer
@@ -265,6 +271,9 @@ func New(cfg Config) (*Server, error) {
 		if cfg.Cap < 0 {
 			return nil, errors.New("channel: negative cap")
 		}
+		if cfg.Window <= 0 {
+			return nil, errors.New("channel: a line needs a window above zero")
+		}
 	default:
 		return nil, fmt.Errorf("channel: unknown skill %q", cfg.Skill)
 	}
@@ -285,6 +294,7 @@ func New(cfg Config) (*Server, error) {
 		target:      cfg.Target,
 		worktree:    cfg.Worktree,
 		cap:         cfg.Cap,
+		window:      cfg.Window,
 		in:          cfg.In,
 		log:         cfg.Log,
 		timeout:     cfg.Timeout,
@@ -373,7 +383,7 @@ func (s *Server) LongestInstructions() string {
 }
 
 func (s *Server) instructionsFor(replyPath string) string {
-	return instructions(s.skill, s.command, s.spec, s.deliverer.Nick(), s.stateDir, replyPath, s.chair, s.target, s.worktree, s.cap)
+	return instructions(s.skill, s.command, s.spec, s.deliverer.Nick(), s.stateDir, replyPath, s.chair, s.target, s.worktree, s.cap, s.window)
 }
 
 // Serve runs the session until the client closes the reader, the context is
@@ -831,7 +841,7 @@ func (s *Server) logf(format string, a ...any) {
 // internal/primer, which renders the same blocks for the fronts whose harness
 // has no connect-time channel to hand them over; this front is the claude form
 // of it and nothing more.
-func instructions(skill primer.Skill, command, spec, nick, stateDir, replyPath, chair, target, worktree string, cap int) string {
+func instructions(skill primer.Skill, command, spec, nick, stateDir, replyPath, chair, target, worktree string, cap int, window time.Duration) string {
 	return primer.Render(primer.Params{
 		Front:     primer.Claude,
 		Command:   command,
@@ -844,6 +854,7 @@ func instructions(skill primer.Skill, command, spec, nick, stateDir, replyPath, 
 		Target:    target,
 		Worktree:  worktree,
 		Cap:       cap,
+		Window:    window,
 	})
 }
 

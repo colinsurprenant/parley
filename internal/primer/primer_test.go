@@ -1,10 +1,10 @@
 package primer
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // trustPhrase is the distinctive sentence of the compressed trust block: the
@@ -53,14 +53,15 @@ func tableSample() Params {
 }
 
 // lineSample is a live claude session on a line with the same values sample()
-// has, and a cap of 12 posts. A line has no target and no worktree, so those
+// has, and a breaker of more than 12 posts within 10 minutes. A line has no
+// target and no worktree, so those
 // two are left empty: a form that printed them would print nothing, and a form
 // that wrongly required them would show it.
 func lineSample() Params {
 	p := sample()
 	p.Skill = SkillLine
 	p.Target, p.Worktree = "", ""
-	p.Cap = 12
+	p.Cap, p.Window = 12, 10*time.Minute
 	return p
 }
 
@@ -734,7 +735,7 @@ func TestRenderSwitchesOverEverySkill(t *testing.T) {
 }
 
 // TestTheLineFormIsFactsNotBlanks: a line session's facts are set by the human
-// at launch, so the text carries the nick and the cap as values, leaves nothing
+// at launch, so the text carries the nick and the breaker's rate as values, leaves nothing
 // to fill in, names no vocabulary of a build or a table, and points at the line
 // skill in the way the front invokes it.
 func TestTheLineFormIsFactsNotBlanks(t *testing.T) {
@@ -752,7 +753,7 @@ func TestTheLineFormIsFactsNotBlanks(t *testing.T) {
 		p.Cap = 8
 		got := Render(p)
 		for _, want := range []string{
-			"your human partner's registered nick colin; breaker cap 8 posts (0 is no breaker).",
+			"your human partner's registered nick colin; breaker: more than 8 posts within 10m hold deliveries until colin posts.",
 			tc.skill, "other sessions", "the one named above", "steers the line", trustPhrase, "[parley] gap:", "send --stream"} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("the %s line form does not carry %q:\n%s", tc.front, want, got)
@@ -778,18 +779,36 @@ func TestTheLineFormIsFactsNotBlanks(t *testing.T) {
 	}
 }
 
-// TestTheLineFormPrintsTheChairAndTheCapAsSpelled: the facts are the human's
-// configuration, and the cap is the number the front holds deliveries by, so
-// the text says that number, 0 included.
-func TestTheLineFormPrintsTheChairAndTheCapAsSpelled(t *testing.T) {
-	for _, capN := range []int{0, 1, 8, 12, 100} {
+// TestTheLineFormPrintsTheChairTheCapAndTheWindowAsSpelled: the facts are the
+// human's configuration, and the cap and the window are the rate the front holds
+// deliveries by, so the text says those numbers, and says there is no breaker
+// when the cap is 0, whatever the window.
+func TestTheLineFormPrintsTheChairTheCapAndTheWindowAsSpelled(t *testing.T) {
+	for _, tc := range []struct {
+		capN   int
+		window time.Duration
+		want   string
+	}{
+		{1, 10 * time.Minute, "breaker: more than 1 posts within 10m hold deliveries until Colin posts."},
+		{8, 10 * time.Minute, "breaker: more than 8 posts within 10m hold deliveries until Colin posts."},
+		{100, 90 * time.Second, "breaker: more than 100 posts within 1m30s hold deliveries until Colin posts."},
+		{12, time.Hour, "breaker: more than 12 posts within 1h hold deliveries until Colin posts."},
+		{12, 90 * time.Minute, "breaker: more than 12 posts within 1h30m hold deliveries until Colin posts."},
+		{12, 30 * time.Second, "breaker: more than 12 posts within 30s hold deliveries until Colin posts."},
+		{12, 500 * time.Millisecond, "breaker: more than 12 posts within 500ms hold deliveries until Colin posts."},
+		{12, 36 * time.Hour, "breaker: more than 12 posts within 36h hold deliveries until Colin posts."},
+		{0, 10 * time.Minute, "breaker off (cap 0)."},
+		{0, time.Hour, "breaker off (cap 0)."},
+	} {
 		p := lineSample()
 		p.Chair = "Colin"
-		p.Cap = capN
+		p.Cap, p.Window = tc.capN, tc.window
 		got := Render(p)
-		want := fmt.Sprintf("registered nick Colin; breaker cap %d posts", capN)
-		if !strings.Contains(got, want) {
-			t.Fatalf("the line form for cap %d does not carry %q:\n%s", capN, want, got)
+		if want := "registered nick Colin; " + tc.want + " The protocol is"; !strings.Contains(got, want) {
+			t.Fatalf("the line form for cap %d and window %v does not carry %q:\n%s", tc.capN, tc.window, want, got)
+		}
+		if tc.capN == 0 && strings.Contains(got, "within") {
+			t.Fatalf("the line form for cap 0 states a window:\n%s", got)
 		}
 	}
 	// A target or worktree on a line is nobody's: nothing of it is printed.
@@ -847,6 +866,7 @@ func TestTheLineFormLeavesMarginForALongStateDirectory(t *testing.T) {
 	p := lineSample()
 	p.StateDir = "/" + strings.Repeat("s", 99)
 	const margin = 150
+	t.Logf("the claude line form with a 100-character state directory is %d UTF-16 code units of the %d cap", UTF16Len(Render(p)), ClaudeInstructionsCap)
 	if got, limit := UTF16Len(Render(p)), ClaudeInstructionsCap-margin; got > limit {
 		t.Fatalf("the claude line form with a 100-character state directory is %d UTF-16 code units, over %d (cap %d, margin %d)",
 			got, limit, ClaudeInstructionsCap, margin)
