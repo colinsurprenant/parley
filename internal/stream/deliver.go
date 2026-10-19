@@ -225,7 +225,8 @@ type gateState struct {
 	tripped bool
 	// times is the line breaker's history: the times of the non-chair messages
 	// since the chair last posted, earliest first whatever order they arrived in,
-	// at most maxLineTimes of them.
+	// up to the one that tripped the breaker: no more than five times cap plus
+	// one, since the backstop trips at five times cap.
 	times []time.Time
 
 	// held is the FIFO of seat messages not yet delivered, and heldIDs the set
@@ -273,11 +274,6 @@ func (s *gateState) tally(cap int) {
 	}
 }
 
-// maxLineTimes bounds a line's history of times. The backstop trips long before
-// the history reaches it at any cap below 13108; past that the earliest times
-// are dropped, which can only miss a burst of more than maxLineTimes posts.
-const maxLineTimes = 1 << 16
-
 // rate times one non-chair message and trips a line's breaker when it makes more
 // than cap of them within the window ending at it. The history holds every time
 // since the chair last posted, kept in time order, and the message is checked
@@ -288,10 +284,14 @@ const maxLineTimes = 1 << 16
 // burst that alternates between them look spread; IRC's times are the server's,
 // from one clock.
 //
-// The history is checked only once it holds more than cap times, so j+cap below
-// stays inside it and cannot overflow, whatever cap is.
+// Nothing is recorded once the breaker has tripped, by the rate or by the
+// backstop, which tally checks first: what is held until the chair posts makes
+// no difference to it, and the chair clears the history. So the history never
+// holds more than five times cap plus one times, and nothing is ever dropped
+// from it, at any cap. It is checked only once it holds more than cap times, so
+// j+cap below stays inside it and cannot overflow.
 func (s *gateState) rate(g *gate, m Message) {
-	if g.cap <= 0 {
+	if g.cap <= 0 || s.tripped {
 		return
 	}
 	t := m.TS
@@ -300,10 +300,6 @@ func (s *gateState) rate(g *gate, m Message) {
 	}
 	i := sort.Search(len(s.times), func(k int) bool { return s.times[k].After(t) })
 	s.times = slices.Insert(s.times, i, t)
-	if len(s.times) > maxLineTimes {
-		s.times = append(s.times[:0], s.times[1:]...)
-		i = max(i-1, 0)
-	}
 	if len(s.times) <= g.cap {
 		return
 	}

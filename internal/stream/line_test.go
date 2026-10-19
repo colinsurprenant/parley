@@ -833,3 +833,40 @@ func TestLineANegativeCapIsNoBreakerThroughTheAPI(t *testing.T) {
 		}
 	}
 }
+
+// TestLineTheRateHoldsAtLargeCapsWithNothingDropped: the history keeps every
+// time since the chair last posted, so a large cap loses no burst. At cap 65536,
+// one post more than the cap at one instant trips the rate; at cap 20000, a burst
+// split by many later posts spread beyond the window still trips when its last
+// post arrives, before the backstop is reached.
+func TestLineTheRateHoldsAtLargeCapsWithNothingDropped(t *testing.T) {
+	t.Run("cap 65536 at one instant", func(t *testing.T) {
+		const capN = 1 << 16
+		f := &fake{nick: lineSelf}
+		tb := newLine(t, f, capN)
+		for i := range capN + 1 {
+			f.postOffset("build", "p"+strconv.Itoa(i), 0)
+		}
+		got := tb.read()
+		if len(got) != capN || got[len(got)-1] != "p"+strconv.Itoa(capN-1) {
+			t.Fatalf("delivered %d posts, last %q; want %d, the post past the cap held", len(got), got[len(got)-1], capN)
+		}
+	})
+	t.Run("cap 20000 with a burst split around a long spread", func(t *testing.T) {
+		const capN = 20000
+		f := &fake{nick: lineSelf}
+		tb := newLine(t, f, capN)
+		for i := range capN {
+			f.postOffset("build", "b"+strconv.Itoa(i), 0)
+		}
+		const spread = 45536
+		for i := range spread {
+			f.postOffset("review", "s"+strconv.Itoa(i), time.Duration(i+1)*(lineWindow+time.Minute))
+		}
+		f.postOffset("build", "last of the burst", 0)
+		got := tb.read()
+		if len(got) != capN+spread || got[len(got)-1] == "last of the burst" {
+			t.Fatalf("delivered %d posts, last %q; want %d, with the burst's last post held", len(got), got[len(got)-1], capN+spread)
+		}
+	})
+}
