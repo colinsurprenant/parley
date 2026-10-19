@@ -128,7 +128,9 @@ sharing one, and a nick for yourself.
 5. Work as usual. The sessions poke each other when something changes for the
    other's job, and ask you or each other when a choice comes up. Say in the
    channel when you want them to discuss something together.
-6. When the work is over, close the sessions, then `parley line end demo`.
+6. When the work is over, close the sessions, and Ctrl-C each Codex session's
+   `parley codex` pump, which runs on its own and holds the nick until it stops.
+   Then `parley line end demo`.
 
 `docs/line.md` has the rest: the breaker, adding and dropping sessions later,
 and what to watch for.
