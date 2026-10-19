@@ -114,6 +114,11 @@ func appendExcludeLine(path, line string) (res excludeAdd, note string, err erro
 	if content != "" && !strings.HasSuffix(content, "\n") {
 		text, res.sep = "\n"+text, true
 	}
+	// A file the append would take past excludeMax is one readExclude would then
+	// refuse, and drop, end and the rollback could not take the line out again.
+	if len(content)+len(text) > excludeMax {
+		return excludeAdd{}, fmt.Sprintf("no exclude line added: %s would grow past %d bytes, and the line could then not be taken out", path, excludeMax), nil
+	}
 	// O_EXCL is not asked for: the file may be made by someone between the look and
 	// the open, and then the line is appended to theirs; but the run only claims to
 	// have made a file it saw was not there.

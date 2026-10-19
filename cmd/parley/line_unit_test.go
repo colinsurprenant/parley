@@ -119,6 +119,62 @@ func TestRemoveExcludeLineTakesOnlyTheFirstExactLine(t *testing.T) {
 	}
 }
 
+// TestAppendExcludeLineStopsAtTheSizeItCanReadBack: an append that would take the
+// file past excludeMax is a note and leaves the file as it was, since the line
+// could not be taken out of it again; one that brings it to excludeMax exactly is
+// made and comes out again. The newline that ends an unterminated file counts.
+func TestAppendExcludeLineStopsAtTheSizeItCanReadBack(t *testing.T) {
+	const line = "/.mcp.json"
+	fill := func(n int, terminated bool) string {
+		if terminated {
+			return strings.Repeat("x", n-1) + "\n"
+		}
+		return strings.Repeat("x", n)
+	}
+	for _, c := range []struct {
+		name    string
+		content string
+		fits    bool
+	}{
+		{"terminated, to the limit exactly", fill(excludeMax-len(line)-1, true), true},
+		{"terminated, one byte past", fill(excludeMax-len(line), true), false},
+		{"unterminated, to the limit exactly", fill(excludeMax-len(line)-2, false), true},
+		{"unterminated, past by the newline it needs", fill(excludeMax-len(line)-1, false), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "exclude")
+			if err := os.WriteFile(path, []byte(c.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res, note, err := appendExcludeLine(path, line)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !c.fits {
+				if res.added || !strings.Contains(note, "would grow past") {
+					t.Fatalf("= %+v, %q; want no line and a note", res, note)
+				}
+				if got := string(mustRead(t, path)); got != c.content {
+					t.Errorf("the file changed: %d bytes, was %d", len(got), len(c.content))
+				}
+				return
+			}
+			if !res.added || note != "" {
+				t.Fatalf("= %+v, %q; want the line added", res, note)
+			}
+			if got := len(mustRead(t, path)); got != excludeMax {
+				t.Fatalf("after the append: %d bytes, want %d", got, excludeMax)
+			}
+			if removed, err := removeExcludeLine(path, line, res.sep, res.made); err != nil || !removed {
+				t.Fatalf("removeExcludeLine = %v, %v", removed, err)
+			}
+			if got := string(mustRead(t, path)); got != c.content {
+				t.Errorf("after the removal: %d bytes, want the file as it was, %d", len(got), len(c.content))
+			}
+		})
+	}
+}
+
 // TestExcludeFilesAreNotFollowedThroughLinks: a link is a note for the add and an
 // error for the removal, and the file it points at is not touched.
 func TestExcludeFilesAreNotFollowedThroughLinks(t *testing.T) {
