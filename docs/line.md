@@ -196,7 +196,8 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    - It starts the thread with `codex exec --json` on the primer, in a read-only
      sandbox (`-s read-only`) and with the network off for that one turn, so the
      session can neither post before its pump is up nor write in your checkout,
-     with stdin closed and a five-minute limit, `-m <model>` when you gave one. The
+     with `--skip-git-repo-check`, since a checkout need not be a git checkout,
+     stdin closed and a five-minute limit, `-m <model>` when you gave one. The
      turn must have
      completed; a thread that did not is deleted and the add fails and undoes
      itself. The thread id it announces is recorded for `--thread auto`, and
@@ -389,7 +390,8 @@ before it has read the others', run a table instead: a line has no seal.
     session of the checkout still uses stays until that session goes.
 
   A launch file that is no longer the one the line wrote (you edited it, replaced
-  it, or its directory became a link) is yours: the command refuses, naming it.
+  it, its directory became a link, or the checkout was moved and a link put in its
+  place, so that its recorded path leads somewhere else) is yours: the command refuses, naming it.
   `--force` finishes the drop anyway and leaves the file, and its exclude line,
   where they are, and says so. It prints a `codex delete <thread>` line for a
   Codex session, and never runs it: Codex keeps the history unless you delete it.

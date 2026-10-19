@@ -518,14 +518,19 @@ func (r *lineAddRun) writeLaunchFile(ctx context.Context) error {
 		}
 		if made {
 			r.file.MadeDir = true
-			r.push("directory "+dir, func() error { return removeEmptyDir(dir) })
+			r.push("directory "+dir, func() error {
+				if moved := checkoutMoved(p.checkout); moved != "" {
+					return leftAlone(moved)
+				}
+				return removeEmptyDir(dir)
+			})
 		}
 	}
 	if err := writeNewFileWithin(p.checkout, "the checkout", path, data, 0o644); err != nil {
 		return err
 	}
 	digest := tableDigest(data)
-	r.push("launch file "+path, func() error { return removeIfDigest(path, digest) })
+	r.push("launch file "+path, func() error { return removeIfDigest(path, digest, p.checkout) })
 	r.file.Path, r.file.SHA256 = path, digest
 	r.wrote = true
 	r.logf("wrote %s", path)
@@ -591,7 +596,13 @@ func lineCodexConfig(id string) ([]byte, error) {
 // removeIfDigest removes the file at path if it is a regular file whose bytes
 // hash to digest, which is the proof it is the one this run wrote; anything else
 // there is left alone, and said.
-func removeIfDigest(path, digest string) error {
+func removeIfDigest(path, digest, checkout string) error {
+	// The checkout was resolved when the run began; a path above it that became a
+	// link since, or a checkout moved away and replaced, puts the name on another
+	// directory, and a file there is not shown to be this run's.
+	if moved := checkoutMoved(checkout); moved != "" {
+		return leftAlone(moved)
+	}
 	li, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -655,6 +666,8 @@ func (r *lineAddRun) startCodex(ctx context.Context) error {
 		// The primer turn answers a text and posts nothing; in the user's checkout
 		// it has no business writing.
 		sandbox: "read-only",
+		// A line's checkout may be a directory that is no git checkout.
+		skipGitRepoCheck: true,
 	})
 	if err != nil {
 		return err

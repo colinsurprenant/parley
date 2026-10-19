@@ -883,14 +883,32 @@ func writeNewFile(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", path, err)
 	}
+	return writeAndClose(f, path, data)
+}
+
+// writeAndClose writes data to f, the file writeNewFile has just created at path
+// with O_EXCL, and closes it. When the write or the close fails the file is removed:
+// it is this call's own, made a moment ago, and a caller must not be left with an
+// empty or partial one that a later run would take for someone's file. f is a
+// parameter so that a test can make the write fail.
+func writeAndClose(f io.WriteCloser, path string, data []byte) error {
 	if _, err := f.Write(data); err != nil {
 		f.Close()
-		return fmt.Errorf("write %s: %w", path, err)
+		return removeMade(path, fmt.Errorf("write %s: %w", path, err))
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", path, err)
+		return removeMade(path, fmt.Errorf("close %s: %w", path, err))
 	}
 	return nil
+}
+
+// removeMade removes the file a failed write left at path, and says so in cause,
+// or says that it could not.
+func removeMade(path string, cause error) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w (and the partial file could not be removed: %v)", cause, err)
+	}
+	return cause
 }
 
 // writeNewFileIn is writeNewFile for a file that has to land inside root: the

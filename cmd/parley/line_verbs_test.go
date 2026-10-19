@@ -722,13 +722,13 @@ func TestLineAddCodexSession(t *testing.T) {
 		t.Fatalf("codex was called %d times, want 1 (the one exec)", n)
 	}
 	argv := b.call(t, 1)
-	if len(argv) != 11 || argv[0] != "exec" {
+	if len(argv) != 12 || argv[0] != "exec" {
 		t.Fatalf("codex argv %q", argv)
 	}
-	if got, want := strings.Join(argv[1:10], " "), "--json -C "+co+" -s read-only -c sandbox_workspace_write.network_access=false -m gpt-5"; got != want {
+	if got, want := strings.Join(argv[1:11], " "), "--json --skip-git-repo-check -C "+co+" -s read-only -c sandbox_workspace_write.network_access=false -m gpt-5"; got != want {
 		t.Errorf("codex exec flags %q, want %q", got, want)
 	}
-	prompt := argv[10]
+	prompt := argv[11]
 	for _, want := range []string{"colin", stream, filepath.Join(s.ReplyDir, "build.reply"), "$parley-line", binPath, b.base, "--nick build", "more than 8 posts within 10m"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the primer does not hold %q:\n%s", want, prompt)
