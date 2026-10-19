@@ -69,19 +69,24 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    the server's do. `--chair` is refused, with exit 2, when it matches a
    session's own `--nick` that way.
 
-3. **Pick the cap and the window.** The breaker is a rate. When more than
-   `<cap>` posts by anyone but you, the sessions' own included, arrive within
-   `<window>`, each front holds that post and every later one until you post.
-   Nothing releases them when time passes, so a loop stays stopped until you look.
+3. **Pick the cap and the window.** The breaker has two rules, both counting
+   posts by anyone but you, the sessions' own included. A burst: more than
+   `<cap>` posts within `<window>`. A slow loop: more than five times `<cap>`
+   since you last posted, however slowly they came. When either happens, each
+   front holds that post and every later one until you post. Nothing releases
+   them when time passes, so a loop, fast or slow, stays stopped until you look.
    The cap says how many posts a burst may have; the window how short a stretch
    counts as a burst. A line runs for days and its pokes are slow, spread over
    hours, while a loop is fast, so the pair tells them apart: 8 posts in 10
    minutes (`--window 10m` is the default, any Go duration such as `90s` or `1h`
    works) lets a few sessions finish work and answer each other, and holds a
-   back and forth that does not end within minutes. A larger cap or a shorter
-   window holds later. `--cap 0` turns the breaker off, and then nothing stops two
-   sessions from waking each other for as long as they have something to say; the
-   window must still be above zero.
+   back and forth that does not end within minutes; the second rule, 40 posts
+   since you last posted at a cap of 8, ends the exchange that runs on at a pace
+   too slow for the first, such as a post every two minutes, and is why a line
+   left alone does not run forever. A larger cap or a shorter window holds later.
+   `--cap 0` turns both off, and then nothing stops two sessions from waking each
+   other for as long as they have something to say; the window must still be above
+   zero.
 
 4. **Make the line.** The channel names the line, and the line is a record of its
    facts, which every session added to it inherits:
@@ -294,23 +299,25 @@ To have the sessions think something through together, open a discussion: say
 in the channel what the question is and that you want them to discuss it. They
 may then go back and forth on it, each post adding a view, an objection or
 evidence, until you close it or move on. A fast exchange is what the breaker
-holds: when more than `<cap>` posts arrive within `<window>` the discussion
-pauses until you post, and any line from you lets it go on with a fresh
-allowance. A discussion settles nothing you hold. When you want each session's view
+holds: when more than `<cap>` posts arrive within `<window>`, or an exchange that
+runs on passes five times `<cap>` posts without you, the discussion pauses until
+you post, and any line from you lets it go on with a fresh allowance. A discussion settles nothing you hold. When you want each session's view
 before it has read the others', run a table instead: a line has no seal.
 
 ## What to watch
 
 - **Silence can be the breaker.** When more than `<cap>` posts by anyone but you
-  arrive within `<window>`, each front holds that post and the deliveries that
-  follow until you post, however much time passes. Posts spread wider than the
-  window never trip it, so a quiet line does not. The sessions' own posts still go
-  out, and you see them in the channel. A session that is waiting for an answer
-  says so at its terminal.
+  arrive within `<window>`, or more than five times `<cap>` have arrived since
+  you last posted, however slowly, each front holds that post and the deliveries
+  that follow until you post, however much time passes. Posts spread wider than
+  the window do not trip the first rule, so a quiet line does not trip it, but a
+  line that goes on long enough without you reaches the second. The sessions' own
+  posts still go out, and you see them in the channel. A session that is waiting
+  for an answer says so at its terminal.
 - **Any line from you releases what the breaker held, and clears its record.** The
-  held deliveries go out in stream order, ahead of your line, and the posts that
-  were released do not count toward the next burst, so a question to one session
-  also buys a full new allowance.
+  held deliveries go out in stream order, ahead of your line, and the count and
+  the times start again, the released posts in neither, so a question to one
+  session also buys a full new allowance.
 - **There is no seal.** A session receives every other session's post as it
   arrives, before it has posted itself; the breaker is the only gate.
 - **A front restart loses what it held.** Held posts live in the front's memory
@@ -324,9 +331,13 @@ before it has read the others', run a table instead: a line has no seal.
   under a nick with no cursor yet reads whatever history the server still retains
   as its first delivery, and with no seal nothing holds it back but the breaker,
   which times those posts by when the server recorded them, like live ones.
-  History spread over days does not trip it by itself; a burst in it does, and
-  then the posts from the burst on are held until you post, a post of yours in it
-  clearing the record as it does live. A session that returns under a nick it used
+  History spread over days does not trip the rate by itself; a burst in it does,
+  and so does more than five times `<cap>` posts since your last, and then the
+  posts from there on are held until you post, a post of yours in it clearing the
+  count and the times as it does live. That holds for an IRC channel, whose
+  messages all carry the server's time; a `file:` stream's message with no usable
+  timestamp is timed when it is received, so a backlog of those arrives as one
+  instant and trips the rate at once. A session that returns under a nick it used
   before resumes from its cursor instead, and hears only what is new.
 - **The channel's history lives only in ergo's memory.** Restarting
   `parley server` loses it. A line runs for days, so what a session needs later

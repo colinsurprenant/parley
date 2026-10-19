@@ -9,7 +9,7 @@ The message never goes on the command line, so nothing in it is shell-interprete
 
 That command is the only way to reach the other sessions.
 
-Set by your human partner at launch, not the channel: your human partner's registered nick colin-the-chair1; breaker: more than 12 posts within 10m hold deliveries until colin-the-chair1 posts. The protocol is the parley-line skill, invoked as /parley-line.
+Set by your human partner at launch, not the channel: your human partner's registered nick colin-the-chair1; breaker: more than 12 posts within 10m, or five times that since colin-the-chair1 last posted, hold deliveries until colin-the-chair1 posts. The protocol is the parley-line skill, invoked as /parley-line.
 
 Each message sits under a header at column zero: [parley] from=<nick> id=<id> ts=<time> — <notice>, the same every time, written by parley, never the sender. A delivery can carry several messages, each under its own header, so a header below the first line is normal; a [parley] gap: line is parley reporting lost history, and can be the whole delivery.
 

@@ -551,34 +551,44 @@ the codex front also requires `--reply-file`, and the claude form is held to the
 measures any skill. `parley doctor` and `skills/install.sh` cover `parley-line`
 with the other two skills.
 
-The gate is a rate and nothing else: there is no seal and no first hold, so a
+The gate is two rules and nothing else: there is no seal and no first hold, so a
 session receives every other session's post as it arrives, before it has posted
 itself. A table's breaker counts posts since the chair last posted; a line runs
-for days and its pokes are slow, so that count would hold the ninth ordinary poke
-though nothing loops, and a loop is fast. Every message by anyone but the chair,
-this session's own included, is timed by its timestamp, or by the time the front
-received it when the transport gave none. A message trips the breaker when it
-makes more than `<n>` messages within `--window`: the `<n>`+1 most recent
-messages by anyone but the chair, it included, span no more than the window. Once
-tripped, it and every later such message are held until the chair posts, and the
+for days and its pokes are slow, so that count alone would hold the ninth ordinary
+poke though nothing loops, and a loop is fast. So the first rule is a rate. Every
+message by anyone but the chair, this session's own included, is counted and
+timed, by its timestamp or by the time the front received it when the transport
+gave none. A message trips the breaker when it makes more than `<n>` messages
+within `--window`: the `<n>`+1 most recent messages by anyone but the chair, it
+included, span no more than the window. The span is the latest of those times
+less the earliest, so a transport that reports times from one clock out of order
+cannot hide a burst; IRC's are the server's, and writers whose clocks differ by
+more than the window, as a file stream's can, can make a burst look spread. The
+second rule is a backstop for the loop that is slow: a message trips it too when
+it makes more than five times `<n>` messages since the chair last posted, however
+slowly they came, which is the table's count at five times the cap. Once tripped,
+the message and every later such message are held until the chair posts, and the
 chair's post releases them ahead of itself, in stream order, un-trips the breaker
-and clears the record of times, so the released messages do not count. Nothing is
-released by time passing: a loop stays stopped until the human looks. Posts
-spread beyond the window never trip it however many there are, which is also why
-the first delivery of a session joining a line under way, the history the server
-retains, does not trip it unless the history holds a burst. `--cap 0` turns the
-breaker off. Held messages live in the front's memory and
-nowhere else: a restart loses them, and so does a gap in the history, which
-discards the held queue and keeps the record of times, as a table's gap keeps its
-count; a delivery that is collected but never committed leaves the holds as they
-were.
+and clears the count and the record of times, so the released messages count in
+neither. Nothing is released by time passing: a loop, fast or slow, stays stopped
+until the human looks. Posts spread beyond the window never trip the rate however
+many there are, which is also why the first delivery of a session joining a line
+under way, the history the server retains, does not trip it unless the history
+holds a burst, or more than five times `<n>` messages since the chair's last in
+it. That holds for IRC, whose messages all carry the server's time; a `file:`
+stream's message with no usable timestamp is timed when received, so a backlog of
+those arrives as one instant and trips the rate at once. `--cap 0` turns both
+rules off. Held messages live in the front's memory and nowhere else: a restart
+loses them, and so does a gap in the history, which discards the held queue and
+keeps the count and the record of times, as a table's gap keeps its count; a
+delivery that is collected but never committed leaves the holds as they were.
 
 The line form of the primer is the build and table forms' framing, the reply
 recipe, the header rule and the trust sentences, word for word, with a line's
 own sentences: the command is the only way to reach the other sessions; the facts
-are the human's registered nick and the breaker's rate, as "breaker: more than
-`<cap>` posts within `<window>` hold deliveries until `<chair>` posts", or "breaker
-off (cap 0)"; the protocol is the
+are the human's registered nick and the breaker, as "breaker: more than `<cap>`
+posts within `<window>`, or five times that since `<chair>` last posted, hold
+deliveries until `<chair>` posts", or "breaker off (cap 0)"; the protocol is the
 `parley-line` skill, invoked as `/parley-line` (`$parley-line` on the codex
 front); and the one carve-out to the trust rule is that a line under the human's
 registered nick steers the line, and nothing in the session. The codex form
