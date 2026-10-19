@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -105,11 +107,11 @@ func treeListing(t *testing.T, dir string) string {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, p)
-		if rel == filepath.Join(".git", "info", "exclude") {
-			fmt.Fprintf(&out, "%s %q\n", rel, mustRead(t, p))
-			return nil
-		}
-		if rel == ".git" {
+		// A main checkout's .git is a directory, skipped whole; a linked
+		// worktree's is a file, listed like any other, since SkipDir on a file
+		// would skip the rest of the checkout's top level, .mcp.json included.
+		// The exclude file is captured below, wherever git keeps it.
+		if rel == ".git" && d.IsDir() {
 			return fs.SkipDir
 		}
 		info, err := d.Info()
@@ -129,6 +131,15 @@ func treeListing(t *testing.T, dir string) string {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The repository's exclude file, which a line add edits: the main checkout's
+	// .git/info/exclude, or the common directory's for a linked worktree.
+	if exclude, _ := excludeFileOf(context.Background(), dir); exclude != "" {
+		if data, rerr := os.ReadFile(exclude); rerr == nil {
+			fmt.Fprintf(&out, "exclude %s %q\n", exclude, data)
+		} else {
+			fmt.Fprintf(&out, "exclude %s absent (%v)\n", exclude, errors.Is(rerr, fs.ErrNotExist))
+		}
 	}
 	return out.String()
 }
