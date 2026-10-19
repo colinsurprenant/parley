@@ -1606,13 +1606,13 @@ func TestWaitTakesNeitherTableFlag(t *testing.T) {
 func TestUsageDocumentsTheTableFlags(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{"--chair <nick> --cap <n>", "tables:", "--cap 0 turns the cap", "in this process's memory only", "wait takes neither flag",
-		"[--skill build|table|line --chair <nick> --cap <n>]", "it takes no --target or --worktree"} {
+		"[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "it takes no --target or --worktree"} {
 		if !strings.Contains(top, want) {
 			t.Fatalf("usage does not mention %q:\n%s", want, top)
 		}
 	}
 	// The per-verb help prints the flags with their own descriptions, on stdout.
-	for front, usage := range map[string]string{"channel": "[--skill build|table --cap <n>]", "codex": "[--skill build|table|line --chair <nick> --cap <n>]"} {
+	for front, usage := range map[string]string{"channel": "[--skill build|table --cap <n>]", "codex": "[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]"} {
 		help := runParley(t, "", front, "-h").stdout
 		for _, want := range []string{"-chair", "-cap", "-skill", usage, "memory only"} {
 			if !strings.Contains(help, want) {

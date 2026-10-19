@@ -53,7 +53,7 @@ func linePrimerArgs(front string) []string {
 func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 	for front, skill := range map[string]string{"claude": "invoked as /parley-line.", "codex": "invoked as $parley-line."} {
 		out := mustRun(t, "", linePrimerArgs(front)...).stdout
-		for _, want := range []string{"your human partner's registered nick colin; breaker cap 8 posts", skill, "other sessions", "the one named above"} {
+		for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or five times that since colin last posted, hold deliveries until colin posts.", skill, "other sessions", "the one named above"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("the %s line primer does not carry %q:\n%s", front, want, out)
 			}
@@ -76,15 +76,21 @@ func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 			t.Fatalf("the %s line primer carries the git escalation paragraph = %v:\n%s", front, has, out)
 		}
 	}
-	// The cap is printed as spelled, 0 included.
+	// The cap is printed as spelled, 0 included, and says there is no breaker.
 	args := append([]string(nil), linePrimerArgs("claude")...)
 	for i := range args {
 		if args[i] == "8" {
 			args[i] = "0"
 		}
 	}
-	if out := mustRun(t, "", args...).stdout; !strings.Contains(out, "breaker cap 0 posts") || !strings.Contains(out, "(0 is no breaker)") {
+	if out := mustRun(t, "", args...).stdout; !strings.Contains(out, "breaker off (cap 0).") || strings.Contains(out, "within") {
 		t.Fatalf("the primer for --cap 0 does not say so:\n%s", out)
+	}
+	// The window is printed as the person writes it, not as Go does.
+	for window, want := range map[string]string{"90s": "within 1m30s, or", "2h": "within 2h, or", "10m": "within 10m, or", "45s": "within 45s, or"} {
+		if out := mustRun(t, "", append(append([]string(nil), linePrimerArgs("claude")...), "--window", window)...).stdout; !strings.Contains(out, want) {
+			t.Fatalf("the primer for --window %s does not say %q:\n%s", window, want, out)
+		}
 	}
 }
 
@@ -94,7 +100,7 @@ func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 func TestChannelSkillLineHandsOverTheLineForm(t *testing.T) {
 	root := shortRoot(t)
 	instructions, stderr := channelInitialize(t, nil, lineChannelArgs(root)...)
-	for _, want := range []string{"your human partner's registered nick colin; breaker cap 8 posts", "invoked as /parley-line.",
+	for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or five times that since colin last posted, hold deliveries until colin posts.", "invoked as /parley-line.",
 		"other sessions", "the one named above", "steers the line"} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("the instructions do not carry %q:\n%s", want, instructions)
@@ -149,6 +155,13 @@ func TestLineConfigurationErrorsExitTwo(t *testing.T) {
 			{verb + ": empty chair", plus(base, "--chair", "", "--cap", "3"), "--chair"},
 			{verb + ": negative cap", plus(base, "--chair", "colin", "--cap", "-1"), "--cap must not be negative"},
 			{verb + ": cap is not a number", plus(base, "--chair", "colin", "--cap", "many"), "cap"},
+			{verb + ": a zero window", plus(base, "--chair", "colin", "--cap", "3", "--window", "0s"), "--window must be above zero"},
+			{verb + ": a bare zero window", plus(base, "--chair", "colin", "--cap", "3", "--window", "0"), "--window must be above zero"},
+			{verb + ": a negative window", plus(base, "--chair", "colin", "--cap", "3", "--window", "-5m"), "--window must be above zero"},
+			{verb + ": a zero window with cap 0", plus(base, "--chair", "colin", "--cap", "0", "--window", "0s"), "--window must be above zero"},
+			{verb + ": a window that is not a duration", plus(base, "--chair", "colin", "--cap", "3", "--window", "soon"), "window"},
+			{verb + ": a window with no unit", plus(base, "--chair", "colin", "--cap", "3", "--window", "10"), "window"},
+			{verb + ": an empty window", plus(base, "--chair", "colin", "--cap", "3", "--window", ""), "window"},
 		}...)
 	}
 	good := func(base []string) []string { return plus(base, "--chair", "colin", "--cap", "3") }
@@ -258,8 +271,9 @@ func TestChannelCheckMeasuresTheLineForm(t *testing.T) {
 		t.Fatalf("the line form measures %d, not under the table's %d and the build's %d", sizes["line"], sizes["table"], sizes["build"])
 	}
 	// The binary here is a test build in a temp directory, with a longer path than
-	// an installed one, so the margin asked for is the modest one.
-	if margin := primer.ClaudeInstructionsCap - sizes["line"]; margin < 150 {
+	// an installed one's, so the margin asked for here is the modest one; the
+	// primer package holds the form to 150 with a sample path.
+	if margin := primer.ClaudeInstructionsCap - sizes["line"]; margin < 100 {
 		t.Fatalf("the line form leaves a margin of %d units under the cap, want a clear one", margin)
 	}
 	if left, _ := filepath.Glob(filepath.Join(tmp, "parley-reply-*")); len(left) != 0 {
@@ -329,17 +343,18 @@ func TestChannelRefusesALineOverTheCapAndNamesWhatToShorten(t *testing.T) {
 func TestUsageDocumentsTheLineSkill(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	flat := strings.Join(strings.Fields(top), " ")
-	for _, want := range []string{"parley channel --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n>",
-		"parley primer --front claude|codex --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n>",
-		"[--skill build|table|line --chair <nick> --cap <n>]", "lines:", "parley-line skill",
-		"there is no first hold", "--target and --worktree are refused", "--cap is for --skill table and --skill line only"} {
+	for _, want := range []string{"parley channel --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m]",
+		"parley primer --front claude|codex --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m]",
+		"[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "lines:", "parley-line skill",
+		"there is no first hold", "--target and --worktree are refused", "--cap is for --skill table and --skill line only",
+		"--window for --skill line only", "Nothing is released by time passing", "more than <n> of them within --window"} {
 		if !strings.Contains(flat, want) {
 			t.Fatalf("usage does not mention %q:\n%s", want, top)
 		}
 	}
 	for _, verb := range []string{"channel", "primer", "codex"} {
 		help := runParley(t, "", verb, "-h").stdout
-		for _, want := range []string{"--skill line", "-cap"} {
+		for _, want := range []string{"--skill line", "-cap", "-window"} {
 			if !strings.Contains(help, want) {
 				t.Fatalf("parley %s -h does not mention %q:\n%s", verb, want, help)
 			}
@@ -351,21 +366,24 @@ func TestUsageDocumentsTheLineSkill(t *testing.T) {
 	}
 }
 
-// TestCodexLineDeliversPeerPostsAtOnceAndTheBreakerHolds drives the real binary
-// with the line flags: a peer's post is delivered before the pump has posted
-// (a line has no seal), the post that takes the count past the cap is held, and
-// the chair's post releases it ahead of itself. It is what proves the flags
-// reach the Deliverer, which the unit tests of the Deliverer cannot.
-func TestCodexLineDeliversPeerPostsAtOnceAndTheBreakerHolds(t *testing.T) {
+// TestCodexLineDeliversPeerPostsAtOnceAndTheBreakerIsARate drives the real binary
+// with the line flags: a peer's post is delivered before the pump has posted (a
+// line has no seal); a second post a window later is delivered too, though a
+// count of posts since the chair spoke would have held it; the post that makes
+// more than the cap within the window is held, and the chair's post releases it
+// ahead of itself. It is what proves the flags reach the Deliverer, which the
+// unit tests of the Deliverer cannot.
+func TestCodexLineDeliversPeerPostsAtOnceAndTheBreakerIsARate(t *testing.T) {
 	dir := resolvedTempDir(t)
 	spec := "file:" + filepath.Join(dir, "chat.ndjson")
 	stateDir := t.TempDir()
 	binDir, record := fakeCodex(t)
 	const thread = "0199c0de-c0de-7c0d-8c0d-ec0dec0dec0d"
+	const window = 4 * time.Second
 
 	cmd := exec.Command(binary(t), "codex", "--stream", spec, "--nick", "codex-a",
 		"--state-dir", stateDir, "--thread", thread, "--debounce", "100ms",
-		"--skill", "line", "--chair", "colin", "--cap", "1")
+		"--skill", "line", "--chair", "colin", "--cap", "1", "--window", window.String())
 	cmd.Env = append(os.Environ(),
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"PARLEY_TEST_RECORD="+record)
@@ -390,11 +408,24 @@ func TestCodexLineDeliversPeerPostsAtOnceAndTheBreakerHolds(t *testing.T) {
 		t.Fatalf("the line pump delivered\n%s\nwant the peer's post at once", msg)
 	}
 
-	// The second post since the chair's last takes the count past the cap of 1.
+	// A post more than a window after the last is the second post since the
+	// chair's, and it is delivered: the cap is a rate, not a count.
 	if err := os.Remove(record); err != nil {
 		t.Fatalf("clear the record: %v", err)
 	}
+	time.Sleep(window + window/4)
 	mustRun(t, "", "send", "--stream", spec, "--nick", "claude-b", "--", "phase two done")
+	argv = readArgv(t, record, stderr)
+	if msg := argv[len(argv)-1]; !strings.Contains(msg, "phase two done") {
+		t.Fatalf("the line pump delivered\n%s\nwant the post a window later at once", msg)
+	}
+
+	// The next post comes within the window of the last: more than the cap of 1,
+	// so it is held.
+	if err := os.Remove(record); err != nil {
+		t.Fatalf("clear the record: %v", err)
+	}
+	mustRun(t, "", "send", "--stream", spec, "--nick", "claude-b", "--", "phase three done")
 	time.Sleep(600 * time.Millisecond)
 	if _, err := os.Stat(record); err == nil {
 		t.Fatal("the tripped breaker delivered a post")
@@ -403,9 +434,79 @@ func TestCodexLineDeliversPeerPostsAtOnceAndTheBreakerHolds(t *testing.T) {
 	mustRun(t, "", "send", "--stream", spec, "--nick", "colin", "--", "chair talk")
 	argv = readArgv(t, record, stderr)
 	msg := argv[len(argv)-1]
-	held, chair := strings.Index(msg, "phase two done"), strings.Index(msg, "chair talk")
+	held, chair := strings.Index(msg, "phase three done"), strings.Index(msg, "chair talk")
 	if held < 0 || chair < 0 || held > chair {
 		t.Fatalf("the chair's post delivered\n%s\nwant the held post ahead of the chair's", msg)
+	}
+}
+
+// TestWindowIsALinesAlone: --window is refused by name, with exit 2, under the
+// table and build skills, on each verb that takes the flag, and is accepted
+// with a line. A table's breaker counts posts since the chair last posted, and a
+// build has none.
+func TestWindowIsALinesAlone(t *testing.T) {
+	root := shortRoot(t)
+	stateDir := filepath.Join(root, "s")
+	chat := "file:" + filepath.Join(root, "c")
+	target, worktree := filepath.Join(root, "t"), filepath.Join(root, "w")
+	plus := func(args []string, extra ...string) []string { return append(append([]string(nil), args...), extra...) }
+	facts := []string{"--chair", "colin", "--target", target, "--worktree", worktree}
+	for name, args := range map[string][]string{
+		"channel build": plus([]string{"channel", "--stream", chat, "--nick", "plan", "--state-dir", stateDir}, plus(facts, "--window", "10m")...),
+		"channel table": plus([]string{"channel", "--stream", chat, "--nick", "plan", "--state-dir", stateDir, "--skill", "table", "--cap", "3"}, plus(facts, "--window", "10m")...),
+		"primer build":  plus([]string{"primer", "--front", "claude", "--stream", chat, "--nick", "plan", "--reply-file", "/tmp/r"}, plus(facts, "--window", "10m")...),
+		"primer table":  plus([]string{"primer", "--front", "claude", "--stream", chat, "--nick", "plan", "--reply-file", "/tmp/r", "--skill", "table"}, plus(facts, "--window", "10m")...),
+		"codex build":   {"codex", "--stream", chat, "--nick", "plan", "--state-dir", stateDir, "--thread", "t", "--codex-bin", "/bin/echo", "--window", "10m"},
+		"codex table":   {"codex", "--stream", chat, "--nick", "plan", "--state-dir", stateDir, "--thread", "t", "--codex-bin", "/bin/echo", "--skill", "table", "--chair", "colin", "--cap", "3", "--window", "10m"},
+	} {
+		res := runParley(t, "", args...)
+		if res.code != 2 || res.stdout != "" || !strings.Contains(res.stderr, "--window applies to --skill line only") {
+			t.Fatalf("%s: parley %v exited %d with stdout %q and stderr %q, want 2 and the refusal", name, args, res.code, res.stdout, res.stderr)
+		}
+		// Even the window the flag defaults to is refused when it is spelled.
+		if name == "channel table" {
+			check := runCheck(t, t.TempDir(), args...)
+			if check.code != 2 || !strings.Contains(check.stderr, "--window applies to --skill line only") {
+				t.Fatalf("channel --check: exit %d, stderr %q", check.code, check.stderr)
+			}
+		}
+	}
+	// Left alone, the flag is not an error under a table or a build.
+	if res := runParley(t, "", plus([]string{"primer", "--front", "claude", "--stream", chat, "--nick", "plan", "--reply-file", "/tmp/r"}, facts...)...); res.code != 0 {
+		t.Fatalf("a build primer without --window exited %d: %s", res.code, res.stderr)
+	}
+	// And a line takes it on channel and on primer; the pump's is the end-to-end
+	// test above, which runs it with --window 4s.
+	line := []string{"--skill", "line", "--chair", "colin", "--cap", "3", "--window", "90s"}
+	for name, args := range map[string][]string{
+		"channel": plus([]string{"channel", "--stream", chat, "--nick", "plan", "--state-dir", stateDir}, line...),
+		"primer":  plus([]string{"primer", "--front", "claude", "--stream", chat, "--nick", "plan", "--reply-file", "/tmp/r"}, line...),
+	} {
+		var res result
+		if name == "channel" {
+			res = runCheck(t, t.TempDir(), args...)
+		} else {
+			res = runParley(t, "", args...)
+		}
+		if res.code != 0 {
+			t.Fatalf("%s with a line's --window exited %d: %s", name, res.code, res.stderr)
+		}
+	}
+}
+
+// TestLineWindowDefaultsToTenMinutes: no --window is the 10m the help says, in
+// the text each front hands over and in the usage.
+func TestLineWindowDefaultsToTenMinutes(t *testing.T) {
+	root := shortRoot(t)
+	instructions, _ := channelInitialize(t, nil, lineChannelArgs(root)...)
+	if want := "breaker: more than 8 posts within 10m, or five times that since colin last posted, hold deliveries until colin posts."; !strings.Contains(instructions, want) {
+		t.Fatalf("the instructions for a launch with no --window do not say %q:\n%s", want, instructions)
+	}
+	for _, verb := range []string{"channel", "codex", "primer"} {
+		help := runParley(t, "", verb, "-h").stdout
+		if !strings.Contains(help, "-window duration") || !strings.Contains(help, "(default 10m0s)") || !strings.Contains(help, "--window 10m") {
+			t.Fatalf("parley %s -h does not document --window and its default of 10m:\n%s", verb, help)
+		}
 	}
 }
 

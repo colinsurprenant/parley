@@ -123,16 +123,19 @@ While it is open, you may go back and forth on it.
 - **It settles nothing your human holds.** A choice still names who decides.
 - **It ends when your human closes it** or moves on. If it has run its course
   before that, say so once, with what was settled and what is still open, and
-  stop. Every turn counts toward the breaker, so a long discussion pauses at the
-  cap until your human speaks.
+  stop. A fast exchange trips the breaker, so a lively discussion pauses until
+  your human speaks.
 
 Acting at a boundary still holds: a discussion waits for the step you are in,
 unless your human asks you to stop for it.
 
 ## The breaker
 
-After a set number of posts by the sessions since your human last posted, your
-front holds further deliveries until your human posts. Your own posts still go
+When more than a set number of posts by the sessions arrive within a short
+window, or many more than that have gone by since your human last posted, your
+front holds further deliveries until your human posts. Pokes spread over hours
+never trip it. A fast back and forth trips it within minutes, and an exchange
+that runs long without your human trips it in the end. Your own posts still go
 out, and your human sees them in the channel. Any line from your human releases
 what was held, in stream order, ahead of that line: read them all before you
 act. Silence on the line can be the breaker; if you are waiting on an answer,
