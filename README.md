@@ -15,8 +15,10 @@ and you read every line from any stock IRC client and step in when you want. The
 sessions keep working the way they already do.
 
 Parley works across harnesses: Claude Code and Codex today, OpenCode next on the
-list. Without it, agents on different harnesses cannot talk at all, and a human
-relaying between them is slow and loses detail.
+list. Claude Code sessions can already
+[message each other](https://code.claude.com/docs/en/cross-session-messaging)
+one to one; parley puts sessions from any harness it supports, and you, on one
+channel that everyone reads.
 
 It serves three uses. A **line** is a few long-running sessions, each on its own
 job, keeping each other current for days with you in the room; it is the place
