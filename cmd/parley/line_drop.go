@@ -429,7 +429,7 @@ func (t *teardown) drop(c sessionClaim) error {
 		if c.replyDir == "" {
 			t.removed = append(t.removed, "reply directory "+s.ReplyDir+" (already gone)")
 		} else {
-			if err := os.RemoveAll(c.replyDir); err != nil {
+			if err := removeDirMarkerLast(c.replyDir, lineReplyMarker); err != nil {
 				return fmt.Errorf("remove the reply directory %s: %w", c.replyDir, err)
 			}
 			t.removed = append(t.removed, "reply directory "+s.ReplyDir)

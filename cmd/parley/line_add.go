@@ -351,6 +351,16 @@ func (p *linePlan) checkLaunchFile() error {
 	fi, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
+		// Absent from the checkout is not enough: a file git still tracks there,
+		// moved aside by the user, would come back as a tracked modification,
+		// which no exclude line can hide and a commit could carry.
+		rel, rerr := filepath.Rel(p.checkout, path)
+		if rerr != nil {
+			return cfgErrf("place %s in %s: %v", path, p.checkout, rerr)
+		}
+		if tracked(p.checkout, rel) {
+			return cfgErrf("%s is tracked by git in %s, though it is not there now: a file parley wrote at that path would show as a change to it and could be committed; set this session up by hand as docs/line.md describes, or use another checkout", rel, p.checkout)
+		}
 		return nil
 	case err != nil:
 		return cfgErrf("look for %s: %v", path, err)
@@ -804,4 +814,13 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 	}
 	b.WriteString(indent(answer, "        ") + "\n")
 	return b.String()
+}
+
+// tracked reports whether git's index in dir holds rel. A directory outside any
+// repository, or a git that cannot answer, holds nothing: such a checkout has no
+// index a written file could become a change to.
+func tracked(dir, rel string) bool {
+	args := append(append([]string(nil), wtGitFlags...), "ls-files", "--", filepath.ToSlash(rel))
+	out, _, err := runGit(context.Background(), dir, gitEnv(), args, args)
+	return err == nil && strings.TrimSpace(out) != ""
 }

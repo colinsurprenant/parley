@@ -537,3 +537,27 @@ func claimReplyDirBy(c replyClaim) (string, error) {
 	}
 	return dir, nil
 }
+
+// removeDirMarkerLast removes dir, a directory an end has shown is its own by the
+// marker file in it, taking the marker out only once everything else is gone. A
+// removal that fails partway, on a file it may not delete, then leaves the marker
+// in place, so the next end still finds the directory to be its own and can
+// finish once the cause is fixed. os.RemoveAll gives no such order.
+func removeDirMarkerLast(dir, marker string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == marker {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, marker)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.Remove(dir)
+}
