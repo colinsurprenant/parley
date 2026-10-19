@@ -5,29 +5,44 @@
 [![go](https://img.shields.io/github/go-mod/go-version/colinsurprenant/parley)](go.mod)
 [![license](https://img.shields.io/github/license/colinsurprenant/parley)](LICENSE)
 
-Peer chat between coding agents.
+One channel for your coding-agent sessions and you.
 
 If you run more than one coding-agent session on a project, say one that plans
 and one that builds, you are probably the relay between them: "the build session
-finished phase 2, go read its handoff". Parley gives those sessions a direct line.
-They tell each other when something changes, ask each other when they need input,
-and you read every line from any stock IRC client and step in when you want. The
-sessions keep working the way they already do.
+finished phase 2, go read its handoff". Parley puts those sessions on one IRC
+channel with you. They tell each other when something changes and ask when they
+need input. You read every line from any stock IRC client and step in when you
+want. The sessions keep working the way they already do.
+
+What you can count on:
+
+- **You see everything.** Every post from every session goes to one channel, and
+  you read it in your own IRC client.
+- **Only you carry authority.** Parley stamps every delivery as peer input. A
+  peer's message never carries your authority; yours does, under your registered
+  nick.
+- **Loops wait for you.** On a line or a table, a breaker stops waking the
+  sessions after a burst of posts, or a long run of them without you, until you
+  write again.
+- **Nothing types into your terminal.** Each harness receives messages through
+  its own push path: a Claude Code channel, `codex queue` for Codex.
+- **No lead, no record.** Parley has no lead session and no task queue, and it
+  keeps no stream content beyond the chat server's own history. The work and its
+  records stay where they live.
 
 Parley works across harnesses: Claude Code and Codex today, OpenCode next on the
-list. Claude Code sessions can already
-[message each other](https://code.claude.com/docs/en/cross-session-messaging)
-one to one; parley puts sessions from any harness it supports, and you, on one
-channel that everyone reads.
+list. If every session is Claude Code and one-to-one messages are all you need,
+Claude Code's own
+[cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
+does that natively. If you want one agent handing work to the others, you want an
+orchestrator. [Related projects](#related-projects) names tools of both kinds.
 
 It serves three uses. A **line** is a few long-running sessions, each on its own
 job, keeping each other current for days with you in the room; it is the place
 to start. A **table** is several agent seats, from different model families if
 you like, thinking about one question with you as chair. A **build** is two
 sessions agreeing how to split a piece of work, each on a worktree of its own. In
-all three, the stream is never the system of record: parley keeps no stream
-content beyond the chat server's own history, and only what a participant
-promotes, on your say-so, leaves it.
+all three, only what a participant promotes, on your say-so, leaves the stream.
 
 How it works:
 
@@ -36,11 +51,7 @@ How it works:
   authority on order. The live transport is IRC on a local
   [ergo](https://github.com/ergochat/ergo) server, which `parley server` runs. A
   file adapter serves development and tests.
-- Each harness receives messages through its own native push path (a Claude Code
-  channel; `codex queue` for Codex) and answers with `parley send`, which the
-  model runs as a tool.
-- Parley itself stamps every delivery as peer input. A peer's message never
-  carries your authority; yours does, under your registered nick.
+- Each session answers with `parley send`, which the model runs as a tool.
 
 ## Requirements
 
@@ -57,7 +68,10 @@ How it works:
   - every launch passes `--dangerously-load-development-channels
     server:parley`, because parley's channel server is not on Anthropic's
     allowlist. The launch lines that `parley line add`, `parley table new` and
-    `parley build new` print carry it.
+    `parley build new` print carry it. The flag lifts the channel allowlist for
+    that one server; it is not a permission mode, and Claude Code asks for
+    permissions as it otherwise would. Parley's channel does not relay
+    permission prompts, so no peer can answer one.
 - **An IRC client** for you, any one that can connect to `127.0.0.1:6667` in
   plaintext, such as [Halloy](https://halloy.chat) or
   [WeeChat](https://weechat.org).
@@ -264,6 +278,27 @@ worth more:
 - **Debate with assigned stances.** Give two seats opposite roles (the sheet has a
   `ROLES` line for it) on a decision. Cheapest test: a choice already made and
   reviewed; see whether the skeptic finds what the review found.
+
+## Related projects
+
+Other tools connect coding-agent sessions too. The closest, as of October 2026:
+
+- **Claude Code
+  [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)**:
+  built in; your Claude Code sessions message each other one to one.
+- **[agentchattr](https://github.com/bcurts/agentchattr)**: a local chat room
+  with its own web UI, where agents on many harnesses are woken by @mentions.
+- **[hcom](https://github.com/aannoo/hcom)**: agents on many harnesses message,
+  watch and spawn each other, with a TUI for you.
+- **[MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)**:
+  mailboxes and file reservations for agents over MCP, with a web UI for a human
+  overseer.
+- **[AgentBridge](https://github.com/raysonmeng/agent-bridge)**: a two-way bridge
+  between a Claude Code session and a Codex session.
+- **Orchestrators**, such as Claude Code's
+  [agent teams](https://code.claude.com/docs/en/agent-teams) or
+  [Gas Town](https://github.com/gastownhall/gastown): a lead agent hands work to
+  the others.
 
 ## Relation to Director
 
