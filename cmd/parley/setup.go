@@ -166,12 +166,12 @@ func lockNicksMaking(base string, nicks []string, mkdirAll func(string) error, h
 	return lockNicks(base, nicks, held)
 }
 
-// lockID takes the lock of a table or build id under base, without blocking, and
-// returns what releases it. It is the first thing `table new`, `table end`,
-// `build new` and `build end` take once they know the state base, and each holds
-// it for its whole run (before the nick locks, in that order everywhere): the id
-// is one namespace for a table and a build, and nothing else serializes two
-// commands on it. A command that finds it held refuses and does not wait; the one
+// lockID takes the lock of a table, build or line id under base, without
+// blocking, and returns what releases it. It is the first thing `table new`,
+// `table end`, `build new`, `build end` and the line verbs take once they know
+// the state base, and each holds it for its whole run (before the nick locks, in
+// that order everywhere): the id is one namespace for a table, a build and a
+// line, and nothing else serializes two commands on it. A command that finds it held refuses and does not wait; the one
 // holding it is a command of this kind that is still running, and running this
 // one again once it is done is what the message asks for. The lock file is
 // <base>/.ids/<id>.lock, outside the table's or the build's own directory, and
@@ -181,7 +181,7 @@ func lockID(base, id string) (release func(), err error) {
 	if err != nil {
 		var held *state.IDLockedError
 		if errors.As(err, &held) {
-			return nil, fmt.Errorf("%q is in use by another parley table or build command (new or end): its lock %s is held; wait for that command to finish, then run this again", id, held.Path)
+			return nil, fmt.Errorf("%q is in use by another parley table or build command (new or end), or line command (new, add, drop or end): its lock %s is held; wait for that command to finish, then run this again", id, held.Path)
 		}
 		return nil, err
 	}

@@ -508,12 +508,12 @@ func TestLineWindowDefaultsToTenMinutes(t *testing.T) {
 	}
 }
 
-// TestCodexThreadAutoUnderALineSaysTheLineHasNoRecord: parley table new and
-// parley build new make the thread record --thread auto reads, and a line is set
-// up by hand, so the error under --skill line does not send its user to either.
-// It says there is no record and that the pump takes the thread id, and a
-// missing --thread says the same, before anything is opened.
-func TestCodexThreadAutoUnderALineSaysTheLineHasNoRecord(t *testing.T) {
+// TestCodexThreadAutoUnderALineNamesLineAdd: parley line add makes the thread
+// record --thread auto reads, so the error under --skill line for a nick with none
+// sends its user to it, and not to the verbs of a table or a build; a pump for a
+// session started by hand still takes --thread <id>. A missing --thread says the
+// same, before anything is opened.
+func TestCodexThreadAutoUnderALineNamesLineAdd(t *testing.T) {
 	spec := "file:" + filepath.Join(t.TempDir(), "chat.ndjson")
 	stateDir := t.TempDir()
 	base := []string{"codex", "--stream", spec, "--nick", "codex-a", "--state-dir", stateDir,
@@ -523,7 +523,7 @@ func TestCodexThreadAutoUnderALineSaysTheLineHasNoRecord(t *testing.T) {
 		if res.code != 2 {
 			t.Fatalf("%s: codex exited %d, want 2\nstderr: %s", name, res.code, res.stderr)
 		}
-		for _, want := range []string{"a line has no thread record", "--thread"} {
+		for _, want := range []string{"parley line add", "--thread"} {
 			if !strings.Contains(res.stderr, want) {
 				t.Fatalf("%s: the error does not say %q: %s", name, want, res.stderr)
 			}
@@ -531,9 +531,9 @@ func TestCodexThreadAutoUnderALineSaysTheLineHasNoRecord(t *testing.T) {
 		if name == "auto" && !strings.Contains(res.stderr, "--thread <id>") {
 			t.Fatalf("auto: the error does not offer --thread <id>: %s", res.stderr)
 		}
-		for _, unwanted := range []string{"parley table new", "parley build new"} {
+		for _, unwanted := range []string{"parley table new", "parley build new", "a line has no thread record"} {
 			if strings.Contains(res.stderr, unwanted) {
-				t.Fatalf("%s: the error sends a line to %q: %s", name, unwanted, res.stderr)
+				t.Fatalf("%s: the error says %q: %s", name, unwanted, res.stderr)
 			}
 		}
 		if res.stdout != "" {

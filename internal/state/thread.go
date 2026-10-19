@@ -12,11 +12,11 @@ import (
 
 // ThreadRecord is the Codex thread a seat's pump delivers into, kept beside the
 // seat's cursor for the stream: <base>/<nick>/<streamkey>/codex-thread, one
-// line holding the thread's UUID, mode 0600. `parley table new` and `parley build
-// new` write it when they start the seat's or peer's Codex session, and `table
-// end` and `build end` remove it; `parley codex --thread auto` reads it to find
-// the thread, and `parley send` reads it to tell a session that is no longer that
-// thread. It is a pointer, not stream content: nothing a peer said is ever kept
+// line holding the thread's UUID, mode 0600. `parley table new`, `parley build
+// new` and `parley line add` write it when they start the seat's, peer's or
+// session's Codex session, and `table end`, `build end` and `line drop` remove
+// it; `parley codex --thread auto` reads it to find the thread, and `parley send`
+// reads it to tell a session that is no longer that thread. It is a pointer, not stream content: nothing a peer said is ever kept
 // here.
 type ThreadRecord struct{ path string }
 
