@@ -371,6 +371,11 @@ func lineBreaker(p Params) string {
 	return fmt.Sprintf("breaker: more than %d posts within %s hold deliveries until %s posts.", p.Cap, formatWindow(p.Window), p.Chair)
 }
 
+// FormatWindow is formatWindow for a caller that writes the window into a
+// command line, as `parley line new` does into the record and the .mcp.json it
+// makes: the same spelling the text states.
+func FormatWindow(d time.Duration) string { return formatWindow(d) }
+
 // formatWindow spells a duration the way a person writes one, 10m and not
 // 10m0s, and 1h30m and not 1h30m0s.
 func formatWindow(d time.Duration) string {

@@ -245,6 +245,70 @@ func TestBuildSkillChecksOnlyTheBuildLinkEachChosenHarnessReads(t *testing.T) {
 	}
 }
 
+// TestLineSkillChecksOnlyTheLineLinkEachChosenHarnessReads: a line session of
+// Claude Code needs ~/.claude/skills/parley-line, one of Codex
+// ~/.agents/skills/parley-line, and neither needs the other two skills.
+func TestLineSkillChecksOnlyTheLineLinkEachChosenHarnessReads(t *testing.T) {
+	home, _ := skillHome(t)
+	claudeLine := filepath.Join(home, ".claude", "skills", "parley-line")
+	codexLine := filepath.Join(home, ".agents", "skills", "parley-line")
+	for _, gone := range []string{
+		filepath.Join(home, ".claude", "skills", "parley-table"),
+		filepath.Join(home, ".agents", "skills", "parley-table"),
+		filepath.Join(home, ".claude", "skills", "parley-build"),
+		filepath.Join(home, ".agents", "skills", "parley-build"),
+	} {
+		if err := os.Remove(gone); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name          string
+		claude, codex bool
+		wantOK        []string
+	}{
+		{"claude sessions", true, false, []string{claudeLine}},
+		{"codex sessions", false, true, []string{codexLine}},
+		{"both", true, true, []string{claudeLine, codexLine}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := Check(context.Background(), Options{Claude: tc.claude, Codex: tc.codex, CodexBin: "no-such-codex", ClaudeBin: "no-such-claude", LineSkill: true})
+			var skills []Result
+			for _, r := range rs {
+				if r.Surface == "skill" {
+					skills = append(skills, r)
+				}
+			}
+			if len(skills) != len(tc.wantOK) {
+				t.Fatalf("want %d skill lines, got:\n%s", len(tc.wantOK), render(skills))
+			}
+			for i, want := range tc.wantOK {
+				if skills[i].Level != OK || !strings.Contains(skills[i].Detail, want) {
+					t.Errorf("skill line %d: %q, want ok for %s", i, skills[i], want)
+				}
+			}
+		})
+	}
+	if err := os.Remove(codexLine); err != nil {
+		t.Fatal(err)
+	}
+	claudeOnly := Check(context.Background(), Options{Claude: true, ClaudeBin: "no-such-claude", LineSkill: true})
+	if got := lines(claudeOnly, Fail); len(got) != 1 || got[0].Surface != "claude" {
+		t.Errorf("a Claude-only line failed on the Codex link:\n%s", render(claudeOnly))
+	}
+	both := Check(context.Background(), Options{Claude: true, Codex: true, ClaudeBin: "no-such-claude", CodexBin: "no-such-codex", LineSkill: true})
+	var named bool
+	for _, r := range lines(both, Fail) {
+		named = named || (r.Surface == "skill" && strings.Contains(r.Detail, codexLine) && strings.Contains(r.Detail, "install.sh"))
+	}
+	if !named {
+		t.Errorf("a line with a Codex session does not FAIL on the missing %s:\n%s", codexLine, render(both))
+	}
+	if rs := Check(context.Background(), Options{LineSkill: true}); len(rs) != 0 {
+		t.Errorf("no harness chosen, yet:\n%s", render(rs))
+	}
+}
+
 func TestAMissingSkillLinkIsAFAILNamingIt(t *testing.T) {
 	home, _ := skillHome(t)
 	gone := filepath.Join(home, ".agents", "skills", "parley-table")
