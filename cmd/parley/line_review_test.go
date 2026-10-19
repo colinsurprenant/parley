@@ -88,6 +88,33 @@ func TestLineAddRefusesACheckoutThatResolvesToAPathWithADollar(t *testing.T) {
 	b.wantLineUnchanged(t, before, target)
 }
 
+// TestLineAddResolvesADotDotAfterALinkWhereTheLinkLeads: a ".." after a link
+// climbs from where the link leads, as the filesystem has it. side/lnk/.. is the
+// checkout, not side, and the session is recorded and its file written there.
+func TestLineAddResolvesADotDotAfterALinkWhereTheLinkLeads(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	real := b.gitCheckout(t, "co")
+	if err := os.Mkdir(filepath.Join(real, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	side := b.plainCheckout(t, "side")
+	if err := os.Symlink(filepath.Join(real, "sub"), filepath.Join(side, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	b.mustAdd(t, "demo", "plan", "claude", side+"/lnk/..")
+	rec := b.record(t, "demo")
+	if len(rec.Sessions) != 1 || rec.Sessions[0].Checkout != real {
+		t.Fatalf("sessions = %+v, want plan recorded at %s", rec.Sessions, real)
+	}
+	if _, err := os.Lstat(filepath.Join(real, ".mcp.json")); err != nil {
+		t.Errorf("no .mcp.json in the checkout: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(side, ".mcp.json")); err == nil {
+		t.Errorf("an .mcp.json was written into %s, the directory the spelling cleans to", side)
+	}
+}
+
 // worktreeOf makes a linked worktree of repo named name in the bench's root.
 func (b *lineBench) worktreeOf(t *testing.T, repo, name string) string {
 	t.Helper()
