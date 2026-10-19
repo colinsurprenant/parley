@@ -10,7 +10,8 @@ import (
 )
 
 // TestAppendAndRemoveExcludeLine: the exclude file is only appended to, and the
-// line comes out again with the rest as it was.
+// line comes out again with the rest as it was, a file that was not there
+// included.
 func TestAppendAndRemoveExcludeLine(t *testing.T) {
 	const line = "/.mcp.json"
 	for _, c := range []struct {
@@ -18,15 +19,16 @@ func TestAppendAndRemoveExcludeLine(t *testing.T) {
 		exists        bool
 		wantAdded     bool
 		wantSep       bool
+		wantMade      bool
 		wantAfterAdd  string
 	}{
-		{"no file", "", false, true, false, "/.mcp.json\n"},
-		{"an empty file", "", true, true, false, "/.mcp.json\n"},
-		{"a terminated file", "a\nb\n", true, true, false, "a\nb\n/.mcp.json\n"},
-		{"an unterminated file", "a\nb", true, true, true, "a\nb\n/.mcp.json\n"},
-		{"the line is there", "a\n/.mcp.json\nb\n", true, false, false, "a\n/.mcp.json\nb\n"},
-		{"the line is there, last and unterminated", "a\n/.mcp.json", true, false, false, "a\n/.mcp.json"},
-		{"lookalikes only", "/.mcp.json.bak\n .mcp.json\n/.mcp.json \n", true, true, false, "/.mcp.json.bak\n .mcp.json\n/.mcp.json \n/.mcp.json\n"},
+		{"no file", "", false, true, false, true, "/.mcp.json\n"},
+		{"an empty file", "", true, true, false, false, "/.mcp.json\n"},
+		{"a terminated file", "a\nb\n", true, true, false, false, "a\nb\n/.mcp.json\n"},
+		{"an unterminated file", "a\nb", true, true, true, false, "a\nb\n/.mcp.json\n"},
+		{"the line is there", "a\n/.mcp.json\nb\n", true, false, false, false, "a\n/.mcp.json\nb\n"},
+		{"the line is there, last and unterminated", "a\n/.mcp.json", true, false, false, false, "a\n/.mcp.json"},
+		{"lookalikes only", "/.mcp.json.bak\n .mcp.json\n/.mcp.json \n", true, true, false, false, "/.mcp.json.bak\n .mcp.json\n/.mcp.json \n/.mcp.json\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "exclude")
@@ -35,24 +37,64 @@ func TestAppendAndRemoveExcludeLine(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			added, sep, note, err := appendExcludeLine(path, line)
-			if err != nil || note != "" || added != c.wantAdded || sep != c.wantSep {
-				t.Fatalf("appendExcludeLine = %v, %v, %q, %v; want %v, %v, no note", added, sep, note, err, c.wantAdded, c.wantSep)
+			res, note, err := appendExcludeLine(path, line)
+			if err != nil || note != "" || res.added != c.wantAdded || res.sep != c.wantSep || res.made != c.wantMade {
+				t.Fatalf("appendExcludeLine = %+v, %q, %v; want added %v, sep %v, made %v, no note", res, note, err, c.wantAdded, c.wantSep, c.wantMade)
 			}
 			if got := string(mustRead(t, path)); got != c.wantAfterAdd {
 				t.Fatalf("after the append: %q, want %q", got, c.wantAfterAdd)
 			}
-			if !added {
+			if !res.added {
 				return
 			}
-			removed, err := removeExcludeLine(path, line, sep)
+			removed, err := removeExcludeLine(path, line, res.sep, res.made)
 			if err != nil || !removed {
 				t.Fatalf("removeExcludeLine = %v, %v", removed, err)
+			}
+			if !c.exists {
+				// A file the line made, with nothing else in it, goes with the line.
+				if _, err := os.Lstat(path); err == nil {
+					t.Error("the file the line created is still there")
+				}
+				return
 			}
 			if got := string(mustRead(t, path)); got != c.content {
 				t.Errorf("after the removal: %q, want the file as it was: %q", got, c.content)
 			}
 		})
+	}
+}
+
+// TestRemoveExcludeLineKeepsAFileItMadeThatHoldsMore: the file the line created is
+// the user's once something else is in it.
+func TestRemoveExcludeLineKeepsAFileItMadeThatHoldsMore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exclude")
+	res, _, err := appendExcludeLine(path, "/.mcp.json")
+	if err != nil || !res.made {
+		t.Fatalf("= %+v, %v", res, err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("mine\n")
+	f.Close()
+	if removed, err := removeExcludeLine(path, "/.mcp.json", res.sep, res.made); err != nil || !removed {
+		t.Fatalf("= %v, %v", removed, err)
+	}
+	if got := string(mustRead(t, path)); got != "mine\n" {
+		t.Errorf("file = %q", got)
+	}
+	// A file the line made that its line is no longer in, and that is empty, goes.
+	empty := filepath.Join(t.TempDir(), "exclude")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := removeExcludeLine(empty, "/.mcp.json", false, true); err != nil || removed {
+		t.Fatalf("= %v, %v", removed, err)
+	}
+	if _, err := os.Lstat(empty); err == nil {
+		t.Error("an empty file the line made is still there")
 	}
 }
 
@@ -62,16 +104,16 @@ func TestRemoveExcludeLineTakesOnlyTheFirstExactLine(t *testing.T) {
 	if err := os.WriteFile(path, []byte("x\n/.mcp.json\ny\n/.mcp.json\nz"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if removed, err := removeExcludeLine(path, "/.mcp.json", false); err != nil || !removed {
+	if removed, err := removeExcludeLine(path, "/.mcp.json", false, false); err != nil || !removed {
 		t.Fatalf("= %v, %v", removed, err)
 	}
 	if got := string(mustRead(t, path)); got != "x\ny\n/.mcp.json\nz" {
 		t.Errorf("file = %q", got)
 	}
-	if removed, err := removeExcludeLine(path, "/.codex/config.toml", false); err != nil || removed {
+	if removed, err := removeExcludeLine(path, "/.codex/config.toml", false, false); err != nil || removed {
 		t.Errorf("a line that is not there: %v, %v", removed, err)
 	}
-	if removed, err := removeExcludeLine(filepath.Join(t.TempDir(), "none"), "x", false); err != nil || removed {
+	if removed, err := removeExcludeLine(filepath.Join(t.TempDir(), "none"), "x", false, false); err != nil || removed {
 		t.Errorf("a file that is not there: %v, %v", removed, err)
 	}
 }
@@ -88,10 +130,10 @@ func TestExcludeFilesAreNotFollowedThroughLinks(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if added, _, note, err := appendExcludeLine(link, "/x"); err != nil || added || !strings.Contains(note, "no exclude line added") {
-		t.Errorf("append through a link = %v, %q, %v", added, note, err)
+	if res, note, err := appendExcludeLine(link, "/x"); err != nil || res.added || !strings.Contains(note, "no exclude line added") {
+		t.Errorf("append through a link = %+v, %q, %v", res, note, err)
 	}
-	if _, err := removeExcludeLine(link, "/.mcp.json", false); err == nil {
+	if _, err := removeExcludeLine(link, "/.mcp.json", false, false); err == nil {
 		t.Error("removal through a link did not fail")
 	}
 	if got := string(mustRead(t, target)); got != "/.mcp.json\n" {
@@ -102,8 +144,8 @@ func TestExcludeFilesAreNotFollowedThroughLinks(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "nowhere"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	if added, _, _, err := appendExcludeLine(dangling, "/x"); err != nil || added {
-		t.Errorf("append to a dangling link = %v, %v", added, err)
+	if res, _, err := appendExcludeLine(dangling, "/x"); err != nil || res.added {
+		t.Errorf("append to a dangling link = %+v, %v", res, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "nowhere")); err == nil {
 		t.Error("the dangling link's target was created")
@@ -113,8 +155,8 @@ func TestExcludeFilesAreNotFollowedThroughLinks(t *testing.T) {
 	if err := os.WriteFile(big, []byte(strings.Repeat("x\n", excludeMax)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if added, _, note, err := appendExcludeLine(big, "/x"); err != nil || added || !strings.Contains(note, "larger") {
-		t.Errorf("append to a huge file = %v, %q, %v", added, note, err)
+	if res, note, err := appendExcludeLine(big, "/x"); err != nil || res.added || !strings.Contains(note, "larger") {
+		t.Errorf("append to a huge file = %+v, %q, %v", res, note, err)
 	}
 }
 
@@ -195,6 +237,7 @@ func TestLineRecordCheckRefusesWhatTheVerbsDidNotWrite(t *testing.T) {
 		{"a digest that is not one", func(r *lineRecord) { r.Sessions[0].Files[0].SHA256 = "sha256:abc" }, "digest"},
 		{"an upper-case digest", func(r *lineRecord) { r.Sessions[0].Files[0].SHA256 = "sha256:" + strings.Repeat("A", 64) }, "digest"},
 		{"a relative exclude file", func(r *lineRecord) { r.Sessions[0].Files[0].ExcludeFile = "info/exclude" }, "exclude_file"},
+		{"an exclude_made without an exclude_file", func(r *lineRecord) { r.Sessions[1].Files[0].ExcludeMade = true }, "exclude_sep or exclude_made"},
 		{"a made .codex on a Claude file", func(r *lineRecord) { r.Sessions[0].Files[0].MadeDir = true }, "directory the line made"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -247,13 +290,26 @@ func TestLineRecordCheckRefusesWhatTheVerbsDidNotWrite(t *testing.T) {
 }
 
 // TestWriteLineRecordRefusesOneTheReadersWouldRefuse: setup never leaves a record
-// that the teardown would refuse to read.
+// that the teardown would refuse to read, whether for its size or for what it
+// says.
 func TestWriteLineRecordRefusesOneTheReadersWouldRefuse(t *testing.T) {
 	dir := t.TempDir()
 	rec := goodLineRecord(dir)
-	rec.Sessions[0].Checkout = "/" + strings.Repeat("c", lineRecordMax)
+	long := "/" + strings.Repeat("c", lineRecordMax)
+	rec.Sessions[0].Checkout = long
+	rec.Sessions[0].Files[0].Path = long + "/.mcp.json"
 	if _, err := writeLineRecord(dir, rec); err == nil || !strings.Contains(err.Error(), "over the") {
 		t.Fatalf("writeLineRecord = %v, want a refusal for its size", err)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Errorf("a refused write left %d entries", len(ents))
+	}
+	// A record the reader would call not valid is refused before it is written: a
+	// checkout that is not the one its launch file is in.
+	rec = goodLineRecord(dir)
+	rec.Sessions[0].Checkout = "/work/elsewhere"
+	if _, err := writeLineRecord(dir, rec); err == nil || !strings.Contains(err.Error(), "would not be valid") || !strings.Contains(err.Error(), "launch file") {
+		t.Fatalf("writeLineRecord = %v, want a refusal for a record the readers would refuse", err)
 	}
 	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
 		t.Errorf("a refused write left %d entries", len(ents))

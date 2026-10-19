@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -206,12 +208,32 @@ func planLineAdd(in lineAddInput) (*linePlan, error) {
 	if hasControl(in.checkout) {
 		return nil, cfgErrf("--checkout %q holds a control character: it is printed into commands and into the text the session reads", in.checkout)
 	}
-	p.checkout = filepath.Clean(in.checkout)
-	if fi, err := os.Stat(p.checkout); err != nil {
+	if fi, err := os.Stat(in.checkout); err != nil {
 		return nil, cfgErrf("--checkout %q: %v", in.checkout, err)
 	} else if !fi.IsDir() {
 		return nil, cfgErrf("--checkout %q is not a directory", in.checkout)
 	}
+	// The checkout is resolved once, here, and the resolved path is the only one
+	// used from now on, recorded and printed: two spellings of one directory (a
+	// symlinked parent, /tmp and /private/tmp) would otherwise be two checkouts to
+	// the record's text and one to its sharing, and the record would not hold.
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(in.checkout))
+	if err != nil {
+		return nil, cfgErrf("--checkout %q: %v", in.checkout, err)
+	}
+	if resolved != filepath.Clean(in.checkout) {
+		// What a link led to is held to what was asked of the spelling that led there.
+		if err := checkUTF8(pathField{"--checkout, resolved,", resolved}); err != nil {
+			return nil, err
+		}
+		if strings.Contains(resolved, "$") {
+			return nil, cfgErrf("--checkout %q resolves to %q, which holds a '$': it is printed into commands, and a shell would expand it", in.checkout, resolved)
+		}
+		if hasControl(resolved) {
+			return nil, cfgErrf("--checkout %q resolves to %q, which holds a control character: it is printed into commands and into the text the session reads", in.checkout, resolved)
+		}
+	}
+	p.checkout = resolved
 
 	base, err := state.ResolveBase(in.stateDir)
 	if err != nil {
@@ -484,7 +506,10 @@ func (r *lineAddRun) writeLaunchFile(ctx context.Context) error {
 	if p.harness == harnessClaude {
 		data = p.data
 	} else {
-		data = []byte(codexConfigTOML)
+		var err error
+		if data, err = lineCodexConfig(p.id); err != nil {
+			return err
+		}
 		dir := filepath.Dir(path)
 		_, lerr := os.Lstat(dir)
 		made := errors.Is(lerr, fs.ErrNotExist)
@@ -510,21 +535,57 @@ func (r *lineAddRun) writeLaunchFile(ctx context.Context) error {
 		r.excludeNote = note
 		return nil
 	}
-	added, sep, note, err := appendExcludeLine(file, excludeLine)
+	res, note, err := appendExcludeLine(file, excludeLine)
 	switch {
 	case err != nil:
 		return err
 	case note != "":
 		r.excludeNote = note
-	case added:
-		r.file.ExcludeFile, r.file.ExcludeSep = file, sep
+	case res.added:
+		r.file.ExcludeFile, r.file.ExcludeSep, r.file.ExcludeMade = file, res.sep, res.made
 		r.push("exclude line "+excludeLine+" in "+file, func() error {
-			_, err := removeExcludeLine(file, excludeLine, sep)
+			_, err := removeExcludeLine(file, excludeLine, res.sep, res.made)
 			return err
 		})
 		r.logf("added %s to %s", excludeLine, file)
+	default:
+		// The line is there. When another session of this line put it there (a
+		// worktree of the same repository shares the exclude file), it is this
+		// session's to take out too, once nothing else needs it.
+		if owner, ok := p.excludeOwner(file, excludeLine); ok {
+			r.file.ExcludeFile, r.file.ExcludeSep, r.file.ExcludeMade = file, owner.ExcludeSep, owner.ExcludeMade
+		}
 	}
 	return nil
+}
+
+// excludeOwner finds a session of the line that put the line in the exclude file:
+// one whose launch file is of this harness's kind (it has the same line) and
+// records that exclude file.
+func (p *linePlan) excludeOwner(excludeFile, line string) (lineFile, bool) {
+	for _, s := range p.rec.Sessions {
+		_, l := launchFileOf(s.Harness, s.Checkout)
+		if l != line || len(s.Files) != 1 || s.Files[0].ExcludeFile == "" {
+			continue
+		}
+		if resolveExisting(s.Files[0].ExcludeFile) == resolveExisting(excludeFile) {
+			return s.Files[0], true
+		}
+	}
+	return lineFile{}, false
+}
+
+// lineCodexConfig is the Codex config a line writes: the constant body `table
+// new` writes, behind a first comment line that names the line and carries a
+// nonce. The body is a constant, so a copy of it that anyone else made would hash
+// to the same digest; the nonce is what makes the digest a proof that this run
+// wrote the file, and the record keeps the digest of the whole.
+func lineCodexConfig(id string) ([]byte, error) {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, fmt.Errorf("make a nonce for the Codex config: %w", err)
+	}
+	return []byte(fmt.Sprintf("# written by parley line add for line %s (%s)\n%s", id, hex.EncodeToString(nonce[:]), codexConfigTOML)), nil
 }
 
 // removeIfDigest removes the file at path if it is a regular file whose bytes
@@ -591,6 +652,9 @@ func (r *lineAddRun) startCodex(ctx context.Context) error {
 	thread, answer, err := startCodexSession(ctx, r, codexSession{
 		noun: "session", nick: p.nick, model: p.model, dir: p.checkout,
 		bin: p.codexBin, name: p.codexName(), prompt: text, base: p.base, stream: p.rec.Stream,
+		// The primer turn answers a text and posts nothing; in the user's checkout
+		// it has no business writing.
+		sandbox: "read-only",
 	})
 	if err != nil {
 		return err

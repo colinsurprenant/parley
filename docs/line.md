@@ -119,11 +119,14 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    nothing changed, a nick that is invalid, reserved (`tables`, `builds`, `lines`),
    the chair's, or already in the line, all without regard to ASCII case; a model
    outside the charset `table new` takes; a `<checkout>` that is not an absolute,
-   existing directory, or holds a `$`; the machine, when `parley doctor`'s static
-   checks fail or the `parley-line` skill is not linked under the root the harness
-   reads; and a launch file that is in the checkout and is not this line's, below.
-   A nick whose lock a running session or pump holds is refused with exit 1. The
-   launch file is the one thing `line add` writes in your checkout, and only where
+   existing directory, or holds a `$`; and a launch file that is in the checkout
+   and is not this line's, below. A nick whose lock a running session or pump
+   holds is refused with exit 1, and so is a machine that `parley doctor`'s static
+   checks fail on, the `parley-line` skill not being linked under the root the
+   harness reads among them, again with nothing changed. The checkout is resolved
+   once, through any links in its path, and the resolved path is the one recorded
+   and printed, so two spellings of one directory are one checkout. The launch
+   file is the one thing `line add` writes in your checkout, and only where
    there is none: it never overwrites a file, writes through a link, or shares a
    file it cannot prove is the one it wrote, which it proves with the digest it
    keeps in the record.
@@ -169,6 +172,7 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    - It writes `<checkout>/.codex/config.toml`:
 
      ```
+     # written by parley line add for line <channel> (<16 hex digits>)
      sandbox_mode = "workspace-write"
      approval_policy = "on-request"
 
@@ -176,6 +180,9 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
      network_access = true
      ```
 
+     The first line is a comment with a nonce of its own: the rest is the same text
+     for every checkout, so only the comment makes the file's digest, which the
+     record holds, a proof that `line add` wrote it and not a copy of it.
      **This turns network access on for Codex in that checkout**, for every Codex
      session there and not only this one. `parley send` has to reach the loopback
      server from inside the sandbox, which is why; it is what `parley table new`
@@ -186,9 +193,11 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
      (mode 0700, outside the checkout and where the sandbox can write), holding a
      marker with the line and the nick, and the primer carries the path of the
      session's reply file in it.
-   - It starts the thread with `codex exec --json` on the primer, network off for
-     that one turn so the session cannot post before its pump is up, stdin closed
-     and a five-minute limit, `-m <model>` when you gave one. The turn must have
+   - It starts the thread with `codex exec --json` on the primer, in a read-only
+     sandbox (`-s read-only`) and with the network off for that one turn, so the
+     session can neither post before its pump is up nor write in your checkout,
+     with stdin closed and a five-minute limit, `-m <model>` when you gave one. The
+     turn must have
      completed; a thread that did not is deleted and the add fails and undoes
      itself. The thread id it announces is recorded for `--thread auto`, and
      printed with the session's answer to the primer.
@@ -221,13 +230,19 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    appends `/.mcp.json` or `/.codex/config.toml` to the file `git rev-parse
    --git-path info/exclude` names, the exclude file every checkout of the repo
    shares, unless that exact line is already there, so the file stays out of `git
-   status` without a tracked file touched. A directory that is not a git checkout
-   is allowed and gets no such line, and neither does one that is only inside a
-   repository, where the anchored line would not match. An exclude file that is a
-   link is not written through; the command says so and carries on. If anything
-   fails, or you interrupt it, everything this one command made is taken down
-   again: the launch file, its line in the exclude file, the reply directory, the
-   thread record and the Codex thread (`codex delete --force`).
+   status` without a tracked file touched. The file is made when the repository
+   has none. A directory that is not a git checkout is allowed and gets no such
+   line, and neither does one that is only inside a repository, where the anchored
+   line would not match. An exclude file that is a link is not written through; the
+   command says so and carries on. Linked worktrees of one repository share one
+   exclude file, so a session of this line in another worktree that finds the line
+   there takes it as the line's own, and it is taken out only when the last file it
+   hides is gone ("Taking it down"). If anything fails, or you interrupt it, what
+   this one command made is taken down again: the launch file, its line in the
+   exclude file (and the file, if it made it), the reply directory, the thread
+   record and the Codex thread (`codex delete --force`). What the primer turn did
+   is not on that list because it can write nothing in the checkout: its sandbox is
+   read-only.
 
 6. **Give each session its role**, in one line each, at its terminal or in the
    channel as `<chair>`: what the session does, and what it tells the others.
@@ -359,9 +374,18 @@ before it has read the others', run a table instead: a line has no seal.
     `.mcp.json` or `.codex/config.toml`, **if its bytes still hash to the digest
     in the record and it is a regular file in a real directory**, and then the
     `.codex` directory if `line add` made it and it is empty, and the line in the
-    exclude file if `line add` added it: that exact line, and nothing else, the
-    rest of the file byte for byte (an exclude file that has become a link is not
-    written through: the line stays, and the command says so). A file another
+    exclude file if `line add` added it (or another session of the line did, in
+    another worktree of the repository): that exact line, and nothing else. The rest
+    of the file is left byte for byte, and the file itself goes if `line add` made it
+    and nothing else is in it. One byte can differ: when the file ended without a
+    newline, `line add` supplied one before its line, and that newline goes with the
+    line only while the line is still the last; if another line was appended after
+    it, the newline stays. The exclude file is the repository's, shared by all its
+    worktrees, so the line is taken out only when no worktree of the repository has
+    a file at its path any more, whether it is another session's, another line's or
+    your own; otherwise it stays and the command says which file needs it, and the
+    last session dropped takes it out. An exclude file that has become a link is not
+    written through: the line stays, and the command says so. A file another
     session of the checkout still uses stays until that session goes.
 
   A launch file that is no longer the one the line wrote (you edited it, replaced
@@ -375,7 +399,10 @@ before it has read the others', run a table instead: a line has no seal.
   every session's nick lock, refusing if any session is running, judges every
   session by the rules above before it removes anything, drops them, and removes
   `<base>/lines/<channel>/`. A failure partway leaves `line.json` listing what is
-  still there, so running it again finishes. It takes `--force` as `drop` does.
+  still there, so running it again finishes. It takes `--force` as `drop` does. A
+  `line new` that was killed after it made the line's directory and before it wrote
+  the record leaves a directory with no `line.json`; `line new` for that channel
+  says so, and `line end` removes the directory when it holds nothing else.
 - `<base>/<nick>/` keeps each session's cursor and IRC password, so the same nick
   can come back; leave it, or remove it by hand once the nick is retired. The
   server and its accounts stay up for the next table, build or line.

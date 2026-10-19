@@ -142,7 +142,7 @@ func checkLineIDFree(base, id string) error {
 	} {
 		if _, err := os.Lstat(kind.dir); err == nil {
 			if kind.name == "line" {
-				return cfgErrf("line %q already exists under %s: parley line end %s takes it down", id, base, id)
+				return lineExistsErr(base, id)
 			}
 			return cfgErrf("%q is already a %s under %s: parley %s %s takes it down, and a line takes another id", id, kind.name, base, kind.end, id)
 		} else if !errors.Is(err, fs.ErrNotExist) {
@@ -150,6 +150,15 @@ func checkLineIDFree(base, id string) error {
 		}
 	}
 	return nil
+}
+
+// lineExistsErr is the refusal for an id that has a line directory already. One
+// without a record is a `line new` that did not finish, which `line end` clears.
+func lineExistsErr(base, id string) error {
+	if _, err := os.Lstat(filepath.Join(lineDirOf(base, id), lineRecordName)); errors.Is(err, fs.ErrNotExist) {
+		return cfgErrf("line %q has a directory under %s and no record, a line new that did not finish: parley line end %s removes it", id, base, id)
+	}
+	return cfgErrf("line %q already exists under %s: parley line end %s takes it down", id, base, id)
 }
 
 // lineRun is one `line new` or `line add` in progress: what it has made, so a
@@ -198,7 +207,7 @@ func (r *lineRun) makeLine(rec lineRecord) error {
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			return cfgErrf("line %q already exists under %s: parley line end %s takes it down", rec.ID, rec.StateDir, rec.ID)
+			return lineExistsErr(rec.StateDir, rec.ID)
 		}
 		return fmt.Errorf("create %s: %w", dir, err)
 	}

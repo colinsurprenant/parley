@@ -197,6 +197,10 @@ type codexSession struct {
 	bin, name    string // the resolved codex, and how the human spells it
 	prompt       string // the primer
 	base, stream string // where the thread is recorded
+	// sandbox is the -s of the turn, workspace-write when empty: a table's seat or
+	// a build's peer runs in a worktree parley made for it, a line's session in the
+	// user's own checkout.
+	sandbox string
 }
 
 // startCodexSession starts a session with its primer as the first prompt, reads
@@ -206,7 +210,11 @@ type codexSession struct {
 // id is known, whatever becomes of the turn. It returns the thread and the
 // session's answer to the primer.
 func startCodexSession(ctx context.Context, env setupEnv, c codexSession) (thread, answer string, err error) {
-	args := []string{"exec", "--json", "-C", c.dir, "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=false"}
+	sandbox := c.sandbox
+	if sandbox == "" {
+		sandbox = "workspace-write"
+	}
+	args := []string{"exec", "--json", "-C", c.dir, "-s", sandbox, "-c", "sandbox_workspace_write.network_access=false"}
 	if c.model != "" {
 		args = append(args, "-m", c.model)
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -633,8 +634,23 @@ func TestLineAddNonGitCheckoutGetsNoExcludeLine(t *testing.T) {
 	}
 }
 
-// codexConfigWant is the config a Codex session's checkout gets.
+// codexConfigWant is the body of the config a Codex session's checkout gets,
+// which is `table new`'s, behind a first comment line.
 const codexConfigWant = "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-request\"\n\n[sandbox_workspace_write]\nnetwork_access = true\n"
+
+var codexConfigHeaderRE = regexp.MustCompile(`^# written by parley line add for line ([a-z0-9-]+) \(([0-9a-f]{16})\)\n`)
+
+// wantCodexConfig fails unless got is the line's Codex config for line id: the
+// comment that names the line and carries a nonce, then the constant body. It
+// returns the nonce.
+func wantCodexConfig(t *testing.T, got, id string) string {
+	t.Helper()
+	m := codexConfigHeaderRE.FindStringSubmatch(got)
+	if m == nil || m[1] != id || got[len(m[0]):] != codexConfigWant {
+		t.Fatalf(".codex/config.toml\n%s\nwant a comment naming line %s and a nonce, then\n%s", got, id, codexConfigWant)
+	}
+	return m[2]
+}
 
 // TestLineAddCodexSession is the acceptance run for a Codex session on the fake
 // codex: the config, the reply directory and marker, the thread started the way a
@@ -649,9 +665,8 @@ func TestLineAddCodexSession(t *testing.T) {
 	stream := b.stream("demo")
 
 	cfgPath := filepath.Join(co, ".codex", "config.toml")
-	if got := string(mustRead(t, cfgPath)); got != codexConfigWant {
-		t.Errorf(".codex/config.toml\n%s\nwant\n%s", got, codexConfigWant)
-	}
+	cfgBytes := mustRead(t, cfgPath)
+	wantCodexConfig(t, string(cfgBytes), "demo")
 	if fi, err := os.Stat(filepath.Join(co, ".codex")); err != nil || !fi.IsDir() {
 		t.Errorf(".codex: %v, %v", fi, err)
 	}
@@ -686,7 +701,7 @@ func TestLineAddCodexSession(t *testing.T) {
 	if f.Path != cfgPath || f.SHA256 != fileDigestOf(t, cfgPath) || f.ExcludeFile != filepath.Join(co, ".git", "info", "exclude") || !f.MadeDir {
 		t.Errorf("file entry %+v", f)
 	}
-	if want := tableDigest([]byte(codexConfigWant)); f.SHA256 != want {
+	if want := tableDigest(cfgBytes); f.SHA256 != want {
 		t.Errorf("digest %s, want the config's %s", f.SHA256, want)
 	}
 
@@ -710,7 +725,7 @@ func TestLineAddCodexSession(t *testing.T) {
 	if len(argv) != 11 || argv[0] != "exec" {
 		t.Fatalf("codex argv %q", argv)
 	}
-	if got, want := strings.Join(argv[1:10], " "), "--json -C "+co+" -s workspace-write -c sandbox_workspace_write.network_access=false -m gpt-5"; got != want {
+	if got, want := strings.Join(argv[1:10], " "), "--json -C "+co+" -s read-only -c sandbox_workspace_write.network_access=false -m gpt-5"; got != want {
 		t.Errorf("codex exec flags %q, want %q", got, want)
 	}
 	prompt := argv[10]

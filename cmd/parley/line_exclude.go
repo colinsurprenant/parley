@@ -81,51 +81,69 @@ func readExclude(path string) (content string, exists bool, err error) {
 	return string(b), true, nil
 }
 
+// excludeAdd says what appendExcludeLine did to the file.
+type excludeAdd struct {
+	// added is whether it wrote the line (it was not there).
+	added bool
+	// sep is whether it had to end the file's last line first, with a newline.
+	sep bool
+	// made is whether the file was not there and it created it.
+	made bool
+}
+
 // appendExcludeLine appends line to the exclude file at path unless an identical
 // line is already there, ending the file's last line first when it has no
-// newline. added says whether it wrote. A file it cannot append to safely (a link,
-// a directory missing, too large) is a note and no error: the line is a
-// convenience, and the launch file is as good without it.
-func appendExcludeLine(path, line string) (added, sep bool, note string, err error) {
+// newline, and creating the file when it is not there. A file it cannot append to
+// safely (a link, a directory missing, too large) is a note and no error: the line
+// is a convenience, and the launch file is as good without it.
+func appendExcludeLine(path, line string) (res excludeAdd, note string, err error) {
 	content, exists, err := readExclude(path)
 	if err != nil {
-		return false, false, fmt.Sprintf("no exclude line added: %v", err), nil
+		return res, fmt.Sprintf("no exclude line added: %v", err), nil
 	}
 	if exists {
 		for _, l := range strings.Split(content, "\n") {
 			if l == line {
-				return false, false, "", nil
+				return res, "", nil
 			}
 		}
 	} else if fi, serr := os.Stat(filepath.Dir(path)); serr != nil || !fi.IsDir() {
-		return false, false, fmt.Sprintf("no exclude line added: %s is not a directory", filepath.Dir(path)), nil
+		return res, fmt.Sprintf("no exclude line added: %s is not a directory", filepath.Dir(path)), nil
 	}
 	text := line + "\n"
 	if content != "" && !strings.HasSuffix(content, "\n") {
-		text, sep = "\n"+text, true
+		text, res.sep = "\n"+text, true
 	}
+	// O_EXCL is not asked for: the file may be made by someone between the look and
+	// the open, and then the line is appended to theirs; but the run only claims to
+	// have made a file it saw was not there.
+	res.made = !exists
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
 	if err != nil {
-		return false, false, "", fmt.Errorf("open %s to append %s: %w", path, line, err)
+		return excludeAdd{}, "", fmt.Errorf("open %s to append %s: %w", path, line, err)
 	}
 	if _, err := f.WriteString(text); err != nil {
 		f.Close()
-		return false, false, "", fmt.Errorf("append to %s: %w", path, err)
+		return excludeAdd{}, "", fmt.Errorf("append to %s: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
-		return false, false, "", fmt.Errorf("close %s: %w", path, err)
+		return excludeAdd{}, "", fmt.Errorf("close %s: %w", path, err)
 	}
-	return true, sep, "", nil
+	res.added = true
+	return res, "", nil
 }
 
 // removeExcludeLine takes the first line of the exclude file at path that is
 // exactly line out of it, and its newline, and nothing else: the rest of the file
-// stays as it was, byte for byte. sep says that appendExcludeLine had to end the
-// file's last line to add this one: when the line is still the last, that newline
-// goes with it, and the file is as it was before the append. The file is replaced
-// through a temp file and a rename, with the mode it had. removed says whether the
-// line was there.
-func removeExcludeLine(path, line string, sep bool) (removed bool, err error) {
+// stays as it was, byte for byte. The one exception is the newline that
+// appendExcludeLine had to supply to end the file's last line (sep): it goes with
+// the line while the line is still the last, which leaves the file as it was
+// before the append, and stays when another line was appended after it, since it
+// then ends a line that is no longer the last. made says that the line created
+// the file; if nothing is left in it, it is removed. The file is replaced through a
+// temp file and a rename, with the mode it had. removed says whether the line was
+// there.
+func removeExcludeLine(path, line string, sep, made bool) (removed bool, err error) {
 	content, exists, err := readExclude(path)
 	if err != nil {
 		return false, err
@@ -133,6 +151,7 @@ func removeExcludeLine(path, line string, sep bool) (removed bool, err error) {
 	if !exists {
 		return false, nil
 	}
+	after, removed := content, false
 	start := 0
 	for start <= len(content) {
 		end := strings.IndexByte(content[start:], '\n')
@@ -143,23 +162,87 @@ func removeExcludeLine(path, line string, sep bool) (removed bool, err error) {
 			next = start + end + 1
 		}
 		if text == line {
-			fi, err := os.Lstat(path)
-			if err != nil {
-				return false, err
-			}
 			head := content[:start]
 			if sep && next == len(content) && strings.HasSuffix(head, "\n") {
 				head = head[:len(head)-1]
 			}
-			if err := writeFileAtomic(path, []byte(head+content[next:]), fi.Mode().Perm()); err != nil {
-				return false, err
-			}
-			return true, nil
+			after, removed = head+content[next:], true
+			break
 		}
 		if end < 0 {
 			break
 		}
 		start = next
 	}
-	return false, nil
+	if made && after == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, err
+		}
+		return removed, nil
+	}
+	if !removed {
+		return false, nil
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if err := writeFileAtomic(path, []byte(after), fi.Mode().Perm()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// worktreeRoots are the roots of the worktrees of the repository the checkout is
+// in, as git lists them, the main one and the linked ones. It asks git from the
+// checkout when that is there and otherwise from the common git directory the
+// exclude file sits in (<common>/info/exclude). ok is false when git cannot say,
+// or names a path it quotes: nothing is then known of the other worktrees.
+func worktreeRoots(ctx context.Context, checkout, excludeFile string) (roots []string, ok bool) {
+	args := []string{"worktree", "list", "--porcelain"}
+	var out string
+	var err error
+	if fi, serr := os.Stat(checkout); serr == nil && fi.IsDir() {
+		out, _, err = runGit(ctx, checkout, gitEnv(), append(append([]string(nil), wtGitFlags...), args...), args)
+	} else {
+		common := filepath.Dir(filepath.Dir(excludeFile))
+		a := append([]string{"--git-dir", common}, args...)
+		out, _, err = runGit(ctx, "", gitEnv(), a, a)
+	}
+	if err != nil {
+		return nil, false
+	}
+	for _, l := range strings.Split(out, "\n") {
+		path, found := strings.CutPrefix(l, "worktree ")
+		if !found {
+			continue
+		}
+		if strings.HasPrefix(path, `"`) {
+			return nil, false
+		}
+		roots = append(roots, path)
+	}
+	return roots, len(roots) > 0
+}
+
+// excludeLineStillNeeded reports whether a file exists at the pattern's path, the
+// exclude line without its leading slash, at the root of any worktree of the
+// repository: the exclude file is shared by all of them, so the line a session of
+// this line added hides the launch files of the others, this line's or another
+// line's or the user's own. where names the worktree and the file that does; when
+// git cannot list the worktrees it is "" and needed is true, since nothing then
+// shows the line is not wanted.
+func excludeLineStillNeeded(ctx context.Context, checkout, excludeFile, line string) (needed bool, where string) {
+	roots, ok := worktreeRoots(ctx, checkout, excludeFile)
+	if !ok {
+		return true, ""
+	}
+	rel := strings.TrimPrefix(line, "/")
+	for _, root := range roots {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if _, err := os.Lstat(path); err == nil {
+			return true, path
+		}
+	}
+	return false, ""
 }

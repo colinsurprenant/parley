@@ -388,32 +388,41 @@ verbs:
            reserved (tables, builds, lines), the chair's or already in the line,
            without regard to ASCII case; a model over 128 bytes or outside
            letters, digits and . _ - : / @ [ ] + ; a --checkout that is not an
-           absolute existing directory, holds a '$' or a control character, or is
-           not UTF-8 (as is the binary, state and temp path); a state directory
+           absolute existing directory, holds or resolves to a path that holds
+           a '$' or a control character, or is not UTF-8 (as is the binary,
+           state and temp path; the checkout is resolved, links and all, and
+           the resolved path is the one recorded and printed); a state directory
            inside the checkout; a Claude session's .mcp.json that is in the
            checkout and is not the one this line wrote (the record holds the
            sha256 of its exact bytes), and a Codex session's
            .codex/config.toml likewise, or a .codex that is not a real
-           directory; the parley-line skill missing under the root the harness
-           reads (doctor's check); a Claude launch whose instructions are over
+           directory; a Claude launch whose instructions are over
            Claude Code's cap, measured in process as channel --check does; a Codex
-           nick that already has a thread record for the stream. A nick whose lock
-           a running session or pump holds is refused, exit 1. A Claude session
+           nick that already has a thread record for the stream. Exit 1, nothing
+           changed: a machine on which doctor's static checks fail, the
+           parley-line skill missing under the root the harness reads among them,
+           and a nick whose lock a running session or pump holds. A Claude session
            gets a .mcp.json in its checkout with one server, parley, whose args
            are the channel's launch flags with --nick ${PARLEY_NICK}, --skill
            line, the chair, --cap and --window; a second Claude session in the
            same checkout shares the file. A Codex session gets
            .codex/config.toml (workspace-write, on-request and network_access =
-           true, which turns network on for Codex in that checkout), a reply
+           true, which turns network on for Codex in that checkout, behind a
+           first comment line naming the line and carrying a nonce, so that its
+           digest proves the line wrote it), a reply
            directory parley-line-<id>-* under $TMPDIR at 0700 with a marker naming
            the line and the nick, and a thread started by codex exec --json on
-           the line's primer with stdin closed, network off for that turn, -m
-           when a model is given and a 5-minute limit, recorded in the
+           the line's primer in a read-only sandbox (-s read-only, the checkout
+           being the user's own) with stdin closed, network off for that turn,
+           -m when a model is given and a 5-minute limit, recorded in the
            codex-thread file --thread auto reads. Files are created with no
            overwrite and never through a link. When the checkout is the root of
            a git checkout, /.mcp.json or /.codex/config.toml is appended to the
-           file git rev-parse --git-path info/exclude names, unless the line is
-           there already; the record says whether the line added it. A failure
+           file git rev-parse --git-path info/exclude names (created if the
+           repository has none), unless the line is there already; the record
+           says whether the line added it, and a line put there by another
+           session of the line, as in another worktree of the repository, is
+           taken as the line's own. A failure
            or an interrupt takes down what the run made, a started Codex thread
            (codex delete --force) included. The output is what is left for that
            session: for Claude the cd and the launch line (plus --model), the
@@ -430,13 +439,20 @@ verbs:
            and its directory is not a link; otherwise it refuses, exit 1,
            naming it, and --force leaves the file and its exclude line in place
            and says so) and the exclude line (only if the line added it, that
-           exact line and nothing else, an exclude file that is a link being left
-           alone and said). It prints a codex delete line for a
+           exact line and nothing else, the rest of the file byte for byte but
+           for a final newline add supplied to end a last line, which stays when
+           another line was appended after it; a file add created goes when it
+           is empty; and only when no worktree of the repository has a file at
+           its path any more, else it stays and the output says which file needs
+           it; an exclude file that is a link is left alone and said). It
+           prints a codex delete line for a
            Codex session and never runs one. end <id> drops every session on
            the same rules with every lock taken and every claim judged first,
            then removes the line's directory; a failure partway leaves
            line.json describing what is still there, so running it again
-           finishes
+           finishes. A line directory with no line.json and nothing else in it,
+           left by a line new that was killed, is removed by end, and line new
+           for that id says to run it
   version  print one line, "parley <version> rev <revision> <go version>", from
            the build information the Go toolchain stamped into the binary: the
            module version ((devel) for a build made from a checkout), the first

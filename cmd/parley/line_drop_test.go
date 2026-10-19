@@ -143,7 +143,11 @@ func TestLineDropKeepsADotCodexDirectoryItDidNotMake(t *testing.T) {
 }
 
 // TestLineDropKeepsEveryOtherExcludeLineByteForByte: the exclude file after an
-// add and a drop is the file before them, whatever it held.
+// add and a drop is the file before them, whatever it held, when the lines come
+// off in the reverse of the order they went on. The one byte that can differ is a
+// final newline parley supplied to end a last line that had none, when another
+// line was appended after it and the line parley appended first is taken out
+// first; TestLineDropExcludeSeparatorStaysWhenAnotherLineFollowsIt has that case.
 func TestLineDropKeepsEveryOtherExcludeLineByteForByte(t *testing.T) {
 	for name, content := range map[string]string{
 		"empty":                    "",
@@ -792,5 +796,39 @@ func TestLineDropDoesNotFollowAnExcludeFileThatBecameALink(t *testing.T) {
 	}
 	if rec := b.record(t, "demo"); len(rec.Sessions) != 0 {
 		t.Errorf("sessions left: %+v", rec.Sessions)
+	}
+}
+
+// TestLineDropExcludeSeparatorStaysWhenAnotherLineFollowsIt: a file that ended in
+// no newline gets one from the first line appended; taken out last, that line
+// takes the newline with it and the file is as it was, and taken out first, with
+// another line after it, the newline stays, since it then ends a line that is not
+// the last. Every other byte is the file's own either way.
+func TestLineDropExcludeSeparatorStaysWhenAnotherLineFollowsIt(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		order []string
+		want  string
+	}{
+		{"reverse order", []string{"build", "plan"}, "a\nb"},
+		{"same order", []string{"plan", "build"}, "a\nb\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := newLineBench(t)
+			lineUp(t, b, "demo")
+			co := b.gitCheckout(t, "co")
+			exclude := filepath.Join(co, ".git", "info", "exclude")
+			if err := os.WriteFile(exclude, []byte("a\nb"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			b.mustAdd(t, "demo", "plan", "claude", co)
+			b.mustAdd(t, "demo", "build", "codex", co)
+			for _, nick := range c.order {
+				mustLine(t, b, b.ldrop("demo", nick)...)
+			}
+			if got := string(mustRead(t, exclude)); got != c.want {
+				t.Errorf("info/exclude = %q, want %q", got, c.want)
+			}
+		})
 	}
 }

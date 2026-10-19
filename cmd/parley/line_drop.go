@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/colinsurprenant/parley/internal/state"
 	"github.com/colinsurprenant/parley/internal/stream"
@@ -99,6 +101,22 @@ func takeLineDown(id, nick, stateDir string, force bool) error {
 		return err
 	}
 	defer releaseID()
+	// A line new that was killed between making the directory and writing the record
+	// leaves a directory with no record in it, and nothing for the verbs to read;
+	// `line end` takes that directory away, and only that: a directory that holds
+	// anything else is not shown to be a line's.
+	if nick == "" {
+		dir := lineDirOf(base, id)
+		if empty, err := emptyLineDir(dir); err != nil {
+			return fmt.Errorf("look at %s: %w", dir, err)
+		} else if empty {
+			if err := os.RemoveAll(dir); err != nil {
+				return fmt.Errorf("remove the line directory %s: %w", dir, err)
+			}
+			_, err := fmt.Fprintf(os.Stdout, "Line %s had a directory and no record, a line new that did not finish. Removed:\n  line directory %s\n", id, dir)
+			return err
+		}
+	}
 	rec, _, err := readLineRecord(base, id)
 	if err != nil {
 		return err
@@ -447,7 +465,25 @@ func (t *teardown) removeLaunchFile(s lineSession, f lineFile, act fileAction) e
 
 	if f.ExcludeFile != "" {
 		_, line := launchFileOf(s.Harness, s.Checkout)
-		removed, err := removeExcludeLine(f.ExcludeFile, line, f.ExcludeSep)
+		// The exclude file is the repository's, shared by all its worktrees: the
+		// line hides the launch files of the others, and goes only when no worktree
+		// has a file at its path any more, this line's, another line's or the user's.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		needed, where := excludeLineStillNeeded(ctx, s.Checkout, f.ExcludeFile, line)
+		cancel()
+		if needed {
+			// A whole line takes its other sessions next, and the last of them to
+			// go is the one to take the line out; nothing is left to say then.
+			if !(t.whole && t.otherOwner(s, f.ExcludeFile, line)) {
+				why := "git cannot list the worktrees of the repository, so nothing shows the line is not needed"
+				if where != "" {
+					why = "a file at " + where + " is kept out of git status by it"
+				}
+				t.left = append(t.left, fmt.Sprintf("the line %s in %s: %s, so it stays", line, f.ExcludeFile, why))
+			}
+			return nil
+		}
+		removed, err := removeExcludeLine(f.ExcludeFile, line, f.ExcludeSep, f.ExcludeMade)
 		switch {
 		case errors.Is(err, errExcludeUnsafe):
 			// A link, or a file too large to read, is not written through or read
@@ -462,6 +498,20 @@ func (t *teardown) removeLaunchFile(s lineSession, f lineFile, act fileAction) e
 		}
 	}
 	return nil
+}
+
+// otherOwner is whether a session of the record other than s recorded having put
+// line in the exclude file.
+func (t *teardown) otherOwner(s lineSession, excludeFile, line string) bool {
+	for _, o := range t.rec.Sessions {
+		if stream.NickEqual(o.Nick, s.Nick) || len(o.Files) != 1 || o.Files[0].ExcludeFile == "" {
+			continue
+		}
+		if _, l := launchFileOf(o.Harness, o.Checkout); l == line && resolveExisting(o.Files[0].ExcludeFile) == resolveExisting(excludeFile) {
+			return true
+		}
+	}
+	return false
 }
 
 // forget takes the session out of the record and writes it.
@@ -509,7 +559,7 @@ func (t *teardown) report(w io.Writer, whole bool) error {
 		for _, l := range t.left {
 			fmt.Fprintf(&b, "  %s\n", l)
 		}
-		b.WriteString("If one is the line's, remove it yourself.\n")
+		b.WriteString("parley deletes none of these; remove one yourself if you do not need it.\n")
 	}
 	if len(t.codexDeletes) > 0 {
 		b.WriteString("\nCodex still has each Codex session. Keep that history, or delete it:\n")
