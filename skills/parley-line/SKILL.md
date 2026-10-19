@@ -132,9 +132,11 @@ unless your human asks you to stop for it.
 ## The breaker
 
 When more than a set number of posts by the sessions arrive within a short
-window, your front holds further deliveries until your human posts. Pokes spread
-over hours never trip it; a loop, or a fast back and forth, does. Your own posts
-still go out, and your human sees them in the channel. Any line from your human releases
+window, or many more than that have gone by since your human last posted, your
+front holds further deliveries until your human posts. Pokes spread over hours
+never trip it. A fast back and forth trips it within minutes, and an exchange
+that runs long without your human trips it in the end. Your own posts still go
+out, and your human sees them in the channel. Any line from your human releases
 what was held, in stream order, ahead of that line: read them all before you
 act. Silence on the line can be the breaker; if you are waiting on an answer,
 say at your terminal what you are waiting for.
