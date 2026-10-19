@@ -178,14 +178,20 @@ type lineSession struct {
 type lineFile struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
-	// ExcludeFile is the file the line appended the file's line to (the checkout's
-	// info/exclude), and empty when it added none: there was no git checkout, or the
-	// line was already there.
+	// ExcludeFile is the exclude file (the checkout's info/exclude, which every
+	// worktree of a repository shares) that holds the file's line because the line
+	// put it there: this session appended it, or another session of the line had.
+	// It is empty when the line added none: there was no git checkout, or the line
+	// was in the file already and no session of the line had put it there.
 	ExcludeFile string `json:"exclude_file,omitempty"`
 	// ExcludeSep is whether the exclude file did not end in a newline, so that the
-	// line had to end its last line first: that newline is the line's too, and goes
-	// with it when it is the last.
+	// line had to end its last line first. That newline goes with the line when the
+	// line is still the last in the file, and stays when another line was appended
+	// after it, since it then ends a line that is no longer last.
 	ExcludeSep bool `json:"exclude_sep,omitempty"`
+	// ExcludeMade is whether the exclude file was not there and the line created
+	// it; it is removed with the line if nothing else has been written to it.
+	ExcludeMade bool `json:"exclude_made,omitempty"`
 	// MadeDir is whether the line made the .codex directory the file is in.
 	MadeDir bool `json:"made_dir,omitempty"`
 }
@@ -232,7 +238,31 @@ func launchFileOf(harness, checkout string) (path, excludeLine string) {
 }
 
 func noLineErr(base, id string) error {
+	if fi, err := os.Lstat(lineDirOf(base, id)); err == nil && fi.IsDir() {
+		return cfgErrf("no line %q under %s (looked for %s): its directory is there without a record, a line new that did not finish; if it holds nothing, parley line end %s removes it", id, base, filepath.Join(lineDirOf(base, id), lineRecordName), id)
+	}
 	return cfgErrf("no line %q under %s (looked for %s)", id, base, filepath.Join(lineDirOf(base, id), lineRecordName))
+}
+
+// emptyLineDir is whether dir is what a `line new` that was killed between making
+// the directory and writing the record leaves: a real directory that holds no
+// line.json and nothing else, but for the temp file the record's write goes
+// through.
+func emptyLineDir(dir string) (bool, error) {
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() {
+		return false, err
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range ents {
+		if !strings.HasPrefix(e.Name(), ".tmp-"+lineRecordName+"-") || !e.Type().IsRegular() {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // lineDirIsThere is whether anything is at the line's directory: the verbs ask it
@@ -273,6 +303,12 @@ func readLineRecord(base, id string) (lineRecord, []byte, error) {
 func writeLineRecord(dir string, rec lineRecord) ([]byte, error) {
 	if rec.Sessions == nil {
 		rec.Sessions = []lineSession{}
+	}
+	// A record the readers would refuse is never written: the verb that would have
+	// written it fails, and rolls back, instead of leaving a line nothing can take
+	// down.
+	if err := rec.check(rec.ID, rec.StateDir); err != nil {
+		return nil, fmt.Errorf("the line record would not be valid, and the line verbs would then refuse it: %w", err)
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -372,8 +408,8 @@ func (s lineSession) check(r lineRecord) error {
 	if f.ExcludeFile != "" && !filepath.IsAbs(f.ExcludeFile) {
 		return fmt.Errorf("exclude_file %q is not an absolute path", f.ExcludeFile)
 	}
-	if f.ExcludeSep && f.ExcludeFile == "" {
-		return errors.New("exclude_sep without an exclude_file")
+	if (f.ExcludeSep || f.ExcludeMade) && f.ExcludeFile == "" {
+		return errors.New("exclude_sep or exclude_made without an exclude_file")
 	}
 	if f.MadeDir && s.Harness != harnessCodex {
 		return errors.New("only a Codex session's file is in a directory the line made")
