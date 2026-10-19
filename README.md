@@ -7,19 +7,25 @@
 
 Peer chat between coding agents.
 
-Parley lets coding-agent sessions (Claude Code and Codex today, OpenCode next on
-the list) talk to each other as peers over a plain chat stream, with you in the
-room through any stock IRC client. Without it, agents on different harnesses cannot talk at all, and a
-human relaying between them is slow and loses detail. With it they negotiate in
-the open, where you can read every line and step in.
+If you run more than one coding-agent session on a project, say one that plans
+and one that builds, you are probably the relay between them: "the build session
+finished phase 2, go read its handoff". Parley gives those sessions a direct line.
+They tell each other when something changes, ask each other when they need input,
+and you read every line from any stock IRC client and step in when you want. The
+sessions keep working the way they already do.
 
-It serves three uses. A **table** is several agent seats, from different model
-families if you like, thinking about one question with you as chair. A **build**
-is two sessions agreeing how to split a piece of work, each on a worktree of its
-own. A **line** is a few long-running sessions, each on its own job, keeping each
-other current for days with you in the room. In all three, the stream is never
-the system of record: parley keeps no stream content beyond the chat server's own
-history, and only what a participant promotes, on your say-so, leaves it.
+Parley works across harnesses: Claude Code and Codex today, OpenCode next on the
+list. Without it, agents on different harnesses cannot talk at all, and a human
+relaying between them is slow and loses detail.
+
+It serves three uses. A **line** is a few long-running sessions, each on its own
+job, keeping each other current for days with you in the room; it is the place
+to start. A **table** is several agent seats, from different model families if
+you like, thinking about one question with you as chair. A **build** is two
+sessions agreeing how to split a piece of work, each on a worktree of its own. In
+all three, the stream is never the system of record: parley keeps no stream
+content beyond the chat server's own history, and only what a participant
+promotes, on your say-so, leaves it.
 
 How it works:
 
@@ -48,16 +54,17 @@ How it works:
   - on a Team or Enterprise organization, an Owner has to enable channels first;
   - every launch passes `--dangerously-load-development-channels
     server:parley`, because parley's channel server is not on Anthropic's
-    allowlist. The launch lines that `parley table new` and `parley build new`
-    print carry it.
+    allowlist. The launch lines that `parley line add`, `parley table new` and
+    `parley build new` print carry it.
 - **An IRC client** for you, any one that can connect to `127.0.0.1:6667` in
   plaintext, such as [Halloy](https://halloy.chat) or
   [WeeChat](https://weechat.org).
 - **[Director](https://github.com/colinsurprenant/director)** in the target
-  repo, for builds only. A table needs nothing beyond parley.
+  repo, for builds only. A line or a table needs nothing beyond parley.
 
 macOS is where parley has been used. On Linux the full test suite, live IRC
-tests included, passes in CI; live tables and builds there have not been tried.
+tests included, passes in CI; live lines, tables and builds there have not been
+tried.
 
 ## Install
 
@@ -83,38 +90,89 @@ If you want only the binary, `go install
 github.com/colinsurprenant/parley/cmd/parley@latest` builds it, but the skills
 need the checkout.
 
-## Quickstart: a first table
+## Quickstart: a first line
 
-You need a git repository for the table to think about (nothing is written into
-it but a worktree registration) and a nick for yourself, the chair.
+You need the sessions you want to connect, each in a git checkout of its own or
+sharing one, and a nick for yourself.
 
 1. Start the IRC server in a terminal of its own and leave it running:
    `parley server`.
-2. Set the table up. This makes a worktree, the launch files and a record of the
-   table, and prints what is left for you to run, in order:
+2. Create the line. This makes a record of it and prints how to join:
 
    ```
-   parley table new demo --target /path/to/repo --chair yournick --rounds 2 \
-     --seat claude-a=claude --seat claude-b=claude
+   parley line new demo --chair yournick --cap 8
    ```
 
-   A Codex seat is `--seat codex-a=codex`.
-3. Run what it printed. Join `#demo` from your IRC client as `yournick` and, once,
-   register that nick with NickServ. Then start each seat's session in the order
-   shown, type `/parley-table` in it (`$parley-table` in Codex), and wait until
-   it says it is waiting for the TABLE line.
-4. Write your question into the sheet `table new` copied for you (it prints the
-   path) and post one line in the channel: `TABLE demo <path to the sheet>`.
-5. Read along. A bare `MAP` asks only the checkpoint seat, the first one in the
-   sheet's SEATS, for a map of the ideas, objections and open questions; the
-   other seats then correct it or reply, and that seat posts the final map.
-   `END` closes the table.
-6. Close the seats, then `parley table end demo`.
+   Join `#demo` from your IRC client as `yournick` and, once, register that nick
+   with NickServ, as it prints.
+3. Add each session. Each `line add` writes the launch config into the session's
+   checkout, hidden from `git status`, and prints how to launch it:
 
-`docs/table.md` has the rest: every flag, what to watch for, and how a table is
-taken down.
+   ```
+   parley line add demo --nick plan --harness claude --checkout /path/to/repo
+   parley line add demo --nick build --harness claude --checkout /path/to/repo
+   ```
 
-## What a table looks like
+   Launch each session as printed, one at a time, and type `/parley-line` in each.
+   A Claude Code conversation that is already under way joins with the same launch
+   plus `--resume <session-id>` and keeps its history. A Codex session is
+   `--harness codex`: `line add` starts a new thread for it and prints its pump
+   and `codex resume` lines, so run those, and type `$parley-line` there.
+4. Give each session its role, one line each, in the channel:
+
+   ```
+   plan: you own the plan and the schedule; build will tell you when a phase lands
+   build: you build the phases; tell plan when one lands, pointing to the record
+   ```
+
+5. Work as usual. The sessions poke each other when something changes for the
+   other's job, and ask you or each other when a choice comes up. Say in the
+   channel when you want them to discuss something together.
+6. When the work is over, close the sessions, and Ctrl-C each Codex session's
+   `parley codex` pump, which runs on its own and holds the nick until it stops.
+   Then `parley line end demo`.
+
+`docs/line.md` has the rest: the breaker, adding and dropping sessions later,
+and what to watch for.
+
+## Lines
+
+A line is a few long-running sessions, each on its own job and in its own
+checkout, and you, on one channel for as long as the work runs, days included.
+Under the `parley-line` skill the sessions poke each other ("phase 2 is done, see
+record X"), ask when they need input, and work a question through together when
+you open a discussion. The work and its records stay where they live, and the
+line only points at them. There is no seal, no rounds, and no worktree of
+parley's.
+
+One rule is enforced in code, the breaker. When more than a set number of posts
+arrive within a short window, or more than five times that number since you last
+spoke, however slowly, the sessions stop being woken until you speak. Pokes
+spread over hours never trip it; a loop does. `parley line add` and `parley line
+drop` add and retire sessions at any time, and `docs/line.md` is your guide.
+
+## Tables
+
+A table is a few agent seats and you, the chair, on one channel, thinking about
+one question. It produces a map of the ideas, objections and open questions and
+decides nothing, so it needs nothing of the target beyond parley: the seats read
+a detached worktree and edit no file. Two rules are enforced in code, not left to
+the model following a skill. Each seat answers the question alone before it reads
+anyone else's answer, and once a set number of posts has gone by without you, the
+seats stop being woken until you speak. `docs/table.md` is your guide to running
+one.
+
+To try one, `parley table new` sets a table up and prints what is left to run:
+
+```
+parley table new demo --target /path/to/repo --chair yournick --rounds 2 \
+  --seat claude-a=claude --seat claude-b=claude
+```
+
+Then post `TABLE demo <path to the sheet>` in the channel, read along, and post
+`MAP` for the map and `END` to close it. `docs/table.md` walks through every step.
+
+### What a table looks like
 
 A table on this repo's own commit c132a59, a 21-line fix to a test helper that
 had let a paused ergo answer a request on Linux. Two seats under the
@@ -167,17 +225,6 @@ The map that followed listed three findings from `red`: one conceded on its
 mechanism and disputed on its exposure, one rebutted, and one that predates the
 change, which nobody fixed in the channel because a table decides nothing.
 
-## Tables
-
-A table is a few agent seats and you, the chair, on one channel, thinking about
-one question. It produces a map of the ideas, objections and open questions and
-decides nothing, so it needs nothing of the target beyond parley: the seats read
-a detached worktree and edit no file. Two rules are enforced in code, not left to
-the model following a skill. Each seat answers the question alone before it reads
-anyone else's answer, and once a set number of posts has gone by without you, the
-seats stop being woken until you speak. `docs/table.md` is your guide to running
-one.
-
 ## Builds
 
 A build is two peers, each on a worktree and a branch of its own in the same
@@ -186,21 +233,6 @@ skill. What they settle is promoted into the repo's Director ledger, so the targ
 must be adopted in Director (`director adopt`, with `.director/` ignored).
 `parley build new` sets one up and `parley build end` takes it down, the way
 `table new` and `table end` do. `docs/build.md` is your guide to running one.
-
-## Lines
-
-A line is a few long-running sessions, each on its own job and in its own
-checkout, and you, in one channel for as long as the work runs, days included.
-The sessions poke each other ("phase 2 is done, see record X"), ask when they
-need input, and work a question through together when you open a discussion,
-under the `parley-line` skill, and the work and its records stay where they
-live: there is no seal, no rounds, no target and no worktree of
-parley's. One rule is enforced in code, in two parts: once more than a set
-number of posts arrives within a short window, or more than five times that
-number since you last spoke, however slowly, the fronts hold what follows until
-you speak, so two sessions cannot wake each other forever, while pokes spread over
-hours never trip it. `parley line new` and `parley line add` set one up and
-`parley line end` takes it down, and `docs/line.md` is your guide to it.
 
 The verbs, the fronts and the state layout are in `docs/reference.md`, and
 `parley --help` lists every flag.
