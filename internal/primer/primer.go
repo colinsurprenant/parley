@@ -368,7 +368,12 @@ func lineBreaker(p Params) string {
 	if p.Cap <= 0 {
 		return "breaker off (cap 0)."
 	}
-	return fmt.Sprintf("breaker: more than %d posts within %s hold deliveries until %s posts.", p.Cap, formatWindow(p.Window), p.Chair)
+	posts := "posts"
+	if p.Cap == 1 {
+		posts = "post"
+	}
+	return fmt.Sprintf("breaker: more than %d %s within %s, or five times that since %s last posted, hold deliveries until %s posts.",
+		p.Cap, posts, formatWindow(p.Window), p.Chair, p.Chair)
 }
 
 // formatWindow spells a duration the way a person writes one, 10m and not

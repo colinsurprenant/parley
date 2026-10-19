@@ -1680,7 +1680,7 @@ func TestTheLineSkillMakesTheInstructionsTheLineForm(t *testing.T) {
 	if got != want {
 		t.Fatalf("the instructions are not the line form of the primer:\ngot:\n%s\nwant:\n%s", got, want)
 	}
-	for _, phrase := range []string{"registered nick " + chair + ";", "breaker: more than 8 posts within 10m hold deliveries until colin posts.", "invoked as /parley-line"} {
+	for _, phrase := range []string{"registered nick " + chair + ";", "breaker: more than 8 posts within 10m, or five times that since colin last posted, hold deliveries until colin posts.", "invoked as /parley-line"} {
 		if !strings.Contains(got, phrase) {
 			t.Fatalf("the line instructions do not carry %q:\n%s", phrase, got)
 		}

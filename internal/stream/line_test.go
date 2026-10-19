@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"testing"
 	"time"
@@ -361,18 +362,19 @@ func TestLineAndTableAgreeOnceTheTableSealIsOpenAndPostsShareAnInstant(t *testin
 	}
 }
 
-// TestLinePostsSpreadBeyondTheWindowNeverTripHoweverMany: a line runs for days,
-// and a count of posts since the human spoke would trip on ordinary pokes. A
-// rate does not: with every post farther from the last than the window can hold
-// cap of them, none is held, however many there are.
-func TestLinePostsSpreadBeyondTheWindowNeverTripHoweverMany(t *testing.T) {
+// TestLinePostsSpreadBeyondTheWindowAreNotTrippedByTheRate: a line runs for days,
+// and a count of posts since the human spoke alone would trip on ordinary
+// pokes. The rate does not: with every post farther from the last than the
+// window can hold cap of them, none is held for that, up to the five times cap
+// the backstop allows since the human last posted.
+func TestLinePostsSpreadBeyondTheWindowAreNotTrippedByTheRate(t *testing.T) {
 	f := &fake{nick: lineSelf}
-	tb := newLine(t, f, 2)
+	tb := newLine(t, f, 20)
 
 	var want []string
-	for i := range 60 {
+	for i := range 100 { // five times the cap: at the backstop, not past it
 		body := "poke " + strconv.Itoa(i)
-		// Each pair is 11 minutes apart, so no three of them fit in ten.
+		// Each pair is 11 minutes apart, so no 21 of them fit in ten.
 		f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*11*time.Minute)
 		want = append(want, body)
 	}
@@ -513,17 +515,34 @@ func TestLineAPostWithNoTimeIsTimedByTheClock(t *testing.T) {
 }
 
 // TestLineABacklogSpreadOverDaysDoesNotTrip: a session that joins a line under
-// way reads the history the server retains as its first delivery, and posts days
-// apart are not a loop.
+// way reads the history the server retains as its first delivery, and posts
+// hours apart are not a loop: none trips the rate, and the count backstop, five
+// times the cap since the chair last posted, is what a long enough backlog
+// without the human reaches.
 func TestLineABacklogSpreadOverDaysDoesNotTrip(t *testing.T) {
 	f := &fake{nick: lineSelf}
 	var want []string
-	for i := range 200 {
+	for i := range 40 { // five times the cap of 8: at the backstop, not past it
 		body := "poke " + strconv.Itoa(i)
-		f.postOffset([]string{"build", "review"}[i%2], body, -time.Duration(200-i)*time.Hour)
+		f.postOffset([]string{"build", "review"}[i%2], body, -time.Duration(40-i)*5*time.Hour)
 		want = append(want, body)
 	}
-	tb := newLine(t, f, 3)
+	tb := newLine(t, f, 8)
+	tb.want(want...)
+
+	// A backlog of the same kind with a post of the chair's in it counts from there.
+	f = &fake{nick: lineSelf}
+	want = nil
+	for i := range 70 {
+		body := "poke " + strconv.Itoa(i)
+		if i == 30 {
+			f.postOffset(lineChair, "chair", -time.Duration(70-i)*5*time.Hour)
+			want = append(want, "chair")
+		}
+		f.postOffset([]string{"build", "review"}[i%2], body, -time.Duration(70-i)*5*time.Hour)
+		want = append(want, body)
+	}
+	tb = newLine(t, f, 8)
 	tb.want(want...)
 }
 
@@ -563,14 +582,36 @@ func TestLineOwnPostsAreTimedAndCounted(t *testing.T) {
 	tb.want("one")
 }
 
-// TestLineTimesOutOfOrderCannotHideABurst: the span of the posts measured is the
-// latest time less the earliest, not the last less the first.
+// TestLineTimesOutOfOrderCannotHideABurst: the span of the cap+1 posts measured
+// is the latest time less the earliest of them, wherever they fall in arrival
+// order, and not the last less the first, which is negative or short when they
+// arrive out of order. The times here are one clock's, reported out of order.
 func TestLineTimesOutOfOrderCannotHideABurst(t *testing.T) {
-	f := &fake{nick: lineSelf}
-	tb := newLine(t, f, 1)
-	f.postOffset("build", "one", 30*time.Minute)
-	f.postOffset("review", "two", 25*time.Minute) // five minutes apart, the wrong way round
-	tb.want("one")
+	for name, tc := range map[string]struct {
+		cap   int
+		times []time.Duration
+		want  []string // delivered, in order; the rest held
+	}{
+		"two posts five minutes apart, the wrong way round": {1, []time.Duration{30 * time.Minute, 25 * time.Minute}, []string{"p0"}},
+		// The earliest of the three is not the first to arrive: 0 to 9 minutes is a
+		// burst, though the last less the first is one minute.
+		"the earliest is not the first": {2, []time.Duration{8 * time.Minute, 0, 9 * time.Minute}, []string{"p0", "p1"}},
+		// The earliest is not the first and the latest is not the last: 5 to 30
+		// minutes is no burst, though the last less the first is negative.
+		"the earliest is not the first and the span is wide": {2, []time.Duration{30 * time.Minute, 5 * time.Minute, 25 * time.Minute}, []string{"p0", "p1", "p2"}},
+		// The latest is not the last: 0 to 25 minutes is no burst, though the last
+		// less the first is nine minutes.
+		"the latest is not the last": {2, []time.Duration{0, 25 * time.Minute, 9 * time.Minute}, []string{"p0", "p1", "p2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fake{nick: lineSelf}
+			tb := newLine(t, f, tc.cap)
+			for i, off := range tc.times {
+				f.postOffset([]string{"build", "review"}[i%2], "p"+strconv.Itoa(i), off)
+			}
+			tb.want(tc.want...)
+		})
+	}
 }
 
 // TestLineRepeatedHandOversAreNotTimedTwice: the same post handed over twice is
@@ -591,5 +632,180 @@ func TestLineRepeatedHandOversAreNotTimedTwice(t *testing.T) {
 			f.postOffset(lineChair, "chair one", 3*time.Minute)
 			tb.want("three", "chair one")
 		})
+	}
+}
+
+// slowPost makes post i of a loop that runs at one post every two minutes,
+// alternating between two sessions: never nine within ten minutes, so the rate
+// of a cap of 8 over ten minutes never sees it.
+func slowPost(f *fake, i int) string {
+	body := "slow " + strconv.Itoa(i+1)
+	f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*2*time.Minute)
+	return body
+}
+
+// TestLineASlowLoopTripsTheBackstopAndTheChairReleasesIt: two sessions that
+// answer each other every two minutes never make a burst for a cap of 8 over ten
+// minutes, so the count since the human last posted is what stops them, at more
+// than five times the cap: the 41st post. Nothing releases it but the chair, who
+// releases what was held in order, ahead of itself.
+func TestLineASlowLoopTripsTheBackstopAndTheChairReleasesIt(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 8)
+
+	var delivered, held []string
+	for i := range 45 {
+		body := slowPost(f, i)
+		if i < 40 {
+			delivered = append(delivered, body)
+		} else {
+			held = append(held, body)
+		}
+	}
+	tb.want(delivered...)
+	tb.want()
+
+	// Hours later, still held.
+	slowPost(f, 720)
+	held = append(held, "slow 721")
+	tb.want()
+
+	f.postOffset(lineChair, "chair one", 25*time.Hour)
+	tb.want(append(held, "chair one")...)
+}
+
+// TestLineTheBackstopCountsOwnPosts: the session's own posts are in the count
+// since the human last posted, as they are in the rate.
+func TestLineTheBackstopCountsOwnPosts(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 2) // the backstop is 10
+
+	var want []string
+	for i := range 10 {
+		author := []string{"build", lineSelf}[i%2]
+		body := "slow " + strconv.Itoa(i+1)
+		f.postOffset(author, body, time.Duration(i)*20*time.Minute)
+		if author != lineSelf {
+			want = append(want, body)
+		}
+	}
+	tb.want(want...)
+	f.postOffset("review", "the eleventh", 10*20*time.Minute) // the 11th: trips
+	tb.want()
+	f.postOffset(lineChair, "chair one", 11*20*time.Minute)
+	tb.want("the eleventh", "chair one")
+}
+
+// TestLineTheRateStillTripsAFastBurstFirst: the backstop is under the rate, not
+// instead of it, and a burst is held at the ninth post, long before the 41st.
+func TestLineTheRateStillTripsAFastBurstFirst(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 8)
+
+	var want []string
+	for i := range 8 {
+		body := "fast " + strconv.Itoa(i+1)
+		f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*10*time.Second)
+		want = append(want, body)
+	}
+	f.postOffset("build", "fast 9", 80*time.Second) // the ninth within ten minutes: trips
+	tb.want(want...)
+	f.postOffset(lineChair, "chair one", 5*time.Minute)
+	tb.want("fast 9", "chair one")
+}
+
+// TestLineTheChairResetsTheRateAndTheBackstop: after the chair speaks both start
+// from nothing, so a slow loop gets a full 40 more, and a burst a full cap more,
+// and the posts it released are in neither.
+func TestLineTheChairResetsTheRateAndTheBackstop(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 8)
+
+	for i := range 30 {
+		slowPost(f, i)
+	}
+	tb.read()
+	f.postOffset(lineChair, "chair one", 61*time.Minute)
+	tb.want("chair one")
+
+	// Forty more, from the chair on: the 30 before it are not in the count.
+	var want []string
+	for i := range 40 {
+		body := "after " + strconv.Itoa(i+1)
+		f.postOffset([]string{"build", "review"}[i%2], body, 2*time.Hour+time.Duration(i)*2*time.Minute)
+		want = append(want, body)
+	}
+	tb.want(want...)
+	f.postOffset("build", "after 41", 2*time.Hour+80*2*time.Minute) // the 41st since the chair: trips
+	tb.want()
+	f.postOffset(lineChair, "chair two", 5*time.Hour)
+	tb.want("after 41", "chair two")
+
+	// And a burst after a backstop trip needs its own cap+1 again: the times that
+	// the trip recorded are gone with the chair's post.
+	for i := range 8 {
+		f.postOffset("review", "burst "+strconv.Itoa(i+1), 6*time.Hour+time.Duration(i)*time.Second)
+	}
+	if got := tb.read(); len(got) != 8 {
+		t.Fatalf("delivered %d posts of a burst of the cap after the chair, want all 8", len(got))
+	}
+	f.postOffset("review", "burst 9", 6*time.Hour+9*time.Second)
+	tb.want()
+}
+
+// TestLineCapZeroHoldsNothingHoweverManyAndHoweverSlow: cap 0 turns both rules
+// off.
+func TestLineCapZeroHoldsNothingHoweverManyAndHoweverSlow(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 0)
+
+	var want []string
+	for i := range 500 {
+		want = append(want, slowPost(f, i))
+	}
+	tb.want(want...)
+}
+
+// TestLineAGapKeepsTheBackstopCount: the count since the chair last posted
+// survives a gap as the history of times does, and only the chair resets it.
+func TestLineAGapKeepsTheBackstopCount(t *testing.T) {
+	f := &fake{nick: lineSelf}
+	tb := newLine(t, f, 1) // the backstop is 5
+
+	for i := range 5 { // an hour apart: no two within the window of ten minutes
+		f.postOffset([]string{"build", "review"}[i%2], "slow "+strconv.Itoa(i+1), time.Duration(i)*time.Hour)
+	}
+	if got := tb.read(); len(got) != 5 {
+		t.Fatalf("delivered %d of 5 slow posts, want all", len(got))
+	}
+	f.mu.Lock()
+	f.msgs = nil
+	f.gapPending = true
+	f.mu.Unlock()
+	f.postOffset("build", "after the gap", 10*time.Hour) // the 6th since the chair
+	tb.want()
+	f.postOffset(lineChair, "chair one", 3*time.Hour)
+	tb.want("after the gap", "chair one")
+}
+
+// TestLineACapNearTheLargestIntNeverTripsOnAHandfulOfPosts: cap+1 and five times
+// cap both overflow an int there, and either would make the first post trip.
+func TestLineACapNearTheLargestIntNeverTripsOnAHandfulOfPosts(t *testing.T) {
+	for _, capN := range []int{math.MaxInt, math.MaxInt - 1, math.MaxInt / 5, math.MaxInt/5 + 1, math.MaxInt / 2} {
+		f := &fake{nick: lineSelf}
+		tb := newLine(t, f, capN)
+		var want []string
+		for i := range 12 {
+			body := "poke " + strconv.Itoa(i)
+			f.postOffset([]string{"build", "review", lineSelf}[i%3], body, time.Duration(i)*time.Second)
+			if i%3 != 2 {
+				want = append(want, body)
+			}
+		}
+		if got := tb.read(); !equal(got, want) {
+			t.Fatalf("cap %d: delivered %q, want %q", capN, got, want)
+		}
+		f.postOffset(lineChair, "chair one", time.Minute)
+		tb.want("chair one")
 	}
 }

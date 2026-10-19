@@ -415,20 +415,23 @@ tables:
 lines:
   With --skill line, channel and codex take --chair <nick> --cap <n>, both
   required, and --window <duration>, for a few long-running sessions and one
-  human on one channel. The gate is a rate and nothing else: there is no first
-  hold, so this participant receives every other session's post at once, before
-  it has posted. Every message by anyone but the chair, this participant's own
-  included, is timed by its timestamp, or by the time it was received when it
-  has none. A message that makes more than <n> of them within --window (a Go
-  duration, 10m by default, above zero), counting it and the <n> before it, is
-  held, with every later one, until the chair posts; the chair's post releases
-  them in order ahead of itself and clears the record of times. Nothing is
-  released by time passing, so a loop stays stopped until the chair looks, and
-  messages spread over days never trip it. --cap 0 turns the breaker off. Held
-  posts live in this process's memory only, so a restart loses them, and so
+  human on one channel. The gate is two rules and nothing else: there is no
+  first hold, so this participant receives every other session's post at once,
+  before it has posted. Every message by anyone but the chair, this
+  participant's own included, is counted and timed, by its timestamp or by the
+  time it was received when it has none. A message that makes more than <n> of
+  them within --window (a Go duration, 10m by default, above zero), counting it
+  and the <n> before it, trips the breaker, and so does one that makes more than
+  five times <n> since the chair last posted, however slowly they came. The
+  message that trips it is held, with every later one, until the chair posts;
+  the chair's post releases them in order ahead of itself and clears the count
+  and the record of times. Nothing is released by time passing, so a loop, fast
+  or slow, stays stopped until the chair looks, while pokes spread over hours
+  and a backlog spread over days do not trip it. --cap 0 turns the breaker off.
+  Held posts live in this process's memory only, so a restart loses them, and so
   does a gap in the stream's history, which the delivery says; a gap keeps the
-  record of times. The chair is the human's registered nick, another voice than
-  --nick. --window is refused with the other skills.
+  count and the record of times. The chair is the human's registered nick,
+  another voice than --nick. --window is refused with the other skills.
 
 stream specs:
   file:<path>              one append-only NDJSON file, which stock tools can
@@ -526,7 +529,7 @@ func addSkillFlags(fs *flag.FlagSet, gate bool) skillFlags {
 }
 
 func addCapFlag(fs *flag.FlagSet) *int {
-	return fs.Int("cap", 0, "with --skill table: hold every post by anyone but the chair once more than this many have gone by since the chair last posted, until the chair posts; with --skill line: hold every post by anyone but the chair once more than this many have arrived within --window, until the chair posts; 0 turns the cap off; required with --skill table and --skill line. "+
+	return fs.Int("cap", 0, "with --skill table: hold every post by anyone but the chair once more than this many have gone by since the chair last posted, until the chair posts; with --skill line: hold every post by anyone but the chair once more than this many have arrived within --window, or more than five times this many since the chair last posted, until the chair posts; 0 turns the cap off; required with --skill table and --skill line. "+
 		"Held posts are kept in memory only, so a restart or a gap in the history loses them")
 }
 
@@ -674,7 +677,7 @@ func checkWindow(fs *flag.FlagSet, skill primer.Skill, window time.Duration) err
 		return nil
 	}
 	if window <= 0 {
-		return cfgErrf("--window must be above zero, e.g. --window 10m: a breaker over no time at all would never hold a post")
+		return cfgErrf("--window must be above zero, e.g. --window 10m: the breaker counts the posts that arrive within it, and a window with no length has none to count")
 	}
 	return nil
 }

@@ -53,7 +53,7 @@ func linePrimerArgs(front string) []string {
 func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 	for front, skill := range map[string]string{"claude": "invoked as /parley-line.", "codex": "invoked as $parley-line."} {
 		out := mustRun(t, "", linePrimerArgs(front)...).stdout
-		for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m hold deliveries until colin posts.", skill, "other sessions", "the one named above"} {
+		for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or five times that since colin last posted, hold deliveries until colin posts.", skill, "other sessions", "the one named above"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("the %s line primer does not carry %q:\n%s", front, want, out)
 			}
@@ -87,7 +87,7 @@ func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 		t.Fatalf("the primer for --cap 0 does not say so:\n%s", out)
 	}
 	// The window is printed as the person writes it, not as Go does.
-	for window, want := range map[string]string{"90s": "within 1m30s hold", "2h": "within 2h hold", "10m": "within 10m hold", "45s": "within 45s hold"} {
+	for window, want := range map[string]string{"90s": "within 1m30s, or", "2h": "within 2h, or", "10m": "within 10m, or", "45s": "within 45s, or"} {
 		if out := mustRun(t, "", append(append([]string(nil), linePrimerArgs("claude")...), "--window", window)...).stdout; !strings.Contains(out, want) {
 			t.Fatalf("the primer for --window %s does not say %q:\n%s", window, want, out)
 		}
@@ -100,7 +100,7 @@ func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 func TestChannelSkillLineHandsOverTheLineForm(t *testing.T) {
 	root := shortRoot(t)
 	instructions, stderr := channelInitialize(t, nil, lineChannelArgs(root)...)
-	for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m hold deliveries until colin posts.", "invoked as /parley-line.",
+	for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or five times that since colin last posted, hold deliveries until colin posts.", "invoked as /parley-line.",
 		"other sessions", "the one named above", "steers the line"} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("the instructions do not carry %q:\n%s", want, instructions)
@@ -271,8 +271,9 @@ func TestChannelCheckMeasuresTheLineForm(t *testing.T) {
 		t.Fatalf("the line form measures %d, not under the table's %d and the build's %d", sizes["line"], sizes["table"], sizes["build"])
 	}
 	// The binary here is a test build in a temp directory, with a longer path than
-	// an installed one, so the margin asked for is the modest one.
-	if margin := primer.ClaudeInstructionsCap - sizes["line"]; margin < 150 {
+	// an installed one's, so the margin asked for here is the modest one; the
+	// primer package holds the form to 150 with a sample path.
+	if margin := primer.ClaudeInstructionsCap - sizes["line"]; margin < 100 {
 		t.Fatalf("the line form leaves a margin of %d units under the cap, want a clear one", margin)
 	}
 	if left, _ := filepath.Glob(filepath.Join(tmp, "parley-reply-*")); len(left) != 0 {
@@ -474,7 +475,8 @@ func TestWindowIsALinesAlone(t *testing.T) {
 	if res := runParley(t, "", plus([]string{"primer", "--front", "claude", "--stream", chat, "--nick", "plan", "--reply-file", "/tmp/r"}, facts...)...); res.code != 0 {
 		t.Fatalf("a build primer without --window exited %d: %s", res.code, res.stderr)
 	}
-	// And a line takes it on all three.
+	// And a line takes it on channel and on primer; the pump's is the end-to-end
+	// test above, which runs it with --window 4s.
 	line := []string{"--skill", "line", "--chair", "colin", "--cap", "3", "--window", "90s"}
 	for name, args := range map[string][]string{
 		"channel": plus([]string{"channel", "--stream", chat, "--nick", "plan", "--state-dir", stateDir}, line...),
@@ -497,7 +499,7 @@ func TestWindowIsALinesAlone(t *testing.T) {
 func TestLineWindowDefaultsToTenMinutes(t *testing.T) {
 	root := shortRoot(t)
 	instructions, _ := channelInitialize(t, nil, lineChannelArgs(root)...)
-	if want := "breaker: more than 8 posts within 10m hold deliveries until colin posts."; !strings.Contains(instructions, want) {
+	if want := "breaker: more than 8 posts within 10m, or five times that since colin last posted, hold deliveries until colin posts."; !strings.Contains(instructions, want) {
 		t.Fatalf("the instructions for a launch with no --window do not say %q:\n%s", want, instructions)
 	}
 	for _, verb := range []string{"channel", "codex", "primer"} {
