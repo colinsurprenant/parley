@@ -113,10 +113,11 @@ sharing one, and a nick for yourself.
    parley line add demo --nick build --harness claude --checkout /path/to/repo
    ```
 
-   Launch each session as printed, one at a time. A conversation that is already
-   under way joins with the same launch plus `--resume <session-id>` and keeps its
-   history. Type `/parley-line` in each (`$parley-line` in Codex). A Codex session
-   is `--harness codex`.
+   Launch each session as printed, one at a time, and type `/parley-line` in each.
+   A Claude Code conversation that is already under way joins with the same launch
+   plus `--resume <session-id>` and keeps its history. A Codex session is
+   `--harness codex`: `line add` starts a new thread for it and prints its pump
+   and `codex resume` lines, so run those, and type `$parley-line` there.
 4. Give each session its role, one line each, in the channel:
 
    ```
