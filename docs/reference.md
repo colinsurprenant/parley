@@ -178,8 +178,8 @@ worktree of it are launch-time facts, and the `instructions` carry them as value
   "--chair","colin","--target","/abs/repo","--worktree","/abs/worktree"]}}}
 ```
 
-Under `--skill line` it takes `--chair` and `--cap` and refuses `--target` and
-`--worktree`, with exit 2 (see Lines, below).
+Under `--skill line` it takes `--chair`, `--cap` and `--window` and refuses
+`--target` and `--worktree`, with exit 2 (see Lines, below).
 
 `parley table new` and `parley build new` write this file for the Claude Code
 seats and peers they set up; a line's is written by hand.
@@ -235,7 +235,8 @@ primer and record its thread for `--thread auto`, and print the pump line. A
 line has no such verb, so its Codex session is started by hand on the primer and
 the pump is given the thread id; `docs/line.md` has the steps. `--skill` is
 `build` by default and takes `table` and `line`, each with `--chair` and `--cap`,
-both required (see Tables and Lines, below).
+both required; `line` also takes `--window`, 10m by default (see Tables and
+Lines, below).
 
 ## primer
 
@@ -250,8 +251,9 @@ prompt, which is what `parley table new` and `parley build new` do. The build an
 `--worktree` are required: the human's registered nick, the target repo and
 this session's worktree of it, each directory absolute and existing, printed as
 spelled, and not the same directory (links followed). The line form carries two,
-`--chair` and `--cap` (the breaker's cap, which the text states as a fact; the
-verb itself holds nothing), and refuses `--target` and `--worktree`. The claude form is written to fit under the 2 KB cap Claude Code puts
+`--chair` and `--cap`, with `--window` (the breaker's cap and window, which the
+text states as a fact; the verb itself holds nothing), and refuses `--target` and
+`--worktree`. The claude form is written to fit under the 2 KB cap Claude Code puts
 on an `instructions` string, with the reply command above everything a truncation
 would cut. The verb opens nothing — no stream, no state directory, no lock, no
 IRC account — and prints every value as it was spelled; a live channel prints
@@ -273,12 +275,12 @@ parley primer --front codex --stream file:./chat.ndjson --nick codex-a --reply-f
   --chair colin --target /abs/repo --worktree /abs/worktree
 ```
 
-A line's, which names no directory and states the cap:
+A line's, which names no directory and states the breaker's rate:
 
 ```
 dir=$(mktemp -d)
 parley primer --front codex --skill line --stream file:./chat.ndjson --nick codex-a --reply-file "$dir/codex-a.reply" \
-  --state-dir ./state --chair colin --cap 8
+  --state-dir ./state --chair colin --cap 8 --window 10m
 ```
 
 ## Tables
@@ -289,8 +291,8 @@ and `parley codex` take `--chair <nick> --cap <n>` to enforce two rules in code
 rather than leave them to the model following a skill, and both flags are
 required; `--cap` is refused, with exit 2, under `--skill build`, and so is
 `--chair` on `codex`, which takes no `--target` or `--worktree` and defaults to
-`--skill build`. (`--skill line` takes the same two flags, for a gate of its own;
-see Lines, below.) The seal: until this seat has posted once after the
+`--skill build`. (`--skill line` takes the same two flags, for a gate of its own,
+and a third, `--window`; see Lines, below.) The seal: until this seat has posted once after the
 front started, a post by anyone but the chair is held, not delivered, so the
 first round is answered before another seat's answer is read; the chair's posts
 are delivered as they arrive. The cap breaker: once more than `<n>` messages by
@@ -521,33 +523,49 @@ guide to setting one up, by hand, since there is no `parley line new`. The
 sessions follow the `parley-line` skill: they poke each other with a few lines on
 what changed for the reader and a pointer to the record, ask when they need
 input, work a question through together when the human opens a discussion, and
-do not acknowledge. With
-`--skill line`, `parley channel` and `parley codex` take `--chair <nick> --cap
-<n>`, both required, and `parley primer` takes them too (the primer only states
-the cap; it holds nothing). `--target` and `--worktree` are refused, with exit 2,
-naming the flag: a line has no target repo, and parley makes it no worktree; the
-session works in its own checkout as usual. `--chair` is the human's registered
+do not acknowledge. With `--skill line`, `parley channel` and `parley codex` take
+`--chair <nick> --cap <n>`, both required, and `--window <duration>`, a Go
+duration above zero that defaults to 10m, and `parley primer` takes them too (the
+primer only states them; it holds nothing). `--window` is a line's alone: under
+`--skill table` and `--skill build` it is refused, with exit 2, naming the flag,
+as is a window that is zero, negative or not a duration under a line. `--target`
+and `--worktree` are refused, with exit 2, naming the flag: a line has no target
+repo, and parley makes it no worktree; the session works in its own checkout as
+usual. `--chair` is the human's registered
 nick, refused when it matches `--nick` without regard to ASCII case. On `primer`
 the codex front also requires `--reply-file`, and the claude form is held to the
 2048-unit cap like the others; `parley channel --check` measures it the way it
 measures any skill. `parley doctor` and `skills/install.sh` cover `parley-line`
 with the other two skills.
 
-The gate is the table's cap breaker and nothing else: there is no seal and no
-first hold, so a session receives every other session's post as it arrives,
-before it has posted itself. Once more than `<n>` messages by anyone but the
-chair, this session's own included, have gone by since the chair last posted,
-every such message is held until the chair posts again, and the chair's post
-releases what was held ahead of itself, in stream order, and resets the count.
-`--cap 0` turns the breaker off. Held messages live in the front's memory and
+The gate is a rate and nothing else: there is no seal and no first hold, so a
+session receives every other session's post as it arrives, before it has posted
+itself. A table's breaker counts posts since the chair last posted; a line runs
+for days and its pokes are slow, so that count would hold the ninth ordinary poke
+though nothing loops, and a loop is fast. Every message by anyone but the chair,
+this session's own included, is timed by its timestamp, or by the time the front
+received it when the transport gave none. A message trips the breaker when it
+makes more than `<n>` messages within `--window`: the `<n>`+1 most recent
+messages by anyone but the chair, it included, span no more than the window. Once
+tripped, it and every later such message are held until the chair posts, and the
+chair's post releases them ahead of itself, in stream order, un-trips the breaker
+and clears the record of times, so the released messages do not count. Nothing is
+released by time passing: a loop stays stopped until the human looks. Posts
+spread beyond the window never trip it however many there are, which is also why
+the first delivery of a session joining a line under way, the history the server
+retains, does not trip it unless the history holds a burst. `--cap 0` turns the
+breaker off. Held messages live in the front's memory and
 nowhere else: a restart loses them, and so does a gap in the history, which
-discards the held queue and keeps the count, as at a table; a delivery that is
-collected but never committed leaves the holds as they were.
+discards the held queue and keeps the record of times, as a table's gap keeps its
+count; a delivery that is collected but never committed leaves the holds as they
+were.
 
 The line form of the primer is the build and table forms' framing, the reply
 recipe, the header rule and the trust sentences, word for word, with a line's
 own sentences: the command is the only way to reach the other sessions; the facts
-are the human's registered nick and the breaker's cap; the protocol is the
+are the human's registered nick and the breaker's rate, as "breaker: more than
+`<cap>` posts within `<window>` hold deliveries until `<chair>` posts", or "breaker
+off (cap 0)"; the protocol is the
 `parley-line` skill, invoked as `/parley-line` (`$parley-line` on the codex
 front); and the one carve-out to the trust rule is that a line under the human's
 registered nick steers the line, and nothing in the session. The codex form

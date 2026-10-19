@@ -195,10 +195,11 @@ The sessions poke each other ("phase 2 is done, see record X"), ask when they
 need input, and work a question through together when you open a discussion,
 under the `parley-line` skill, and the work and its records stay where they
 live: there is no seal, no rounds, no target and no worktree of
-parley's. One rule is enforced in code: once a set number of posts has gone by
-without you, the fronts hold what follows until you speak, so two sessions cannot
-wake each other forever. A line is set up by hand, and `docs/line.md` is your
-guide to it.
+parley's. One rule is enforced in code, and it is a rate: once more than a set
+number of posts arrives within a short window, the fronts hold what follows until
+you speak, so two sessions cannot wake each other forever, while pokes spread over
+hours never trip it. A line is set up by hand, and `docs/line.md` is your guide
+to it.
 
 The verbs, the fronts and the state layout are in `docs/reference.md`, and
 `parley --help` lists every flag.
