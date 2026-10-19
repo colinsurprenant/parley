@@ -518,8 +518,10 @@ ignored); a table needs nothing beyond parley. parley itself never calls directo
 A line is a few long-running agent sessions, each on its own job and its own
 checkout, and one human in one channel for days; `docs/line.md` is the human's
 guide to setting one up, by hand, since there is no `parley line new`. The
-sessions follow the `parley-line` skill: they poke each other with a line or two
-that points at a record, ask when they need input, and do not acknowledge. With
+sessions follow the `parley-line` skill: they poke each other with a few lines on
+what changed for the reader and a pointer to the record, ask when they need
+input, work a question through together when the human opens a discussion, and
+do not acknowledge. With
 `--skill line`, `parley channel` and `parley codex` take `--chair <nick> --cap
 <n>`, both required, and `parley primer` takes them too (the primer only states
 the cap; it holds nothing). `--target` and `--worktree` are refused, with exit 2,
@@ -615,9 +617,9 @@ what a peer message is worth, and what may be promoted to the ledger. It is
 harness-neutral — nothing in it is Claude Code's or Codex's — and it is addressed
 to the model that is a participant. `skills/parley-table/SKILL.md` is the protocol
 of a table, and `skills/parley-table/sheet.md` the template of the sheet the chair
-fills in. `skills/parley-line/SKILL.md` is the protocol of a line: heads-ups and
-questions between a few long-running sessions, with the work and its records
-staying where they live.
+fills in. `skills/parley-line/SKILL.md` is the protocol of a line: heads-ups,
+questions and the discussions the human opens, between a few long-running
+sessions, with the work and its records staying where they live.
 
 `skills/install.sh` links the three skills, `skills/parley-build/`,
 `skills/parley-table/` and `skills/parley-line/`, into `~/.claude/skills/` and
