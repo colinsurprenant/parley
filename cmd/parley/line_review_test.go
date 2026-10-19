@@ -734,3 +734,47 @@ func TestTreeListingSeesTheExcludeFileAndALinkedWorktreesLaunchFile(t *testing.T
 		t.Error("a launch file in a linked worktree did not change the listing")
 	}
 }
+
+// TestRemoveDirMarkerLastPutsTheMarkerBackWhenTheDirectoryStays: with the parent
+// not writable, the entries and the marker go but the directory cannot; the
+// marker comes back, so the next end recognises the directory and finishes.
+func TestRemoveDirMarkerLastPutsTheMarkerBackWhenTheDirectoryStays(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root deletes regardless of permissions")
+	}
+	parent := filepath.Join(t.TempDir(), "tmp")
+	dir := filepath.Join(parent, "reply")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, ".marker")
+	if err := os.WriteFile(marker, []byte("demo\nplan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plan.reply"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	if err := removeDirMarkerLast(dir, ".marker"); err == nil {
+		t.Fatal("removing a directory whose parent is not writable succeeded")
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil || string(got) != "demo\nplan\n" {
+		t.Fatalf("the marker was not put back as it was: %q, %v", got, err)
+	}
+	if fi, err := os.Lstat(marker); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the marker's mode was not kept: %v, %v", fi, err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeDirMarkerLast(dir, ".marker"); err != nil {
+		t.Fatalf("the retry: %v", err)
+	}
+	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the directory is still there after the retry: %v", err)
+	}
+}

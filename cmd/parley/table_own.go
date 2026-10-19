@@ -556,8 +556,22 @@ func removeDirMarkerLast(dir, marker string) error {
 			return err
 		}
 	}
-	if err := os.Remove(filepath.Join(dir, marker)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	// The marker's bytes are kept until the directory is gone: a directory that
+	// cannot be removed after its marker, its parent no longer writable for one,
+	// gets the marker back, so the next end still recognises it.
+	mpath := filepath.Join(dir, marker)
+	mdata, rerr := os.ReadFile(mpath)
+	mfi, serr := os.Lstat(mpath)
+	if err := os.Remove(mpath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return os.Remove(dir)
+	if err := os.Remove(dir); err != nil {
+		if rerr == nil && serr == nil {
+			if werr := writeNewFile(mpath, mdata, mfi.Mode().Perm()); werr != nil {
+				return fmt.Errorf("%w; and its marker %s could not be put back: %v", err, mpath, werr)
+			}
+		}
+		return err
+	}
+	return nil
 }
