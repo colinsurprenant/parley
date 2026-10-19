@@ -471,6 +471,38 @@ func TestLineAddRollbackLeavesAFileAloneWhenTheCheckoutWasMoved(t *testing.T) {
 	}
 }
 
+// TestLineAddRollbackLeavesAConfigAloneWhenItsDirectoryBecameALink: a .codex
+// moved out of the checkout and replaced by a link while the add ran leaves the
+// checkout's own path unchanged, so only the parent check keeps rollback from
+// removing the config through the link.
+func TestLineAddRollbackLeavesAConfigAloneWhenItsDirectoryBecameALink(t *testing.T) {
+	b := newLineBench(t)
+	co := b.plainCheckout(t, "co")
+	dir := filepath.Join(co, ".codex")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest := tableDigest([]byte("x"))
+	outside := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.Rename(dir, outside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, dir); err != nil {
+		t.Fatal(err)
+	}
+	var left leftAlone
+	if err := removeIfDigest(file, digest, co); !errors.As(err, &left) || !strings.Contains(string(left), "is a symlink now") {
+		t.Fatalf("removeIfDigest = %v, want it left alone, naming the linked directory", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "config.toml")); err != nil {
+		t.Errorf("the config outside the checkout was removed: %v", err)
+	}
+}
+
 // TestLineDropKeepsTheExcludeLineForAWorktreeItCannotLookAt: only a not-exist
 // error shows a worktree has no file at the pattern's path; any other leaves the
 // line, and says which worktree and why.
