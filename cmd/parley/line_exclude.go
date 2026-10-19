@@ -237,17 +237,16 @@ func removeExcludeLine(path, line string, sep, made bool) (removed bool, err err
 // exclude file sits in (<common>/info/exclude). ok is false when git cannot say,
 // or names a path it quotes: nothing is then known of the other worktrees.
 func worktreeRoots(ctx context.Context, checkout, excludeFile string) (roots []string, ok bool) {
-	args := []string{"worktree", "list", "--porcelain"}
-	var out string
-	var err error
-	if fi, serr := os.Stat(checkout); serr == nil && fi.IsDir() {
-		out, _, err = runGit(ctx, checkout, gitEnv(), append(append([]string(nil), wtGitFlags...), args...), args)
-	} else {
-		common := filepath.Dir(filepath.Dir(excludeFile))
-		a := append([]string{"--git-dir", common}, args...)
-		out, _, err = runGit(ctx, "", gitEnv(), a, a)
-	}
-	if err != nil {
+	// The worktrees are listed through the git directory that owns the recorded
+	// exclude file, <common>/info/exclude, never through the checkout: a checkout
+	// path reused by another repository would list that repository's worktrees
+	// while the line edits the original's exclude file. A listing cut short at
+	// gitOutputMax is not taken as the whole, since a missing worktree could be
+	// the one that still needs the line.
+	common := filepath.Dir(filepath.Dir(excludeFile))
+	a := append(append([]string(nil), wtGitFlags...), "--git-dir", common, "worktree", "list", "--porcelain")
+	out, truncated, err := runGit(ctx, "", gitEnv(), a, a)
+	if err != nil || truncated {
 		return nil, false
 	}
 	for _, l := range strings.Split(out, "\n") {

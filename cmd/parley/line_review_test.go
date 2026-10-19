@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -547,5 +549,121 @@ func TestLineAddCodexInANonGitCheckoutSkipsCodexsGitCheck(t *testing.T) {
 		if a == "--skip-git-repo-check" {
 			t.Errorf("table new passes --skip-git-repo-check: %q", tb.call(t, 1))
 		}
+	}
+}
+
+// TestWorktreeRootsListsTheExcludeFilesRepository: a linked worktree removed and
+// another repository made at its path must not stand in for the original's
+// worktrees, since the exclude file the line edits is the original's.
+func TestWorktreeRootsListsTheExcludeFilesRepository(t *testing.T) {
+	b := newLineBench(t)
+	repo := b.gitCheckout(t, "repo")
+	wt := b.worktreeOf(t, repo, "wt")
+	exclude, _ := excludeFileOf(context.Background(), wt)
+	if exclude == "" {
+		t.Fatal("no exclude file for the worktree")
+	}
+	gitIn(t, repo, "worktree", "remove", "--force", wt)
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, wt, "init", "-q")
+	roots, ok := worktreeRoots(context.Background(), wt, exclude)
+	if !ok {
+		t.Fatal("worktreeRoots could not list the original repository's worktrees")
+	}
+	realRepo, _ := filepath.EvalSymlinks(repo)
+	realWt, _ := filepath.EvalSymlinks(wt)
+	if !slices.Contains(roots, realRepo) || slices.Contains(roots, realWt) {
+		t.Fatalf("roots %q: want the original repository %s and not the new one at %s", roots, realRepo, realWt)
+	}
+}
+
+// TestWorktreeRootsTakesACutListingAsUnknown: a listing cut at gitOutputMax could
+// omit the worktree that still needs the line, so the line is kept.
+func TestWorktreeRootsTakesACutListingAsUnknown(t *testing.T) {
+	b := newLineBench(t)
+	repo := b.gitCheckout(t, "repo")
+	exclude, _ := excludeFileOf(context.Background(), repo)
+	defer func(old int) { gitOutputMax = old }(gitOutputMax)
+	gitOutputMax = 10
+	if roots, ok := worktreeRoots(context.Background(), repo, exclude); ok {
+		t.Fatalf("a cut listing was taken as whole: %q", roots)
+	}
+	if needed, why := excludeLineStillNeeded(context.Background(), repo, exclude, "/.mcp.json"); !needed || !strings.Contains(why, "cannot list") {
+		t.Fatalf("excludeLineStillNeeded = %v, %q; want the line kept because git could not list the worktrees", needed, why)
+	}
+}
+
+// TestLineAddRefusesALaunchPathGitStillTracks: a tracked launch file the user
+// moved aside is absent from the checkout, but a file written there would be a
+// change to a tracked file, which no exclude line hides.
+func TestLineAddRefusesALaunchPathGitStillTracks(t *testing.T) {
+	for _, harness := range []string{"claude", "codex"} {
+		t.Run(harness, func(t *testing.T) {
+			b := newLineBench(t)
+			lineUp(t, b, "demo")
+			co := b.gitCheckout(t, "co")
+			rel := ".mcp.json"
+			if harness == "codex" {
+				rel = filepath.Join(".codex", "config.toml")
+			}
+			file := filepath.Join(co, rel)
+			if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte("tracked\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitIn(t, co, "add", "--", rel)
+			gitIn(t, co, "commit", "-q", "-m", "track it")
+			if err := os.Remove(file); err != nil {
+				t.Fatal(err)
+			}
+			before := b.lsnap(t, co)
+			res := b.run(t, b.ladd("demo", "plan", harness, co)...)
+			if res.code != 2 || !strings.Contains(res.stderr, "is tracked by git") {
+				t.Fatalf("exit %d, want 2 naming the tracked path\n%s", res.code, res.stderr)
+			}
+			b.wantLineUnchanged(t, before, co)
+		})
+	}
+}
+
+// TestRemoveDirMarkerLastKeepsTheMarkerWhenItStopsPartway: a reply directory whose
+// removal fails on an entry it may not delete keeps its marker, so the next end
+// still recognises it and finishes once the cause is fixed.
+func TestRemoveDirMarkerLastKeepsTheMarkerWhenItStopsPartway(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root deletes regardless of permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "reply")
+	locked := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{filepath.Join(dir, ".marker"), filepath.Join(dir, "a.reply"), filepath.Join(locked, "stuck")} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	if err := removeDirMarkerLast(dir, ".marker"); err == nil {
+		t.Fatal("removal through a directory it may not write succeeded")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ".marker")); err != nil {
+		t.Fatalf("the marker went with a removal that failed: %v", err)
+	}
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeDirMarkerLast(dir, ".marker"); err != nil {
+		t.Fatalf("the retry: %v", err)
+	}
+	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the directory is still there after the retry: %v", err)
 	}
 }

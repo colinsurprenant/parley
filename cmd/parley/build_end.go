@@ -518,7 +518,7 @@ func (e *buildEnd) takeDown(ctx context.Context) error {
 			e.removed = append(e.removed, "reply directory "+rec.ReplyDir+" (already gone)")
 		}
 	} else {
-		if err := os.RemoveAll(e.replyDir); err != nil {
+		if err := removeDirMarkerLast(e.replyDir, buildReplyMarker); err != nil {
 			return fmt.Errorf("remove the reply directory %s: %w", e.replyDir, err)
 		}
 		e.removed = append(e.removed, "reply directory "+rec.ReplyDir)
