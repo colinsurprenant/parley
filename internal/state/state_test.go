@@ -317,24 +317,25 @@ func TestTheCaseFoldedLockIsOneLock(t *testing.T) {
 	}
 }
 
-// TestReservedNicksAreTheTwoDirectories: stream.ValidNick refuses the names in
+// TestReservedNicksAreTheThreeDirectories: stream.ValidNick refuses the names in
 // stream.ReservedNicks, which that package spells out because it cannot import
-// this one; they must be the two directories nickRoot refuses.
-func TestReservedNicksAreTheTwoDirectories(t *testing.T) {
+// this one; they must be the three directories nickRoot refuses.
+func TestReservedNicksAreTheThreeDirectories(t *testing.T) {
 	got := map[string]bool{}
 	for _, n := range stream.ReservedNicks {
 		got[n] = true
 	}
-	if len(got) != 2 || !got[TablesDir] || !got[BuildsDir] {
-		t.Errorf("stream.ReservedNicks is %v, want %q and %q", stream.ReservedNicks, TablesDir, BuildsDir)
+	if len(got) != 3 || !got[TablesDir] || !got[BuildsDir] || !got[LinesDir] {
+		t.Errorf("stream.ReservedNicks is %v, want %q, %q and %q", stream.ReservedNicks, TablesDir, BuildsDir, LinesDir)
 	}
 }
 
-// TestTablesAndBuildsAreNotNicks: the base keeps the tables and the builds
-// beside the per-nick directories, so no nick-keyed path may land in either, in
-// any case, whichever function names it. Nothing is made in refusing.
-func TestTablesAndBuildsAreNotNicks(t *testing.T) {
-	for _, nick := range []string{"tables", "TABLES", "Tables", "builds", "Builds", "bUILDS"} {
+// TestTablesBuildsAndLinesAreNotNicks: the base keeps the tables, the builds and
+// the lines beside the per-nick directories, so no nick-keyed path may land in
+// any of them, in any case, whichever function names it. Nothing is made in
+// refusing.
+func TestTablesBuildsAndLinesAreNotNicks(t *testing.T) {
+	for _, nick := range []string{"tables", "TABLES", "Tables", "builds", "Builds", "bUILDS", "lines", "Lines", "LINES"} {
 		base := t.TempDir()
 		check := func(what string, err error) {
 			t.Helper()
@@ -359,8 +360,8 @@ func TestTablesAndBuildsAreNotNicks(t *testing.T) {
 			t.Errorf("refusing the nick %q left %d entries in the state base", nick, len(left))
 		}
 	}
-	// A nick that merely starts with either name is an ordinary nick.
-	for _, nick := range []string{"tables2", "mybuilds", "table", "build"} {
+	// A nick that merely starts with one of the names is an ordinary nick.
+	for _, nick := range []string{"tables2", "mybuilds", "table", "build", "line", "mylines"} {
 		if _, err := NickLockPath(t.TempDir(), nick); err != nil {
 			t.Errorf("NickLockPath(%q): %v", nick, err)
 		}

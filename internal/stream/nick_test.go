@@ -40,16 +40,21 @@ func TestValidNick(t *testing.T) {
 		{"nick😀", false},
 		{"#channel", false},
 		{strings.Repeat("n", MaxNick+1), false},
-		// The two directories the state base keeps beside the per-nick ones, in
+		// The three directories the state base keeps beside the per-nick ones, in
 		// any case; a name that merely contains one is a nick like any other.
 		{"tables", false},
 		{"Tables", false},
 		{"TABLES", false},
 		{"builds", false},
 		{"bUiLdS", false},
+		{"lines", false},
+		{"Lines", false},
+		{"LINES", false},
 		{"table", true},
 		{"tables2", true},
 		{"my-builds", true},
+		{"line", true},
+		{"lines2", true},
 	}
 	for _, c := range cases {
 		err := ValidNick(c.nick)

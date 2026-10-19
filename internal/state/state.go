@@ -37,14 +37,15 @@ import (
 // directory is given.
 const appDir = "parley"
 
-// TablesDir and BuildsDir are the directories under the base that hold the
-// tables and the builds, beside the per-nick ones. A nick of either name would
-// put its lock, cursors and credentials inside them, so nickRoot refuses both;
-// stream.ValidNick refuses them first (stream.ReservedNicks spells the same two
-// names, and a test here holds them equal).
+// TablesDir, BuildsDir and LinesDir are the directories under the base that hold
+// the tables, the builds and the lines, beside the per-nick ones. A nick of any
+// of the three names would put its lock, cursors and credentials inside them, so
+// nickRoot refuses them; stream.ValidNick refuses them first
+// (stream.ReservedNicks spells the same names, and a test here holds them equal).
 const (
 	TablesDir = "tables"
 	BuildsDir = "builds"
+	LinesDir  = "lines"
 )
 
 // streamKeyLen is how much of the stream spec's digest names its directory.
@@ -97,9 +98,10 @@ func nickRoot(base, nick string) (string, error) {
 		return "", fmt.Errorf("state: invalid nick %q", nick)
 	}
 	folded := foldNick(nick)
-	// The base keeps the tables and the builds beside the per-nick directories;
-	// a nick of either name, in any case, would put its state in them.
-	for _, reserved := range []string{TablesDir, BuildsDir} {
+	// The base keeps the tables, the builds and the lines beside the per-nick
+	// directories; a nick of any of those names, in any case, would put its state
+	// in them.
+	for _, reserved := range []string{TablesDir, BuildsDir, LinesDir} {
 		if folded == reserved {
 			return "", fmt.Errorf("state: %q is the directory the %s live in, beside the per-nick ones, so it cannot be a nick", nick, reserved)
 		}

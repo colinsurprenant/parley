@@ -30,7 +30,7 @@ func stateEntries(t *testing.T, dir string) []string {
 func TestSendRefusesTablesAndBuildsAsNicksAndLandsNothingInThem(t *testing.T) {
 	addr := startErgo(t)
 	chat := "irc://" + addr + "/nickdirs"
-	for _, nick := range []string{"tables", "Tables", "BUILDS", "builds"} {
+	for _, nick := range []string{"tables", "Tables", "BUILDS", "builds", "lines", "LINES"} {
 		t.Run(nick, func(t *testing.T) {
 			stateDir := t.TempDir()
 			res := runParley(t, "", "send", "--stream", chat, "--nick", nick, "--state-dir", stateDir, "--", "hello")
@@ -65,14 +65,14 @@ func TestWaitRefusesTablesAndBuildsAsNicks(t *testing.T) {
 	}
 }
 
-// TestReservedNicksAreConfigErrorsBeforeAnythingIsTouched: tables and builds, in
-// any case, are refused as a --nick with exit 2 by the check every nick goes
+// TestReservedNicksAreConfigErrorsBeforeAnythingIsTouched: tables, builds and
+// lines, in any case, are refused as a --nick with exit 2 by the check every nick goes
 // through, before a stream is opened or a state directory made, whatever the
 // stream is: a file: stream never asks the state package for the nick's
 // directory, so only the up-front check can refuse it there. nickRoot's own
 // refusal stays behind it as the backstop (internal/state).
 func TestReservedNicksAreConfigErrorsBeforeAnythingIsTouched(t *testing.T) {
-	for _, nick := range []string{"tables", "Tables", "BUILDS", "builds"} {
+	for _, nick := range []string{"tables", "Tables", "BUILDS", "builds", "lines", "LINES"} {
 		for _, verb := range []string{"send", "wait"} {
 			t.Run(verb+"/"+nick, func(t *testing.T) {
 				root := t.TempDir()
