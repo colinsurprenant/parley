@@ -361,7 +361,7 @@ func TestLineDropRefusesAFileThatIsNotTheLines(t *testing.T) {
 
 			res = mustLine(t, b, b.ldrop("demo", "worker", "--force")...)
 			t.Logf("stdout:\n%s", res.stdout)
-			if !strings.Contains(res.stdout, "Left in place, because nothing shows they are the line's") || !strings.Contains(res.stdout, c.file) || !strings.Contains(res.stdout, c.why) {
+			if !strings.Contains(res.stdout, "Left in place:") || !strings.Contains(res.stdout, c.file) || !strings.Contains(res.stdout, c.why) {
 				t.Errorf("stdout does not say the file is left in place:\n%s", res.stdout)
 			}
 			// The file stays as the user left it, and so does its exclude line.
@@ -760,5 +760,37 @@ func TestLineEndAfterAPartialFailureFinishesOnTheSecondRun(t *testing.T) {
 	}
 	if ents, _ := os.ReadDir(b.tmp); len(ents) != 0 {
 		t.Errorf("$TMPDIR still holds %d entries", len(ents))
+	}
+}
+
+// TestLineDropDoesNotFollowAnExcludeFileThatBecameALink: the exclude line is a
+// convenience, so the drop goes on without it, leaving the line and saying so; the
+// file the link points at is not read or written.
+func TestLineDropDoesNotFollowAnExcludeFileThatBecameALink(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitCheckout(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	exclude := filepath.Join(co, ".git", "info", "exclude")
+	target := filepath.Join(b.root, "shared-excludes")
+	if err := os.Rename(exclude, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, exclude); err != nil {
+		t.Fatal(err)
+	}
+	want := string(mustRead(t, target))
+	res := mustLine(t, b, b.ldrop("demo", "plan")...)
+	if got := string(mustRead(t, target)); got != want {
+		t.Errorf("the link's target was written through: %q, want %q", got, want)
+	}
+	if !strings.Contains(res.stdout, "Left in place:") || !strings.Contains(res.stdout, "the line /.mcp.json in "+exclude) {
+		t.Errorf("stdout does not list the exclude line as left:\n%s", res.stdout)
+	}
+	if _, err := os.Stat(filepath.Join(co, ".mcp.json")); err == nil {
+		t.Error("the launch file is still there")
+	}
+	if rec := b.record(t, "demo"); len(rec.Sessions) != 0 {
+		t.Errorf("sessions left: %+v", rec.Sessions)
 	}
 }

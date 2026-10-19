@@ -448,12 +448,16 @@ func (t *teardown) removeLaunchFile(s lineSession, f lineFile, act fileAction) e
 	if f.ExcludeFile != "" {
 		_, line := launchFileOf(s.Harness, s.Checkout)
 		removed, err := removeExcludeLine(f.ExcludeFile, line, f.ExcludeSep)
-		if err != nil {
+		switch {
+		case errors.Is(err, errExcludeUnsafe):
+			// A link, or a file too large to read, is not written through or read
+			// whole; the line is a convenience, so the drop goes on without it.
+			t.left = append(t.left, fmt.Sprintf("the line %s in %s: %v", line, f.ExcludeFile, err))
+		case err != nil:
 			return fmt.Errorf("remove the line %s from %s: %w", line, f.ExcludeFile, err)
-		}
-		if removed {
+		case removed:
 			t.removed = append(t.removed, fmt.Sprintf("the line %s in %s", line, f.ExcludeFile))
-		} else {
+		default:
 			t.removed = append(t.removed, fmt.Sprintf("the line %s in %s (already gone)", line, f.ExcludeFile))
 		}
 	}
@@ -501,7 +505,7 @@ func (t *teardown) report(w io.Writer, whole bool) error {
 		}
 	}
 	if len(t.left) > 0 {
-		b.WriteString("\nLeft in place, because nothing shows they are the line's:\n")
+		b.WriteString("\nLeft in place:\n")
 		for _, l := range t.left {
 			fmt.Fprintf(&b, "  %s\n", l)
 		}

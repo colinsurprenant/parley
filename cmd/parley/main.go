@@ -430,7 +430,8 @@ verbs:
            and its directory is not a link; otherwise it refuses, exit 1,
            naming it, and --force leaves the file and its exclude line in place
            and says so) and the exclude line (only if the line added it, that
-           exact line and nothing else). It prints a codex delete line for a
+           exact line and nothing else, an exclude file that is a link being left
+           alone and said). It prints a codex delete line for a
            Codex session and never runs one. end <id> drops every session on
            the same rules with every lock taken and every claim judged first,
            then removes the line's directory; a failure partway leaves

@@ -25,6 +25,11 @@ import (
 // place for a megabyte. A larger file is left alone, with a note.
 const excludeMax = 4 << 20
 
+// errExcludeUnsafe marks an exclude file that is not read or written because it
+// is not a regular file, or is too large: the line is a convenience, so a caller
+// leaves such a file alone and says so, rather than fail.
+var errExcludeUnsafe = errors.New("not touched")
+
 // excludeFileOf asks git, from the checkout, where its info/exclude is. It
 // returns "" and a note for the human when there is none to use: the checkout is
 // not a git checkout, or it is a directory inside one (the anchored line would
@@ -59,7 +64,7 @@ func readExclude(path string) (content string, exists bool, err error) {
 	case err != nil:
 		return "", false, err
 	case !li.Mode().IsRegular():
-		return "", true, fmt.Errorf("%s is not a regular file (a link, most likely): it is not followed", path)
+		return "", true, fmt.Errorf("%s is not a regular file (a link, most likely), so it is %w and not followed", path, errExcludeUnsafe)
 	}
 	f, err := state.OpenRegular(path)
 	if err != nil {
@@ -71,7 +76,7 @@ func readExclude(path string) (content string, exists bool, err error) {
 		return "", true, err
 	}
 	if len(b) > excludeMax {
-		return "", true, fmt.Errorf("%s is larger than %d bytes", path, excludeMax)
+		return "", true, fmt.Errorf("%s is larger than %d bytes, so it is %w", path, excludeMax, errExcludeUnsafe)
 	}
 	return string(b), true, nil
 }

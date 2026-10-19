@@ -664,7 +664,8 @@ exit 2.
   uses that checkout with that harness, the launch file, only if it is a regular
   file in a real directory whose bytes hash to the recorded digest, then the `.codex`
   directory if the line made it and it is empty, and the line in the exclude file if
-  the line added it, that exact line and nothing else. A launch file that is not
+  the line added it, that exact line and nothing else (an exclude file that has become
+  a link is not written through; the line stays, and is said to). A launch file that is not
   that is refused, exit 1, naming it; `--force` leaves it and its exclude line in
   place instead, and says so. The session is then removed from the record, and a
   `codex delete <thread>` line is printed for a Codex session and never run.

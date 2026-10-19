@@ -349,8 +349,9 @@ before it has read the others', run a table instead: a line has no seal.
     in the record and it is a regular file in a real directory**, and then the
     `.codex` directory if `line add` made it and it is empty, and the line in the
     exclude file if `line add` added it: that exact line, and nothing else, the
-    rest of the file byte for byte. A file another session of the checkout still
-    uses stays until that session goes.
+    rest of the file byte for byte (an exclude file that has become a link is not
+    written through: the line stays, and the command says so). A file another
+    session of the checkout still uses stays until that session goes.
 
   A launch file that is no longer the one the line wrote (you edited it, replaced
   it, or its directory became a link) is yours: the command refuses, naming it.
