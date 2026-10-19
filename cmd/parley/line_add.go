@@ -216,8 +216,11 @@ func planLineAdd(in lineAddInput) (*linePlan, error) {
 	// The checkout is resolved once, here, and the resolved path is the only one
 	// used from now on, recorded and printed: two spellings of one directory (a
 	// symlinked parent, /tmp and /private/tmp) would otherwise be two checkouts to
-	// the record's text and one to its sharing, and the record would not hold.
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(in.checkout))
+	// the record's text and one to its sharing, and the record would not hold. The
+	// path is resolved as spelled, not cleaned first: a ".." after a link climbs
+	// from where the link leads, as the Stat above did, and cleaning it away first
+	// would land on a different directory than the one checked.
+	resolved, err := filepath.EvalSymlinks(in.checkout)
 	if err != nil {
 		return nil, cfgErrf("--checkout %q: %v", in.checkout, err)
 	}

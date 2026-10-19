@@ -234,13 +234,15 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    status` without a tracked file touched. The file is made when the repository
    has none. A directory that is not a git checkout is allowed and gets no such
    line, and neither does one that is only inside a repository, where the anchored
-   line would not match. An exclude file that is a link is not written through; the
-   command says so and carries on. Linked worktrees of one repository share one
-   exclude file, so a session of this line in another worktree that finds the line
-   there takes it as the line's own, and it is taken out only when the last file it
-   hides is gone ("Taking it down"). If anything fails, or you interrupt it, what
-   this one command made is taken down again: the launch file, its line in the
-   exclude file (and the file, if it made it), the reply directory, the thread
+   line would not match. An exclude file that is a link is not written through, and
+   one the line would take past 4 MiB, the most `line drop` reads to take it out
+   again, is not written to; the command says so and carries on. Linked worktrees
+   of one repository share one exclude file, so a session of this line in another
+   worktree that finds the line there takes it as the line's own, and it is taken
+   out only when the last file it hides is gone ("Taking it down"). If anything
+   fails, or you interrupt it, what this one command made is taken down again: the
+   launch file, its line in the exclude file (and the file, if it made it), the
+   reply directory, the thread
    record and the Codex thread (`codex delete --force`). What the primer turn did
    is not on that list because it can write nothing in the checkout: its sandbox is
    read-only.
