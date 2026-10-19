@@ -564,7 +564,12 @@ func (r *lineAddRun) writeLaunchFile(ctx context.Context) error {
 	case note != "":
 		r.excludeNote = note
 	case res.added:
-		r.file.ExcludeFile, r.file.ExcludeSep, r.file.ExcludeMade = file, res.sep, res.made
+		// The file's creation is the line's whichever session made it: a Codex
+		// session appending to the file a Claude session of this line created
+		// shares the duty to remove it once empty, so teardown in any order leaves
+		// no file behind. Rollback undoes only this append, so it keeps res.made.
+		made := res.made || p.lineMadeExclude(file)
+		r.file.ExcludeFile, r.file.ExcludeSep, r.file.ExcludeMade = file, res.sep, made
 		r.push("exclude line "+excludeLine+" in "+file, func() error {
 			_, err := removeExcludeLine(file, excludeLine, res.sep, res.made)
 			return err
@@ -575,10 +580,22 @@ func (r *lineAddRun) writeLaunchFile(ctx context.Context) error {
 		// worktree of the same repository shares the exclude file), it is this
 		// session's to take out too, once nothing else needs it.
 		if owner, ok := p.excludeOwner(file, excludeLine); ok {
-			r.file.ExcludeFile, r.file.ExcludeSep, r.file.ExcludeMade = file, owner.ExcludeSep, owner.ExcludeMade
+			r.file.ExcludeFile, r.file.ExcludeSep, r.file.ExcludeMade = file, owner.ExcludeSep, owner.ExcludeMade || p.lineMadeExclude(file)
 		}
 	}
 	return nil
+}
+
+// lineMadeExclude reports whether a session of the line, of either harness,
+// recorded creating the exclude file.
+func (p *linePlan) lineMadeExclude(excludeFile string) bool {
+	for _, s := range p.rec.Sessions {
+		if len(s.Files) == 1 && s.Files[0].ExcludeMade && s.Files[0].ExcludeFile != "" &&
+			resolveExisting(s.Files[0].ExcludeFile) == resolveExisting(excludeFile) {
+			return true
+		}
+	}
+	return false
 }
 
 // excludeOwner finds a session of the line that put the line in the exclude file:

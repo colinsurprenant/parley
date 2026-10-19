@@ -667,3 +667,70 @@ func TestRemoveDirMarkerLastKeepsTheMarkerWhenItStopsPartway(t *testing.T) {
 		t.Fatalf("the directory is still there after the retry: %v", err)
 	}
 }
+
+// TestLineTeardownRemovesAnExcludeFileTheLineMadeWhateverTheOrder: with no
+// info/exclude at first, a Claude session's add creates it and a Codex session's
+// add appends to it. Either session may go last, and line end drops Claude first,
+// so the duty to remove the file once empty is the line's, shared by both.
+func TestLineTeardownRemovesAnExcludeFileTheLineMadeWhateverTheOrder(t *testing.T) {
+	for _, order := range [][]string{{"plan", "build"}, {"build", "plan"}, nil} {
+		name := "end"
+		if order != nil {
+			name = "drop " + strings.Join(order, " then ")
+		}
+		t.Run(name, func(t *testing.T) {
+			b := newLineBench(t)
+			lineUp(t, b, "demo")
+			co := b.gitCheckout(t, "co")
+			exclude := filepath.Join(co, ".git", "info", "exclude")
+			if err := os.Remove(exclude); err != nil {
+				t.Fatal(err)
+			}
+			mustLine(t, b, b.ladd("demo", "plan", "claude", co)...)
+			mustLine(t, b, b.ladd("demo", "build", "codex", co)...)
+			if order == nil {
+				mustLine(t, b, b.lend("demo")...)
+			} else {
+				for _, nick := range order {
+					mustLine(t, b, b.ldrop("demo", nick)...)
+				}
+			}
+			if _, err := os.Lstat(exclude); !errors.Is(err, os.ErrNotExist) {
+				got, _ := os.ReadFile(exclude)
+				t.Fatalf("the exclude file the line made is still there (%v): %q", err, got)
+			}
+		})
+	}
+}
+
+// TestTreeListingSeesTheExcludeFileAndALinkedWorktreesLaunchFile: the snapshot
+// the "nothing changed" checks compare must change when the exclude file does, in
+// a main checkout or through a linked worktree, and when a launch file appears in
+// a linked worktree, whose .git is a file.
+func TestTreeListingSeesTheExcludeFileAndALinkedWorktreesLaunchFile(t *testing.T) {
+	b := newLineBench(t)
+	repo := b.gitCheckout(t, "repo")
+	wt := b.worktreeOf(t, repo, "wt")
+	exclude := filepath.Join(repo, ".git", "info", "exclude")
+	for _, dir := range []string{repo, wt} {
+		before := treeListing(t, dir)
+		f, err := os.OpenFile(exclude, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("/" + filepath.Base(dir) + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		if treeListing(t, dir) == before {
+			t.Errorf("%s: a change to the exclude file did not change the listing", dir)
+		}
+	}
+	before := treeListing(t, wt)
+	if err := os.WriteFile(filepath.Join(wt, ".mcp.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if treeListing(t, wt) == before {
+		t.Error("a launch file in a linked worktree did not change the listing")
+	}
+}
