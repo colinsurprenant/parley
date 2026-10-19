@@ -76,9 +76,12 @@ line (`10m`), `codex_bin` when `line new` was given `--codex-bin`, `created`, an
 `sessions`, each with its `nick`, `harness`, `model`, `checkout`, a Codex session's
 `thread` and `reply_dir`, and `files`, the one launch file the line wrote or shares
 for it: its `path`, the `sha256` of its exact bytes, `exclude_file` (the exclude file
-the line appended its line to, when it did; `exclude_sep` when it had to end that
-file's last line first) and `made_dir` (a `.codex` the line made). Sessions of one
-checkout and harness list the same entry. The record holds no stream content.
+that holds the launch file's line because the line put it there, this session or
+another of the line; `exclude_sep` when the line had to end that file's last line
+first, `exclude_made` when it created the file) and `made_dir` (a `.codex` the line
+made). The `checkout` is the path with its links resolved. Sessions of one checkout
+and harness list the same entry. The record holds no stream content, and it is
+checked against what the verbs write before every write of it.
 
 Two terminals, with the human in the room through `tail -f`:
 
@@ -630,35 +633,45 @@ exit 2.
   `builds`, `lines`), the chair's, or already in the line, without regard to ASCII
   case; `opencode` (not supported yet) or another harness; a model over 128 bytes
   or outside letters, digits and `. _ - : / @ [ ] +`; a checkout that is not an
-  existing directory given by an absolute path, or that holds a `$` or a control
-  character; a checkout, state directory, binary or temp path that is not valid
-  UTF-8; a state directory inside the checkout, or, for a Codex session, `$TMPDIR`;
+  existing directory given by an absolute path, or that holds, or resolves to a
+  path that holds, a `$` or a control character (the checkout is resolved, links
+  and all, and the resolved path is the one recorded and printed); a checkout,
+  state directory, binary or temp path that is not valid UTF-8; a state directory inside the checkout, or, for a Codex session, `$TMPDIR`;
   a Claude session's `.mcp.json`, or a Codex session's `.codex/config.toml`, that
   is in the checkout and is not the one this line wrote for another session of it
   (the record holds the digest), or a `.codex` that is not a real directory; a
-  Codex nick that already has a thread record for the stream; the machine, when
-  doctor's static checks fail or the `parley-line` skill is not linked under the
-  root the harness reads (`~/.claude/skills` for Claude Code, `~/.agents/skills`
-  for Codex); and a Claude session whose instructions, built in this process as
-  `channel --check` builds them, are over Claude Code's cap. A nick whose lock a
-  running session or pump holds is refused, exit 1.
+  Codex nick that already has a thread record for the stream; and a Claude session
+  whose instructions, built in this process as `channel --check` builds them, are
+  over Claude Code's cap. Exit 1, also with nothing changed: a machine on which
+  doctor's static checks fail, as when the `parley-line` skill is not linked under
+  the root the harness reads (`~/.claude/skills` for Claude Code,
+  `~/.agents/skills` for Codex), and a nick whose lock a running session or pump
+  holds.
   A Claude session gets `<checkout>/.mcp.json`, one server `parley` whose
   command is the binary and whose args are `channel --stream irc://<server>/#<id>
   --nick ${PARLEY_NICK} --state-dir <base> --skill line --chair <chair> --cap <cap>
   --window <window>`, unless the line wrote it already for another Claude session of
   the checkout, which shares it. A Codex session gets `<checkout>/.codex/config.toml`
   (`workspace-write`, `on-request`, `network_access = true`, which turns network
-  access on for Codex in that checkout, and the output says so) on the same terms; a
+  access on for Codex in that checkout, and the output says so) on the same terms,
+  behind a first comment line naming the line and carrying a nonce, so that the
+  digest the record holds proves the line wrote the file and not a copy of the
+  constant text; a
   reply directory `parley-line-<id>-*` under `$TMPDIR` at 0700 with a
   `.parley-line` marker holding the id and the nick; and a thread started as `table
   new` starts a seat's, by `codex exec --json -C <checkout>` on the line's primer,
-  stdin closed, network off for the turn, `-m <model>` if given, a five-minute limit
-  and a turn that must have completed, the thread recorded in `codex-thread`.
+  but in a read-only sandbox (`-s read-only`), since the checkout is the user's own
+  and not a worktree parley made, stdin closed, network off for the turn, `-m
+  <model>` if given, a five-minute limit and a turn that must have completed, the
+  thread recorded in `codex-thread`.
   Files are created with no overwrite and never through a link. When the checkout
   is the root of a git checkout, the launch file's line (`/.mcp.json` or
   `/.codex/config.toml`) is appended to the file `git rev-parse --git-path
-  info/exclude` names unless it is there; an exclude file that is a link is left
-  alone, with a note, and a checkout that is not a git root gets none. The session
+  info/exclude` names unless it is there, and the file is created if the
+  repository has none; an exclude file that is a link is left alone, with a note,
+  and a checkout that is not a git root gets none. Linked worktrees share that
+  file: a session of the line that finds its line there, put by another session of
+  the line, records the exclude file as its own to clean up. The session
   goes into `line.json` last. Any failure or interrupt takes down what the add made,
   a started Codex thread included (`codex delete --force`), and puts the record
   back. It prints the session's launch (Claude: `cd`, the `claude` line with
@@ -674,8 +687,16 @@ exit 2.
   uses that checkout with that harness, the launch file, only if it is a regular
   file in a real directory whose bytes hash to the recorded digest, then the `.codex`
   directory if the line made it and it is empty, and the line in the exclude file if
-  the line added it, that exact line and nothing else (an exclude file that has become
-  a link is not written through; the line stays, and is said to). A launch file that is not
+  the line added it, that exact line and nothing else, and the file itself if the
+  line created it and it is empty then. The rest of the file is left byte for byte,
+  but for a final newline `add` supplied to end a last line that had none: it goes
+  with the line while the line is still the last, and stays when another line was
+  appended after it. The exclude file is shared by every worktree of the repository,
+  so the line is taken out only when no worktree has a file at its path any more
+  (`git worktree list` from the checkout, or from the common git directory when the
+  checkout is gone); otherwise it stays, the output names the file that needs it,
+  and the last session dropped takes it out. An exclude file that has become a link
+  is not written through; the line stays, and is said to. A launch file that is not
   that is refused, exit 1, naming it; `--force` leaves it and its exclude line in
   place instead, and says so. The session is then removed from the record, and a
   `codex delete <thread>` line is printed for a Codex session and never run.
@@ -683,7 +704,10 @@ exit 2.
   session's nick lock, refusing (exit 1) if any is held, judges every session by
   the rules of `drop` before removing anything, drops them in order, and removes
   `lines/<id>/`. A failure partway leaves `line.json` listing what is still there,
-  and the next run finishes.
+  and the next run finishes. A line directory with no `line.json` and nothing else
+  in it (but for the temp file a record's write goes through), which a `line new`
+  killed after making the directory leaves, is removed by `end` (exit 0, saying
+  so), and `new` for that id says to run `end`.
 
 Nothing a checkout holds is parley's state. The record is trusted; a launch file is
 the line's only while its digest matches, and `line drop` and `line end` delete
