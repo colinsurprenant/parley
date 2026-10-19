@@ -502,6 +502,13 @@ func (r *lineAddRun) writeLaunchFile(ctx context.Context) error {
 		return nil
 	}
 
+	// The checkout was resolved when planning began, and the doctor checks ran
+	// since: a checkout moved and replaced by a link meanwhile would put the file
+	// in another directory, which teardown then refuses. Look again just before
+	// anything is written.
+	if moved := checkoutMoved(p.checkout); moved != "" {
+		return fmt.Errorf("session %s: %s; nothing was written there", p.nick, moved)
+	}
 	var data []byte
 	if p.harness == harnessClaude {
 		data = p.data
@@ -602,6 +609,14 @@ func removeIfDigest(path, digest, checkout string) error {
 	// directory, and a file there is not shown to be this run's.
 	if moved := checkoutMoved(checkout); moved != "" {
 		return leftAlone(moved)
+	}
+	// The same holds for the directory the file is in, .codex for a Codex
+	// config: one replaced by a link since it was written points the name
+	// outside the checkout.
+	if dir := filepath.Dir(path); filepath.Clean(dir) != filepath.Clean(checkout) {
+		if di, err := os.Lstat(dir); err == nil && di.Mode()&fs.ModeSymlink != 0 {
+			return leftAlone(dir + " is a symlink now")
+		}
 	}
 	li, err := os.Lstat(path)
 	switch {
