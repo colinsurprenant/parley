@@ -62,13 +62,23 @@ The single-process lock lives in `$XDG_STATE_HOME/parley/<nick>/` (by default
 <dir>`; a second `wait` for one nick exits 2, whichever stream it is pointed
 at. `<nick>` there is the nick with its ASCII capitals folded to lower case, so
 `Colin` and `colin`, one nick to the server, are one directory, one lock and one
-password; `tables` and `builds` are the directories the tables and the builds
-use beside the nick ones, so no nick may be either, in any case. The cursor lives one level deeper, in a directory named for the stream, so
+password; `tables`, `builds` and `lines` are the directories the tables, the builds
+and the lines use beside the nick ones, so no nick may be any of them, in any case. The cursor lives one level deeper, in a directory named for the stream, so
 following two streams under one nick keeps two independent positions. A `file:`
 path is resolved to its absolute form first, so one file keeps one position
 however it is spelled, and two files never share one. A Codex seat's thread
 record sits beside the cursor, in `codex-thread`: mode 0600, one line holding
-the thread's UUID and ending in its newline (a record without it is malformed), the thread `parley codex --thread auto` delivers into.
+the thread's UUID and ending in its newline (a record without it is malformed), the thread `parley codex --thread auto` delivers into. `parley table new`, `build new` and `line add` write it. A line's
+state is `lines/<id>/line.json` (mode 0600, in a directory at 0700, written through
+a temp file and a rename and read through a 64 KiB bound): the line's `id`,
+`stream`, `server`, `state_dir`, `chair`, `cap`, `window` as written on a command
+line (`10m`), `codex_bin` when `line new` was given `--codex-bin`, `created`, and
+`sessions`, each with its `nick`, `harness`, `model`, `checkout`, a Codex session's
+`thread` and `reply_dir`, and `files`, the one launch file the line wrote or shares
+for it: its `path`, the `sha256` of its exact bytes, `exclude_file` (the exclude file
+the line appended its line to, when it did; `exclude_sep` when it had to end that
+file's last line first) and `made_dir` (a `.codex` the line made). Sessions of one
+checkout and harness list the same entry. The record holds no stream content.
 
 Two terminals, with the human in the room through `tail -f`:
 
@@ -182,7 +192,8 @@ Under `--skill line` it takes `--chair`, `--cap` and `--window` and refuses
 `--target` and `--worktree`, with exit 2 (see Lines, below).
 
 `parley table new` and `parley build new` write this file for the Claude Code
-seats and peers they set up; a line's is written by hand.
+seats and peers they set up, and `parley line add` for a line's Claude Code
+sessions.
 
 ## codex: the Codex CLI front
 
@@ -225,15 +236,16 @@ parley codex --stream file:./chat.ndjson --nick codex-a --thread <session-uuid>
 
 `--thread` is the session's UUID or its exact name, or `auto`, which reads the
 thread id recorded for this nick and stream in `codex-thread`, under the state
-directory `--state-dir` names, by `parley table new` or `parley build new`; with no record it exits
-2, saying to run one of them or pass `--thread <id>`. `auto` is reserved, so a Codex
+directory `--state-dir` names, by `parley table new`, `parley build new` or
+`parley line add`; with no record it exits 2, saying to run the verb of the
+`--skill` (under `--skill line`, `parley line add`) or pass `--thread <id>`. `auto` is reserved, so a Codex
 session literally named `auto` is passed by its UUID. The start line names the
 thread the pump resolved.
 
-`parley table new` and `parley build new` start the Codex session on its
-primer and record its thread for `--thread auto`, and print the pump line. A
-line has no such verb, so its Codex session is started by hand on the primer and
-the pump is given the thread id; `docs/line.md` has the steps. `--skill` is
+`parley table new`, `parley build new` and `parley line add` start the Codex
+session on its primer and record its thread for `--thread auto`, and print the
+pump line. A line session you start by hand on the primer is given to the pump by
+its thread id; `docs/line.md` has the steps. `--skill` is
 `build` by default and takes `table` and `line`, each with `--chair` and `--cap`,
 both required; `line` also takes `--window`, 10m by default (see Tables and
 Lines, below).
@@ -247,7 +259,7 @@ the other: `--front claude` is what `parley channel` sends in its `instructions`
 at connect time, and `--front codex` is that same text plus what is true of a
 front with no connect-time channel. The codex text is the session's first
 message: a human pastes it in, or the session is started with it as its first
-prompt, which is what `parley table new` and `parley build new` do. The build and table forms carry three facts as values, and `--chair`, `--target` and
+prompt, which is what `parley table new`, `parley build new` and `parley line add` do. The build and table forms carry three facts as values, and `--chair`, `--target` and
 `--worktree` are required: the human's registered nick, the target repo and
 this session's worktree of it, each directory absolute and existing, printed as
 spelled, and not the same directory (links followed). The line form carries two,
@@ -393,9 +405,10 @@ NickServ registration, each Codex seat's pump and `codex resume` line, each
 Claude seat's launch line, the gate, and the TABLE line. `table new` takes
 the id's lock, `<state>/.ids/<id>.lock`, as soon as it has checked its flags and
 the machine, and holds it to the end of the run: `table new`, `table end`,
-`build new` and `build end` all take it, so that no two of them act on one id at
-once, and one that finds it held refuses, exit 1, and does not wait. Under it the
-id is checked to be free as a table and as a build (exit 2). It then takes
+`build new` and `build end` all take it, and the line verbs too, so that no two of
+them act on one id at once, and one that finds it held refuses, exit 1, and does
+not wait. Under it the
+id is checked to be free as a table, as a build and as a line (exit 2). It then takes
 every seat's nick lock before it makes anything and holds them until it is
 done; a nick that a running pump or Claude Code session holds is refused, exit
 1, naming it, with nothing changed. A step that fails takes down everything the
@@ -519,7 +532,7 @@ ignored); a table needs nothing beyond parley. parley itself never calls directo
 
 A line is a few long-running agent sessions, each on its own job and its own
 checkout, and one human in one channel for days; `docs/line.md` is the human's
-guide to setting one up, by hand, since there is no `parley line new`. The
+guide to setting one up with the line verbs, below, and by hand. The
 sessions follow the `parley-line` skill: they poke each other with a few lines on
 what changed for the reader and a pointer to the record, ask when they need
 input, work a question through together when the human opens a discussion, and
@@ -580,6 +593,91 @@ each of them directly, instead of trying them in the sandbox first. It does not
 tell the session to widen its sandbox, and the claude line form, which has no room
 for it under its cap, does not carry it.
 
+`parley line` has four verbs, which set a line up and take it down the way `table
+new` and `table end` do a table, and share their helpers: the id lock, the nick
+locks, the rollback and the checks. The id is `[a-z0-9][a-z0-9-]{0,31}`, the
+channel `#<id>` and a directory name, in one namespace with the tables and the
+builds, and every verb takes `<base>/.ids/<id>.lock` first and holds it to the end;
+a second command for the id refuses at once, exit 1. `table new` and `build new`
+refuse the id of a line, as `line new` refuses the id of a table or a build, with
+exit 2.
+
+- `line new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667]
+  [--state-dir <dir>] [--codex-bin codex]` makes the line and its record, with no
+  sessions. `--chair` must be a valid nick and `--cap` is required, `--cap 0` being
+  no breaker; `--window` is above zero. It runs `parley doctor`'s static checks for
+  the server, and for ergo when nothing answers at the server (the skills are
+  checked by `add`, for the harness of each session), refuses an id that has a
+  table, a build or a line (exit 2), and undoes what it made if a step fails or it
+  is interrupted. `--codex-bin`, when given, is resolved and kept in the record: the
+  Codex sessions added later run it, and the lines printed say so. It prints what is
+  left: the server if nothing answers, the chair's `/join` and NickServ steps, and
+  one `line add` per session.
+- `line add <id> --nick <nick> --harness claude|codex [--model <model>] --checkout
+  <absolute dir> [--state-dir <dir>]` puts a session on the line, which gives it the
+  chair, cap, window, server and state directory of the record. Exit 2, with
+  nothing changed, for: no such line; a nick that is invalid, reserved (`tables`,
+  `builds`, `lines`), the chair's, or already in the line, without regard to ASCII
+  case; `opencode` (not supported yet) or another harness; a model over 128 bytes
+  or outside letters, digits and `. _ - : / @ [ ] +`; a checkout that is not an
+  existing directory given by an absolute path, or that holds a `$` or a control
+  character; a checkout, state directory, binary or temp path that is not valid
+  UTF-8; a state directory inside the checkout, or, for a Codex session, `$TMPDIR`;
+  a Claude session's `.mcp.json`, or a Codex session's `.codex/config.toml`, that
+  is in the checkout and is not the one this line wrote for another session of it
+  (the record holds the digest), or a `.codex` that is not a real directory; a
+  Codex nick that already has a thread record for the stream; the machine, when
+  doctor's static checks fail or the `parley-line` skill is not linked under the
+  root the harness reads (`~/.claude/skills` for Claude Code, `~/.agents/skills`
+  for Codex); and a Claude session whose instructions, built in this process as
+  `channel --check` builds them, are over Claude Code's cap. A nick whose lock a
+  running session or pump holds is refused, exit 1.
+  A Claude session gets `<checkout>/.mcp.json`, one server `parley` whose
+  command is the binary and whose args are `channel --stream irc://<server>/#<id>
+  --nick ${PARLEY_NICK} --state-dir <base> --skill line --chair <chair> --cap <cap>
+  --window <window>`, unless the line wrote it already for another Claude session of
+  the checkout, which shares it. A Codex session gets `<checkout>/.codex/config.toml`
+  (`workspace-write`, `on-request`, `network_access = true`, which turns network
+  access on for Codex in that checkout, and the output says so) on the same terms; a
+  reply directory `parley-line-<id>-*` under `$TMPDIR` at 0700 with a
+  `.parley-line` marker holding the id and the nick; and a thread started as `table
+  new` starts a seat's, by `codex exec --json -C <checkout>` on the line's primer,
+  stdin closed, network off for the turn, `-m <model>` if given, a five-minute limit
+  and a turn that must have completed, the thread recorded in `codex-thread`.
+  Files are created with no overwrite and never through a link. When the checkout
+  is the root of a git checkout, the launch file's line (`/.mcp.json` or
+  `/.codex/config.toml`) is appended to the file `git rev-parse --git-path
+  info/exclude` names unless it is there; an exclude file that is a link is left
+  alone, with a note, and a checkout that is not a git root gets none. The session
+  goes into `line.json` last. Any failure or interrupt takes down what the add made,
+  a started Codex thread included (`codex delete --force`), and puts the record
+  back. It prints the session's launch (Claude: `cd`, the `claude` line with
+  `--model`, the `--resume <session-id>` form, the `/mcp` and Channels-notice
+  checks and `/parley-line`; Codex: the pump line with `--thread auto --skill line`,
+  the `codex resume` line, `/status` and `$parley-line`).
+- `line drop <id> <nick> [--force] [--state-dir <dir>]` takes one session off. It
+  takes the id's lock and the session's nick lock without waiting, and refuses, exit
+  1, while the session or its pump holds the latter. It removes the session's
+  thread record, only if it holds the recorded thread (any other is left, and said);
+  its reply directory, only if it is directly in `$TMPDIR`, named for the line and
+  holds the marker, else it refuses (exit 1); and, when no other session of the line
+  uses that checkout with that harness, the launch file, only if it is a regular
+  file in a real directory whose bytes hash to the recorded digest, then the `.codex`
+  directory if the line made it and it is empty, and the line in the exclude file if
+  the line added it, that exact line and nothing else. A launch file that is not
+  that is refused, exit 1, naming it; `--force` leaves it and its exclude line in
+  place instead, and says so. The session is then removed from the record, and a
+  `codex delete <thread>` line is printed for a Codex session and never run.
+- `line end <id> [--force] [--state-dir <dir>]` takes the id's lock and every
+  session's nick lock, refusing (exit 1) if any is held, judges every session by
+  the rules of `drop` before removing anything, drops them in order, and removes
+  `lines/<id>/`. A failure partway leaves `line.json` listing what is still there,
+  and the next run finishes.
+
+Nothing a checkout holds is parley's state. The record is trusted; a launch file is
+the line's only while its digest matches, and `line drop` and `line end` delete
+nothing else there. `docs/line.md` has the trust rules.
+
 ## Checking the machine
 
 `parley doctor` checks that every external surface parley depends on still works
@@ -602,7 +700,9 @@ static checks for the harnesses its seats use, with ergo as well when nothing
 answers at the server (the first step it prints is `parley server`) and only the
 `parley-table` link under the root each harness reads, and a `FAIL` ends it
 before any change; `parley build new` runs them for its peers with the
-`parley-build` link in its place. A version of the Codex CLI, Claude Code or ergo that differs
+`parley-build` link in its place; `parley line new` runs those for the server and
+ergo only, and `parley line add` for its session's harness, with the `parley-line`
+link in its place. A version of the Codex CLI, Claude Code or ergo that differs
 from the verified one is a `warn` that says what to do about it.
 `parley doctor --live` also spends one tiny Codex turn (none, if `codex delete`
 has no `--force` to remove its thread without a prompt), in a temp directory, to

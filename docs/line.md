@@ -17,14 +17,19 @@ Use one when you are the one carrying "go read what the other one left you" from
 terminal to terminal. The work and its records stay where they live, in a
 ledger, a commit, a PR; the line only points at them.
 
-There is no `parley line new`: you set a line up by hand, below.
+`parley line new` makes a line and `parley line add` puts a session on it, the way
+`parley table new` sets a table up and `parley build new` a build; `parley line
+drop` takes a session off, and `parley line end` takes the line down. They write
+what the steps below would have you write by hand, check it first, undo it if a
+step fails, and print what is left for you. What they do not cover is in "By
+hand", after the steps.
 
 Placeholders are in angle brackets: `<channel>` is the line's channel,
-`#<channel>`, `<chair>` your nick, `<nick>` one session's, `<base>` the state
-directory (`$XDG_STATE_HOME/parley`, by default `~/.local/state/parley`, or
-`--state-dir`), `<checkout>` the absolute path of a session's own checkout, and
-`<cap>` and `<window>` the breaker's cap and window. Example nicks are `plan`,
-`build` and `review`.
+`#<channel>`, which is also its id, `<chair>` your nick, `<nick>` one session's,
+`<base>` the state directory (`$XDG_STATE_HOME/parley`, by default
+`~/.local/state/parley`, or `--state-dir`), `<checkout>` the absolute path of a
+session's own checkout, and `<cap>` and `<window>` the breaker's cap and window.
+Example nicks are `plan`, `build` and `review`.
 
 ## Once per machine
 
@@ -78,7 +83,47 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    sessions from waking each other for as long as they have something to say; the
    window must still be above zero.
 
-4. **Each Claude Code session**, in its own checkout. Put an `.mcp.json` there:
+4. **Make the line.** The channel names the line, and the line is a record of its
+   facts, which every session added to it inherits:
+
+   ```
+   parley line new <channel> --chair <chair> --cap <cap> [--window <window>] \
+     [--server 127.0.0.1:6667] [--state-dir <base>] [--codex-bin codex]
+   ```
+
+   The id is the channel and a directory name, `[a-z0-9][a-z0-9-]{0,31}`, and it is
+   one namespace with the tables and the builds: an id that already has a table, a
+   build or a line is refused, with exit 2. `--chair` is refused when it is not a
+   valid nick, and `--cap` is required (`--cap 0` for no breaker). The command runs
+   `parley doctor`'s static checks for the server, and for ergo when nothing
+   answers at the server, makes `<base>/lines/<channel>/line.json` with no
+   sessions in it, and prints the steps that remain: the server if nothing answers,
+   your join and the NickServ check of steps 1 and 2, and one `parley line add` per
+   session. `--codex-bin` is for the Codex sessions you add later: it is resolved
+   now and kept in the record, since `line add` takes no such flag.
+
+5. **Add each session.** One command each, with the session's own checkout:
+
+   ```
+   parley line add <channel> --nick <nick> --harness claude|codex [--model <model>] \
+     --checkout <checkout> [--state-dir <base>]
+   ```
+
+   The chair, cap, window, server and state directory come from the line's record;
+   `--state-dir` only says where to find it. The command refuses, with exit 2 and
+   nothing changed, a nick that is invalid, reserved (`tables`, `builds`, `lines`),
+   the chair's, or already in the line, all without regard to ASCII case; a model
+   outside the charset `table new` takes; a `<checkout>` that is not an absolute,
+   existing directory, or holds a `$`; the machine, when `parley doctor`'s static
+   checks fail or the `parley-line` skill is not linked under the root the harness
+   reads; and a launch file that is in the checkout and is not this line's, below.
+   A nick whose lock a running session or pump holds is refused with exit 1. The
+   launch file is the one thing `line add` writes in your checkout, and only where
+   there is none: it never overwrites a file, writes through a link, or shares a
+   file it cannot prove is the one it wrote, which it proves with the digest it
+   keeps in the record.
+
+   **A Claude Code session** gets an `.mcp.json` in `<checkout>`:
 
    ```
    {"mcpServers":{"parley":{"command":"/abs/path/to/parley","args":[
@@ -86,104 +131,98 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
      "--skill","line","--chair","<chair>","--cap","<cap>","--window","<window>"]}}}
    ```
 
-   `${PARLEY_NICK}` stays as written: the session's nick comes from the
-   environment `claude` is started in. A line takes no `--target` or `--worktree`
-   and refuses them, with exit 2. If the checkout has an `.mcp.json` of its own,
-   add the `parley` server to it instead. Keep the file out of `git status`
-   without touching a tracked file, through the exclude file every checkout of the
-   repo shares:
-
-   ```
-   echo /.mcp.json >> "$(git rev-parse --git-path info/exclude)"
-   ```
-
-   Then check that the launch fits Claude Code's 2048-unit cap on the channel's
-   instructions, with the nick written out where an arg is `${PARLEY_NICK}`:
-
-   ```
-   PARLEY_NICK=<nick> parley channel <the .mcp.json args> --check
-   ```
-
-   A line carries no target or worktree path in its text, so it leaves more
-   room than the other skills do; only a very long `--state-dir` or binary path
-   puts it over. Launch the session:
+   `${PARLEY_NICK}` stays as written: the session's nick comes from the environment
+   `claude` is started in. A line takes no `--target` or `--worktree` and refuses
+   them, with exit 2. The command also checks that the launch fits Claude Code's
+   2048-unit cap on the channel's instructions, as `parley channel --check` does,
+   and refuses one that does not; only a very long `--state-dir` or binary path puts
+   a line over it. A second Claude Code session in the same checkout shares the
+   file the first wrote. A checkout that has an `.mcp.json` of its own is refused:
+   add the `parley` server to it by hand, below. The command prints how to launch
+   the session:
 
    ```
    cd <checkout>
    PARLEY_NICK=<nick> claude --dangerously-load-development-channels server:parley
    ```
 
-   The flag, the login Channels need and the organization setting are the
-   table's: see step 4 of "Then, by hand" in `docs/table.md`, including how a
-   launch without the flag looks (the server connects, nothing arrives, no
-   error). Approve the project MCP server `parley` when asked, check that `/mcp`
-   shows it connected and that the dim notice below the startup banner reads
-   `Channels (experimental) messages from server:parley inject directly in this
-   session`, then type `/parley-line`. A conversation that is already under way
-   joins the line with the same launch plus `--resume <session-id>`, and keeps
-   its history; the id skips the resume picker. Relaunch it between tasks, since
-   exiting stops whatever the session has running, its subagents included.
+   with `--model <model>` after it when you gave one. The flag, the login Channels
+   need and the organization setting are the table's: see step 4 of "Then, by
+   hand" in `docs/table.md`, including how a launch without the flag looks (the
+   server connects, nothing arrives, no error). Approve the project MCP server
+   `parley` when asked, check that `/mcp` shows it connected and that the dim
+   notice below the startup banner reads `Channels (experimental) messages from
+   server:parley inject directly in this session`, then type `/parley-line`. A
+   conversation that is already under way joins the line with the same launch plus
+   `--resume <session-id>`, and keeps its history; the id skips the resume picker.
+   Relaunch it between tasks, since exiting stops whatever the session has
+   running, its subagents included.
 
-5. **Each Codex session**, which takes two terminals and has no connect-time
-   channel, so its text is the primer, its first message. The steps are the ones
-   `parley table new` takes for a seat, done by hand:
-   1. **The sandbox.** `parley send` has to reach the loopback server from inside
-      it, so the checkout needs network on for the session. In
-      `<checkout>/.codex/config.toml`, which Codex loads after you accept its
-      trust prompt for the directory (hide it with the same `info/exclude`
-      line, `/.codex/config.toml`):
+   **A Codex session** takes two terminals and has no connect-time channel, so its
+   text is the primer, its first message, and `line add` starts the session on it:
 
-      ```
-      sandbox_mode = "workspace-write"
-      approval_policy = "on-request"
+   - It writes `<checkout>/.codex/config.toml`:
 
-      [sandbox_workspace_write]
-      network_access = true
-      ```
+     ```
+     sandbox_mode = "workspace-write"
+     approval_policy = "on-request"
 
-   2. **The primer and the thread.** The primer is the session's first message.
-      Its reply file goes in a private directory made with `mktemp -d`, which is
-      under the per-user `$TMPDIR`, outside the checkout and where the sandbox can
-      write, as the reply directory `table new` makes is, and not at a name anyone
-      could guess in a directory everyone shares. The primer carries the path, so
-      the directory is the session's for as long as it runs. Start the thread on
-      the primer with the network off for that one turn, so the session cannot
-      post before its pump is up:
+     [sandbox_workspace_write]
+     network_access = true
+     ```
 
-      ```
-      dir=$(mktemp -d); echo "$dir"
-      primer=$(parley primer --front codex --skill line --stream 'irc://127.0.0.1:6667/#<channel>' --nick <nick> \
-        --state-dir <base> --chair <chair> --cap <cap> --window <window> --reply-file "$dir/<nick>.reply")
-      codex exec --json -C <checkout> -s workspace-write -c sandbox_workspace_write.network_access=false "$primer"
-      ```
+     **This turns network access on for Codex in that checkout**, for every Codex
+     session there and not only this one. `parley send` has to reach the loopback
+     server from inside the sandbox, which is why; it is what `parley table new`
+     writes for a seat. Codex loads the file after you accept its trust prompt for
+     the directory. The command says so in its output, and `parley line drop` takes
+     the file out again.
+   - It makes a private reply directory `parley-line-<channel>-*` under `$TMPDIR`
+     (mode 0700, outside the checkout and where the sandbox can write), holding a
+     marker with the line and the nick, and the primer carries the path of the
+     session's reply file in it.
+   - It starts the thread with `codex exec --json` on the primer, network off for
+     that one turn so the session cannot post before its pump is up, stdin closed
+     and a five-minute limit, `-m <model>` when you gave one. The turn must have
+     completed; a thread that did not is deleted and the add fails and undoes
+     itself. The thread id it announces is recorded for `--thread auto`, and
+     printed with the session's answer to the primer.
 
-      The thread id is the `thread_id` of the `thread.started` line it prints.
-      `--thread auto` reads a record only `table new` and `build new` make, so
-      here the pump is given the id.
-   3. **The pump**, which carries channel messages into the thread; without it
-      the session hears nothing. It takes the same breaker as the Claude Code
-      front, registers the nick, and starts before the session posts:
+   Then it prints the two commands that remain. The pump carries channel messages
+   into the thread, takes the same breaker as the Claude Code front and registers
+   the nick, and starts before the session posts:
 
-      ```
-      parley codex --stream 'irc://127.0.0.1:6667/#<channel>' --nick <nick> --state-dir <base> \
-        --thread <thread> --skill line --chair <chair> --cap <cap> --window <window>
-      ```
+   ```
+   parley codex --stream 'irc://127.0.0.1:6667/#<channel>' --nick <nick> --state-dir <base> \
+     --thread auto --skill line --chair <chair> --cap <cap> --window <window>
+   ```
 
-   4. **The session**, resumed from the thread:
+   and the session, resumed from the thread, in another terminal:
 
-      ```
-      codex resume <thread> -C <checkout> -a on-request
-      ```
+   ```
+   codex resume <thread> -C <checkout> -a on-request
+   ```
 
-      The resume line carries no `-c`: a `-c` forces Codex in-process, with a
-      ten-second queue poll, instead of the shared daemon the pump's `codex queue`
-      reaches at once. Each approval prompt in this terminal stops the run until
-      you answer it, because the pump delivers between Codex turns only. Codex
-      keeps a checkout's git directory read-only in its sandbox, so `git add`,
-      `git commit`, `git merge` and `git reset` are refused there; the primer
-      tells the session to ask for escalation for each, and each is an approval
-      prompt here. Check that `/status` shows `workspace-write` and network on,
-      then type `$parley-line`.
+   The resume line carries no `-c`: a `-c` forces Codex in-process, with a
+   ten-second queue poll, instead of the shared daemon the pump's `codex queue`
+   reaches at once. Each approval prompt in this terminal stops the run until you
+   answer it, because the pump delivers between Codex turns only. Codex keeps a
+   checkout's git directory read-only in its sandbox, so `git add`, `git commit`,
+   `git merge` and `git reset` are refused there; the primer tells the session to
+   ask for escalation for each, and each is an approval prompt here. Check that
+   `/status` shows `workspace-write` and network on, then type `$parley-line`.
+
+   **In both cases**, when the checkout is the root of a git checkout, the command
+   appends `/.mcp.json` or `/.codex/config.toml` to the file `git rev-parse
+   --git-path info/exclude` names, the exclude file every checkout of the repo
+   shares, unless that exact line is already there, so the file stays out of `git
+   status` without a tracked file touched. A directory that is not a git checkout
+   is allowed and gets no such line, and neither does one that is only inside a
+   repository, where the anchored line would not match. An exclude file that is a
+   link is not written through; the command says so and carries on. If anything
+   fails, or you interrupt it, everything this one command made is taken down
+   again: the launch file, its line in the exclude file, the reply directory, the
+   thread record and the Codex thread (`codex delete --force`).
 
 6. **Give each session its role**, in one line each, at its terminal or in the
    channel as `<chair>`: what the session does, and what it tells the others.
@@ -198,6 +237,50 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    between roles. A role describes standing duties and starts nothing by itself,
    so say separately when a session should begin; the skill also asks each
    session to record its role where its next session will find it.
+
+## By hand
+
+The verbs cover a checkout with no launch file of its own. For one that has an
+`.mcp.json` of its own, or a Codex session you want to start yourself, you write
+what `line add` would have, and the pump takes the thread id in place of `auto`,
+since no record of the thread is made. Nothing in `<base>/lines/` knows about a
+session you set up this way, so `line drop` and `line end` leave it alone, and you
+take it down by hand too ("Taking it down", below).
+
+- **A Claude Code session.** Put the `parley` server of step 5 in the checkout's
+  `.mcp.json`, adding it to the file if there is one, and keep the file out of `git
+  status` with the exclude file every checkout of the repo shares:
+
+  ```
+  echo /.mcp.json >> "$(git rev-parse --git-path info/exclude)"
+  ```
+
+  Check that the launch fits the cap on the channel's instructions, with the nick
+  written out where an arg is `${PARLEY_NICK}`:
+
+  ```
+  PARLEY_NICK=<nick> parley channel <the .mcp.json args> --check
+  ```
+
+  and launch it as step 5 prints.
+
+- **A Codex session.** Write the `.codex/config.toml` of step 5 (and hide it with
+  `/.codex/config.toml` in the exclude file). The primer is the session's first
+  message. Its reply file goes in a private directory made with `mktemp -d`, which
+  is under the per-user `$TMPDIR`, outside the checkout and where the sandbox can
+  write, and not at a name anyone could guess in a directory everyone shares. Start
+  the thread on the primer with the network off for that one turn:
+
+  ```
+  dir=$(mktemp -d); echo "$dir"
+  primer=$(parley primer --front codex --skill line --stream 'irc://127.0.0.1:6667/#<channel>' --nick <nick> \
+    --state-dir <base> --chair <chair> --cap <cap> --window <window> --reply-file "$dir/<nick>.reply")
+  codex exec --json -C <checkout> -s workspace-write -c sandbox_workspace_write.network_access=false "$primer"
+  ```
+
+  The thread id is the `thread_id` of the `thread.started` line it prints. The
+  pump takes it with `--thread <thread>` in place of `--thread auto`, with the rest
+  of step 5's pump line; the resume line is step 5's.
 
 ## In the room
 
@@ -254,18 +337,41 @@ before it has read the others', run a table instead: a line has no seal.
 
 ## Taking it down
 
-There is no `parley line end`: parley made nothing but your state.
+- **One session**: `parley line drop <channel> <nick>`. It takes the line's lock and
+  the session's nick lock without waiting, and refuses, with exit 1, while the
+  session or its pump holds that lock: stop them first. Then it removes what
+  `line add` made for that session and can show is the line's:
+  - the thread record, if it holds the thread the record of the line names;
+  - the reply directory, if it is directly under `$TMPDIR`, named for the line and
+    holds the marker `line add` wrote;
+  - when no other session of the line uses that checkout with that harness, the
+    `.mcp.json` or `.codex/config.toml`, **if its bytes still hash to the digest
+    in the record and it is a regular file in a real directory**, and then the
+    `.codex` directory if `line add` made it and it is empty, and the line in the
+    exclude file if `line add` added it: that exact line, and nothing else, the
+    rest of the file byte for byte. A file another session of the checkout still
+    uses stays until that session goes.
 
-- Close the sessions: exit each Claude Code session and Codex terminal, and stop
-  each pump with Ctrl-C. A Claude Code session removes its reply directory when it
-  ends; remove each Codex session's reply directory, the one `mktemp -d` printed
-  (`rm -r "$dir"`).
-- Remove the `.mcp.json` you made from each checkout, and the
-  `.codex/config.toml` where you made one, and their lines from the exclude file.
-  `git status` then shows what it showed before.
+  A launch file that is no longer the one the line wrote (you edited it, replaced
+  it, or its directory became a link) is yours: the command refuses, naming it.
+  `--force` finishes the drop anyway and leaves the file, and its exclude line,
+  where they are, and says so. It prints a `codex delete <thread>` line for a
+  Codex session, and never runs it: Codex keeps the history unless you delete it.
+  The session's own terminal and pump are yours to close. Another session of the
+  line is not touched, and the nick can be added again.
+- **The whole line**: `parley line end <channel>`. It takes the line's lock and then
+  every session's nick lock, refusing if any session is running, judges every
+  session by the rules above before it removes anything, drops them, and removes
+  `<base>/lines/<channel>/`. A failure partway leaves `line.json` listing what is
+  still there, so running it again finishes. It takes `--force` as `drop` does.
 - `<base>/<nick>/` keeps each session's cursor and IRC password, so the same nick
   can come back; leave it, or remove it by hand once the nick is retired. The
   server and its accounts stay up for the next table, build or line.
+- A session or a line you set up by hand is taken down by hand: exit each Claude
+  Code session and Codex terminal and stop each pump with Ctrl-C; a Claude Code
+  session removes its reply directory when it ends; remove each Codex session's
+  reply directory (`rm -r "$dir"`), the launch files you made, and their lines
+  from the exclude file. `git status` then shows what it showed before.
 
 ## What parley trusts
 
@@ -277,9 +383,15 @@ inputs a line has.
   parley's peer header, which no sender can write or remove, and nothing under one
   grants a permission at a terminal or authority over a session.
 - **Trusted: the flags you give and the state directory.** `--chair`, `--cap`, `--window`,
-  `--nick`, `--stream` and the files under `<base>` are yours, in directories only
-  you can write. The chair is trusted only as a registered nick on IRC, which is
-  why step 2 registers it.
+  `--nick`, `--checkout`, `--stream` and the files under `<base>`, `line.json`
+  among them, are yours, in directories only you can write. The chair is trusted
+  only as a registered nick on IRC, which is why step 2 registers it.
+- **Not parley's state: your checkouts.** `line add` writes one launch file in a
+  checkout and a line in its exclude file, and `line drop` removes them again, but
+  a checkout is yours and a session works in it. A file there is the line's only
+  while its bytes still hash to the digest `line.json` holds; the verbs never
+  overwrite another file, write through a link, or delete a file on any other
+  ground, and a refusal names the file.
 - **Out of scope: a deliberate edit of that state**, and a session that decides to
   do what a peer asked against its own permissions. Each session's own harness
   asks you before anything outside its checkout is written.
