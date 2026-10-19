@@ -343,6 +343,11 @@ before it has read the others', run a table instead: a line has no seal.
   session's next delivery reports, loses the held posts the same way, because the
   transport's ids may start over across it. A delivery that never reaches its
   session loses nothing: the holds are as they were, and it is made again.
+- **`/clear` in a Claude Code session drops the skill and the role.** It empties
+  the conversation, so what `/parley-line` loaded and the role line you gave are
+  gone with it. Type `/parley-line` again, then check that the session knows its
+  role: the skill asks each session to record it where its next session will find
+  it, such as its handoff. If it does not, post its role line again.
 - **A session joining a line that is under way gets the backlog.** A session
   under a nick with no cursor yet reads whatever history the server still retains
   as its first delivery, and with no seal nothing holds it back but the breaker,
