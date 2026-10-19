@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -221,8 +223,9 @@ type gateState struct {
 	// tripped is whether it has passed cap since then.
 	count   int
 	tripped bool
-	// times is the line breaker's history: the times of the most recent cap+1
-	// non-chair messages since the chair last posted, oldest first.
+	// times is the line breaker's history: the times of the non-chair messages
+	// since the chair last posted, earliest first whatever order they arrived in,
+	// at most maxLineTimes of them.
 	times []time.Time
 
 	// held is the FIFO of seat messages not yet delivered, and heldIDs the set
@@ -270,17 +273,23 @@ func (s *gateState) tally(cap int) {
 	}
 }
 
+// maxLineTimes bounds a line's history of times. The backstop trips long before
+// the history reaches it at any cap below 13108; past that the earliest times
+// are dropped, which can only miss a burst of more than maxLineTimes posts.
+const maxLineTimes = 1 << 16
+
 // rate times one non-chair message and trips a line's breaker when it makes more
-// than cap of them within the window ending at it. The messages timed are the
-// cap+1 most recent, and the span is the latest time less the earliest of them,
-// not the last less the first, so a transport that reports its times out of
-// order cannot hide a burst. That holds for times from one clock, as IRC's are
-// (the server's); writers whose clocks differ by more than the window, as the
-// file stream's can, can make a burst that alternates between them look spread.
+// than cap of them within the window ending at it. The history holds every time
+// since the chair last posted, kept in time order, and the message is checked
+// against each run of cap+1 consecutive times that includes it: only a new time
+// can make a new burst. So a transport that reports its times out of order
+// cannot hide a burst, whichever order the posts arrive in. Writers whose clocks
+// differ by more than the window, as the file stream's can, can still make a
+// burst that alternates between them look spread; IRC's times are the server's,
+// from one clock.
 //
-// The comparisons are against cap, never cap+1, so that a cap near the largest
-// int does not overflow: the history holds cap+1 times at most, and a message
-// can only trip the rate once it holds that many.
+// The history is checked only once it holds more than cap times, so j+cap below
+// stays inside it and cannot overflow, whatever cap is.
 func (s *gateState) rate(g *gate, m Message) {
 	if g.cap <= 0 {
 		return
@@ -289,25 +298,20 @@ func (s *gateState) rate(g *gate, m Message) {
 	if t.IsZero() {
 		t = g.now()
 	}
-	if len(s.times) > g.cap {
-		// Already holding cap+1 times: the oldest makes room for this one.
+	i := sort.Search(len(s.times), func(k int) bool { return s.times[k].After(t) })
+	s.times = slices.Insert(s.times, i, t)
+	if len(s.times) > maxLineTimes {
 		s.times = append(s.times[:0], s.times[1:]...)
+		i = max(i-1, 0)
 	}
-	s.times = append(s.times, t)
 	if len(s.times) <= g.cap {
 		return
 	}
-	lo, hi := s.times[0], s.times[0]
-	for _, u := range s.times[1:] {
-		if u.Before(lo) {
-			lo = u
+	for j := max(i-g.cap, 0); j <= i && j+g.cap < len(s.times); j++ {
+		if s.times[j+g.cap].Sub(s.times[j]) <= g.window {
+			s.tripped = true
+			return
 		}
-		if u.After(hi) {
-			hi = u
-		}
-	}
-	if hi.Sub(lo) <= g.window {
-		s.tripped = true
 	}
 }
 
@@ -316,6 +320,9 @@ func (s *gateState) rate(g *gate, m Message) {
 // that a cap near the largest int does not overflow, and not above zero, which
 // is no backstop, when cap is not.
 func (g *gate) backstop() int {
+	if g.cap <= 0 {
+		return 0
+	}
 	if g.cap > math.MaxInt/5 {
 		return math.MaxInt
 	}

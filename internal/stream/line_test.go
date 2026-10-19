@@ -602,6 +602,11 @@ func TestLineTimesOutOfOrderCannotHideABurst(t *testing.T) {
 		// The latest is not the last: 0 to 25 minutes is no burst, though the last
 		// less the first is nine minutes.
 		"the latest is not the last": {2, []time.Duration{0, 25 * time.Minute, 9 * time.Minute}, []string{"p0", "p1", "p2"}},
+		// An outlier between the posts of a burst: no three posts in a row by
+		// arrival fit the window, but 0, 1 and 2 minutes do, so the fourth trips.
+		"a burst interleaved with an outlier": {2, []time.Duration{0, 30 * time.Minute, time.Minute, 2 * time.Minute}, []string{"p0", "p1", "p2"}},
+		// The burst arrives after a later post and ends before it in time.
+		"a burst that arrives after a later post": {2, []time.Duration{40 * time.Minute, 0, 30 * time.Minute, time.Minute, 2 * time.Minute}, []string{"p0", "p1", "p2", "p3"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &fake{nick: lineSelf}
@@ -807,5 +812,24 @@ func TestLineACapNearTheLargestIntNeverTripsOnAHandfulOfPosts(t *testing.T) {
 		}
 		f.postOffset(lineChair, "chair one", time.Minute)
 		tb.want("chair one")
+	}
+}
+
+// TestLineANegativeCapIsNoBreakerThroughTheAPI: the CLI refuses a negative cap,
+// but WithLine's contract is that a cap not above zero turns both rules off, and
+// five times a large negative cap must not wrap into a positive backstop.
+func TestLineANegativeCapIsNoBreakerThroughTheAPI(t *testing.T) {
+	for _, capN := range []int{-1, -2*(math.MaxInt/5) - 1, math.MinInt} {
+		f := &fake{nick: lineSelf}
+		tb := newLine(t, f, capN)
+		var want []string
+		for i := range 6 {
+			body := "poke " + strconv.Itoa(i)
+			f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*time.Second)
+			want = append(want, body)
+		}
+		if got := tb.read(); !equal(got, want) {
+			t.Fatalf("cap %d: delivered %q, want %q", capN, got, want)
+		}
 	}
 }
