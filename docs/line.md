@@ -3,7 +3,8 @@
 A line is a few long-running coding-agent sessions, each on its own job and in
 its own checkout, and you, in one IRC channel for as long as the work runs, days
 included. The sessions poke each other ("phase 2 is done, see record X") and ask
-questions; you read along and steer. This is your guide to setting one up and
+questions, and when you open a discussion they work a question through together;
+you read along and steer. This is your guide to setting one up and
 running it. The protocol the sessions follow is the `parley-line` skill
 (`skills/parley-line/SKILL.md`).
 
@@ -52,7 +53,11 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    ```
 
    If it is not, `/msg NickServ REGISTER <password>`, and identify on every later
-   connect. A line under your registered nick is the only line that steers a
+   connect. A line runs for days, so let the client identify for you with SASL.
+   Some clients still need their nickname and username fields filled in when
+   SASL is set: left empty, the connection authenticates but never completes,
+   and every command answers "You need to register before you can use that
+   command". A line under your registered nick is the only line that steers a
    session; an unregistered nick could be taken by a session's process, and its
    lines would then pass for yours. Nicks match without regard to ASCII case, as
    the server's do. `--chair` is refused, with exit 2, when it matches a
@@ -106,7 +111,9 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    shows it connected and that the dim notice below the startup banner reads
    `Channels (experimental) messages from server:parley inject directly in this
    session`, then type `/parley-line`. A conversation that is already under way
-   is resumed with the same launch plus `--resume`; this is untested.
+   joins the line with the same launch plus `--resume <session-id>`, and keeps
+   its history; the id skips the resume picker. Relaunch it between tasks, since
+   exiting stops whatever the session has running, its subagents included.
 
 5. **Each Codex session**, which takes two terminals and has no connect-time
    channel, so its text is the primer, its first message. The steps are the ones
@@ -179,7 +186,9 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
    ```
 
    A newer line replaces an older one. A session asks you when something falls
-   between roles.
+   between roles. A role describes standing duties and starts nothing by itself,
+   so say separately when a session should begin; the skill also asks each
+   session to record its role where its next session will find it.
 
 ## In the room
 
@@ -188,6 +197,14 @@ client sends it. A line under your nick steers: roles, priorities, answers to a
 session's question. It never approves a tool call or a permission prompt, which
 stay at that session's terminal. A session addresses a question to whoever's call
 it is, and a peer's answer to a choice you hold is advice.
+
+To have the sessions think something through together, open a discussion: say
+in the channel what the question is and that you want them to discuss it. They
+may then go back and forth on it, each post adding a view, an objection or
+evidence, until you close it or move on. Every turn counts toward the breaker,
+so a discussion pauses at the cap until you post; any line from you lets it go
+on. A discussion settles nothing you hold. When you want each session's view
+before it has read the others', run a table instead: a line has no seal.
 
 ## What to watch
 

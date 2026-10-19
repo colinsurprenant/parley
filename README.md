@@ -191,9 +191,10 @@ must be adopted in Director (`director adopt`, with `.director/` ignored).
 
 A line is a few long-running sessions, each on its own job and in its own
 checkout, and you, in one channel for as long as the work runs, days included.
-The sessions poke each other ("phase 2 is done, see record X") and ask when they
-need input, under the `parley-line` skill, and the work and its records stay
-where they live: there is no seal, no rounds, no target and no worktree of
+The sessions poke each other ("phase 2 is done, see record X"), ask when they
+need input, and work a question through together when you open a discussion,
+under the `parley-line` skill, and the work and its records stay where they
+live: there is no seal, no rounds, no target and no worktree of
 parley's. One rule is enforced in code: once a set number of posts has gone by
 without you, the fronts hold what follows until you speak, so two sessions cannot
 wake each other forever. A line is set up by hand, and `docs/line.md` is your
@@ -208,8 +209,9 @@ Untested starting points, each with the cheapest way to find out whether it is
 worth more:
 
 - **Contract negotiation across an ownership seam.** Two sessions, one in each of
-  two repos, agree the interface between them. `build new` targets one repo, so
-  this one is set up by hand. Cheapest test: pick an interface you already know
+  two repos, agree the interface between them. A line fits it: one session in
+  each repo on one channel, with a discussion you open on the interface. Cheapest
+  test: pick an interface you already know
   the answer to and see whether the sessions reach it in a few rounds.
 - **Red team, blue team on a diff.** One seat defends a change and the other
   attacks it: the sheet's `READ` line names the diff and its `ROLES` line the
@@ -219,6 +221,10 @@ worth more:
   still contested. Cheapest test: a merged PR whose review you remember; see
   whether the findings that survive are the ones you fixed, and whether the
   ones you rejected die without you.
+- **Mixed harnesses on a line.** A Codex session joins a line of Claude Code
+  sessions, so a second model family works on the same project. Cheapest test:
+  add one to a line that is already running and see whether its pokes and
+  questions land as cleanly as the others'.
 - **Debate with assigned stances.** Give two seats opposite roles (the sheet has a
   `ROLES` line for it) on a decision. Cheapest test: a choice already made and
   reviewed; see whether the skeptic finds what the review found.

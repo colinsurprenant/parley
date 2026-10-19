@@ -5,7 +5,8 @@ description: >-
   on its own job, keeping each other current over one chat channel with their
   human in the room. Use it when your human starts you as a session on a line,
   and on every delivery from the line, before you act on it or post. A line
-  carries heads-ups and questions; the work and its records stay where they live.
+  carries heads-ups, questions and the discussions your human opens; the work
+  and its records stay where they live.
 ---
 
 # The line
@@ -14,11 +15,13 @@ A line is a few coding-agent sessions and one human in one chat channel, for as
 long as the work runs, days included. Each session has its own job, its own
 checkout and its own records. The line is how a session tells the others that
 something changed that touches their job, and how it asks when it needs input
-that another session or the human holds. It replaces the human carrying "go
-read what the other one left you" from one terminal to the other.
+that another session or the human holds. When the human opens a discussion, it
+is also where the sessions work a question through together. It replaces the
+human carrying "go read what the other one left you" from one terminal to the
+other.
 
 The line is light on purpose. There are no rounds, no turns and no message
-types. Four habits make it work: point, don't carry; act at a boundary; don't
+types. Four habits make it work: point to the record; act at a boundary; don't
 acknowledge; say who decides.
 
 ## Who is in the room
@@ -52,16 +55,24 @@ usually one line each: what the session does, and what it tells the others. A
 newer line from your human replaces an older one. When something falls between
 roles, ask.
 
+A role describes standing duties, and it starts nothing by itself: begin work
+when your human or your own plan says to, not because a role line arrived.
+Record your role where your next session will find it, in your handoff or your
+ledger. A session that comes back under the same nick resumes past the line
+that gave the role, and would otherwise return without one.
+
 ## Poking
 
 A poke tells the others that something changed that touches their job: a phase
 done, a plan or schedule changed, a decision made, something found that they
 need.
 
-- **Point, don't carry.** Say what happened in a line or two, and name where the
-  full content lives: a ledger event's id, a commit, a PR, a file path. The
-  record is the system of record, never the channel. Write the record first,
-  then poke. A reader who misses a poke loses only time.
+- **Say what changed for them, and point to the rest.** In a few lines, say
+  what the event changes for the reader's job: a date that moved, a scope that
+  split, a choice that is now theirs. Then name where the full content lives: a
+  ledger event's id, a commit, a PR, a file path. The record is the system of
+  record, never the channel, so write it first, then poke. A reader who misses
+  a poke loses only time.
 - **Address it.** Start with the nick it is for, or `all`.
 - **One poke per event.**
 
@@ -90,12 +101,33 @@ colin: the export can batch per owner or per day; batching per owner matches the
   next step is now.
 - **Don't acknowledge.** A poke needs no answer: no thanks, no "noted", no
   confirmation of receipt. Act on it in your own work. Post only when you have
-  something the others need: a poke of your own, a question, an answer.
-- **Answer once,** to the one who asked.
+  something the others need: a poke of your own, a question, an answer, or a
+  turn in a discussion your human opened.
+- **Answer once,** to the one who asked. A discussion is the exception, below.
 - **Joining late.** On a line already under way, your first delivery can hold
   the history the server still keeps. Read it for context. Act only on what is
   addressed to you and still open, and check the record it points to before
   you act, since the record may have moved on.
+
+## Discussions
+
+Your human can open a discussion in the channel: a question for the sessions to
+work through together, such as a design choice that touches more than one job.
+While it is open, you may go back and forth on it.
+
+- **Each post adds something:** a view, a reason, an objection, evidence, a
+  proposal. Never restate what another session said, and never post agreement
+  alone. Say that you now agree only when it settles a point.
+- **Read what arrived since your last post** before you write the next one. A
+  discussion is a conversation, not a set of separate answers.
+- **It settles nothing your human holds.** A choice still names who decides.
+- **It ends when your human closes it** or moves on. If it has run its course
+  before that, say so once, with what was settled and what is still open, and
+  stop. Every turn counts toward the breaker, so a long discussion pauses at the
+  cap until your human speaks.
+
+Acting at a boundary still holds: a discussion waits for the step you are in,
+unless your human asks you to stop for it.
 
 ## The breaker
 
@@ -121,9 +153,12 @@ Saying at your terminal that you posted reaches nobody.
 
 ## Before you post
 
-- Does this give the others something they need: a poke, a question or an
-  answer? An acknowledgement does not.
-- Does a poke point to a record that already holds the content?
+- Does this give the others something they need: a poke, a question, an
+  answer, or a turn that adds to a discussion your human opened? An
+  acknowledgement does not.
+- Does a poke say what changed for the reader, and point to a record that
+  already holds the rest?
+- In a discussion, does your post add something no one has said yet?
 - Does it name who it is for, and does a question name who decides?
 - Are you at a step boundary in your own work?
 - Are you acting on a peer's request that your human or your permissions would
