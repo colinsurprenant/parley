@@ -115,13 +115,6 @@ const (
 	// tools, and is more than the read-back needs.
 	historyWindow = 10
 
-	// maxReadBackPages bounds how far back one look for the delivered message
-	// pages. A page is historyWindow messages, or narrowWindow after a narrowing,
-	// and a turn that has written that many pages of messages in the seconds since
-	// the post is not one to confirm a delivery from; the look is made again at
-	// the next poll, from the newest, until the phase is up.
-	maxReadBackPages = 10
-
 	// narrowWindow replaces historyWindow, for the delivery in hand, when a read
 	// of the newest historyWindow comes back over the bound a reply is read under.
 	narrowWindow = 3
@@ -559,14 +552,22 @@ func (p *Pump) readBack(ctx context.Context, known map[string]struct{}, window i
 // page of the history and, while the message is not on it, the pages before,
 // each of window messages. It stops, finding nothing, at the first page that has
 // a message of known on it, because everything older than that predates the post,
-// and at the last page there is, and at maxReadBackPages. The paging is the
-// answer to a turn that is quicker than the polling: the assistant messages it
-// has written since the post can be more than a page, and the delivered message
-// is then behind them. It returns the id of the message, or "" if it is not there
-// to be found yet.
+// and at the last page there is. The paging is the answer to a turn that is
+// quicker than the polling: the assistant messages it has written since the post
+// can be more than a page, and the delivered message is then behind them. There
+// is no count of pages: a count that every poll starts again from the newest
+// would be a depth no poll ever looks past, and the message behind that many
+// pages would never be found. What bounds the look is ctx, which carries the
+// deadline of the read-back. It returns the id of the message, or "" if it is not
+// there to be found yet.
 func (p *Pump) findDelivered(ctx context.Context, known map[string]struct{}, window int, text string) (string, error) {
 	before := ""
-	for pages := 0; pages < maxReadBackPages; pages++ {
+	for {
+		// Checked here as well as by the call, so that a server that answers every
+		// page at once, with one more always before it, still ends at the deadline.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		page, err := p.client.Messages(ctx, p.session, window, before)
 		if err != nil {
 			return "", err
@@ -586,7 +587,6 @@ func (p *Pump) findDelivered(ctx context.Context, known map[string]struct{}, win
 		}
 		before = page.Next
 	}
-	return "", nil
 }
 
 // tooLongLimit is the bound a TooLongError says it was over.

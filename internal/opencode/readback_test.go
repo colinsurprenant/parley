@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -102,8 +103,10 @@ func (s *stubClient) Messages(_ context.Context, _ string, _ int, before string)
 }
 
 // TestThePagingIsBoundedAndStopsAtTheLastPage: a history of unknown messages with
-// no end is looked through for maxReadBackPages pages and no more, and one that
-// ends is looked through to its end and no further.
+// no end is looked through until the deadline the look is given and no longer,
+// one that ends is looked through to its end and no further, and a message behind
+// many pages of a quick turn is still found: no count of pages stops the look
+// short of it.
 func TestThePagingIsBoundedAndStopsAtTheLastPage(t *testing.T) {
 	p := &Pump{session: testSession}
 	known := map[string]struct{}{"old": {}}
@@ -112,8 +115,21 @@ func TestThePagingIsBoundedAndStopsAtTheLastPage(t *testing.T) {
 		return MessagePage{Messages: []Message{{ID: fmt.Sprintf("new-%d", call), Role: "assistant"}}, Next: fmt.Sprintf("c%d", call)}, nil
 	}}
 	p.client = endless
-	if id, err := p.findDelivered(context.Background(), known, 1, "text"); id != "" || err != nil || endless.calls != maxReadBackPages {
-		t.Fatalf("an endless history: id %q, err %v, %d pages; want none found after %d pages", id, err, endless.calls, maxReadBackPages)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if id, err := p.findDelivered(ctx, known, 1, "text"); id != "" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("an endless history: id %q, err %v after %d pages; want none found and the deadline", id, err, endless.calls)
+	}
+
+	deep := &stubClient{page: func(call int, _ string) (MessagePage, error) {
+		if call <= 150 {
+			return MessagePage{Messages: []Message{{ID: fmt.Sprintf("a%03d", call), Role: "assistant"}}, Next: fmt.Sprintf("c%d", call)}, nil
+		}
+		return MessagePage{Messages: []Message{{ID: "mine", Role: "user", Parts: []Part{{Type: "text", Text: "text"}}}, {ID: "old"}}, Next: "c"}, nil
+	}}
+	p.client = deep
+	if id, err := p.findDelivered(context.Background(), known, 1, "text"); id != "mine" || err != nil || deep.calls != 151 {
+		t.Fatalf("behind 150 pages: id %q, err %v, %d pages; want it found on page 151", id, err, deep.calls)
 	}
 
 	ends := &stubClient{page: func(call int, before string) (MessagePage, error) {
