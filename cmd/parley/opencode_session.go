@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -37,15 +38,18 @@ const (
 	// maxOpenCodeEvents bounds the event types a refusal lists.
 	maxOpenCodeEvents = 12
 	// openCodeListMax is how many of the newest sessions are asked for when
-	// looking for one a stopped run left.
-	openCodeListMax = 20
+	// looking for one a stopped run left: a page wide enough that the sessions
+	// made in the project since the run began do not push it off.
+	openCodeListMax = 200
 )
 
 // openCodeSession is one OpenCode session to start on its primer.
 type openCodeSession struct {
-	nick, model  string
-	dir          string // the checkout: where opencode runs, and so the session's project
-	bin, name    string // the resolved opencode, and how the human spells it
+	nick, model string
+	dir         string // the checkout: where opencode runs, and so the session's project
+	bin, name   string // the resolved opencode, and how the human spells it
+	// title is the session's title: "parley line <id> <nick> <token>", the token
+	// being the run's own, so that no other add's session has this title.
 	title        string
 	prompt       string // the primer
 	base, stream string // where the session is recorded
@@ -60,8 +64,11 @@ type openCodeSession struct {
 // carries an error object.
 type openCodeTurn struct {
 	// SessionID is the first id an event carried; Others are any different ones.
+	// NoID are the types of the events that carried none: such an event certifies
+	// nothing, and is not counted below.
 	SessionID string
 	Others    []string
+	NoID      []string
 	// Steps is the number of step_finish events and LastReason the reason of the
 	// last of them.
 	Steps      int
@@ -103,6 +110,12 @@ func parseOpenCodeTurn(out string) openCodeTurn {
 		}
 		switch {
 		case ev.SessionID == "":
+			// An event that does not name its session is not shown to be this run's,
+			// so it counts for nothing: not as a step, not as an answer.
+			if typ := codex.PlainLine(ev.Type); !slices.Contains(t.NoID, typ) && len(t.NoID) < maxOpenCodeEvents {
+				t.NoID = append(t.NoID, typ)
+			}
+			continue
 		case t.SessionID == "":
 			t.SessionID = ev.SessionID
 		case ev.SessionID != t.SessionID && !slices.Contains(t.Others, ev.SessionID) && len(t.Others) < maxOpenCodeEvents:
@@ -157,8 +170,9 @@ func openCodeErrorText(raw json.RawMessage) string {
 // reads the session id the run announces, and records it for the nick under the
 // state base. The session is registered for deletion as soon as its id is known,
 // whatever becomes of the turn: opencode creates the session before the model
-// answers, so a run that failed, or was stopped, has left one behind. It returns
-// the session id and the session's answer to the primer.
+// answers, so a run that failed, or was stopped, has left one behind. Output
+// that names more than one session registers none: nothing is deleted on a
+// guess. It returns the session id and the session's answer to the primer.
 //
 // The primer goes in on stdin and not as the argument: opencode run joins its
 // message arguments into one string, wraps it in double quotes when it holds a
@@ -184,21 +198,28 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 	turn, stderr, runErr := runOpenCodeTurn(ctx, c.bin, c.dir, args, c.prompt, timeout)
 
 	switch {
+	case len(turn.Others) > 0:
+		// Output that names two sessions does not say which one this run made, and
+		// nothing is deleted on a guess: the error names them for the human.
 	case turn.SessionID == "":
 		// opencode makes the session before its first event, so a run that was
 		// stopped, or that failed, before the event has left one it never named.
-		// The list is asked for it, by the title and the directory this run gave
-		// it and the time it was made.
+		// The list is asked for it, from the checkout (1.18.30 lists the project of
+		// the directory it runs in) and by the title this run gave it, which no
+		// other run's has, and the directory and the time it was made.
 		ids, err := openCodeStrays(c.bin, c.title, c.dir, started)
-		if err != nil {
-			env.logf("session %s: could not look for a session the run may have left (%v): look for the title %s in opencode session list", c.nick, err, clipQuoted(c.title))
+		switch {
+		case err != nil:
+			env.logf("session %s: could not look for a session the run may have left (%v): look for the title %s in opencode session list, run in %s", c.nick, err, clipQuoted(c.title), c.dir)
+		case len(ids) == 0:
+			env.logf("session %s: the run named no session, and opencode session list in %s holds none titled %s made since it began, so there is nothing to delete", c.nick, c.dir, clipQuoted(c.title))
 		}
 		for _, sid := range ids {
-			env.push(fmt.Sprintf("OpenCode session %s (session %s, which the run made without announcing it)", sid, c.nick), func() error { return openCodeDelete(c.bin, c.name, sid) })
+			env.push(fmt.Sprintf("OpenCode session %s (session %s, which the run made without announcing it)", sid, c.nick), func() error { return openCodeDelete(c.bin, c.name, sid, c.dir) })
 		}
 	case state.ValidSessionID(turn.SessionID):
 		sid := turn.SessionID
-		env.push(fmt.Sprintf("OpenCode session %s (session %s)", sid, c.nick), func() error { return openCodeDelete(c.bin, c.name, sid) })
+		env.push(fmt.Sprintf("OpenCode session %s (session %s)", sid, c.nick), func() error { return openCodeDelete(c.bin, c.name, sid, c.dir) })
 	default:
 		env.logf("session %s announced session id %s, which is not an OpenCode session id, so it is not deleted: look for it with opencode session list", c.nick, clipQuoted(turn.SessionID))
 	}
@@ -226,8 +247,18 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 		return "", "", fmt.Errorf("opencode run for session %s: the session id %s is not an OpenCode session id (ses_ and 26 letters or digits)", c.nick, clipQuoted(turn.SessionID))
 	}
 	if len(turn.Others) > 0 {
-		return "", "", fmt.Errorf("opencode run for session %s: its events carry more than one session id (%s first, then %s), so the session is not known; %s is deleted, and the others are not: look in opencode session list",
-			c.nick, turn.SessionID, clipQuoted(strings.Join(turn.Others, ", ")), turn.SessionID)
+		seen := []string{clipQuoted(turn.SessionID)}
+		for _, o := range turn.Others {
+			seen = append(seen, clipQuoted(o))
+		}
+		return "", "", fmt.Errorf("opencode run for session %s: its events carry more than one session id (%s), so it is not known which the run made, and none is deleted: look with opencode session list, run in %s, for the title %s, and delete what is yours",
+			c.nick, strings.Join(seen, ", "), c.dir, clipQuoted(c.title))
+	}
+	// An event that names no session is not shown to be this run's. The id the
+	// others announced is kept: it is registered above, and the rollback deletes it.
+	if len(turn.NoID) > 0 {
+		return "", "", fmt.Errorf("opencode run for session %s: event(s) of type %s carry no sessionID, so the turn is not shown to be session %s's and not shown to have completed",
+			c.nick, strings.Join(turn.NoID, ", "), turn.SessionID)
 	}
 	// A session is started on one whose first turn demonstrably completed. An exit
 	// 0 says opencode ended, not that the turn did: the events may have stopped
@@ -263,8 +294,7 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 // runOpenCodeTurn runs one `opencode run --format json` turn with stdin as its
 // message and parses what it said, even when it did not end well: a run that was
 // stopped has still announced the session that has to be deleted. A run that
-// does not end within timeout is stopped: opencode run has no TUI to answer an
-// ask with, so a turn that waits on one does not end by itself.
+// does not end within timeout is stopped.
 //
 // opencode may be a launcher that runs the program as a child, as an npm
 // install's is, and killing only the launcher would leave a turn running on a
@@ -291,20 +321,23 @@ func runOpenCodeTurn(ctx context.Context, bin, dir string, args []string, stdin 
 	turn := parseOpenCodeTurn(stdout.String())
 	turn.Truncated = stdout.truncated
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
-		err = fmt.Errorf("no end to the turn within %s, so it was stopped (opencode run has no TUI to answer an ask with, and a turn that waits on one does not end by itself): %w", timeout, err)
+		err = fmt.Errorf("the turn did not end within %s, so it was stopped: %w", timeout, err)
 	}
 	return turn, strings.TrimSpace(stderr.String()), err
 }
 
 // openCodeStrays are the ids of the sessions opencode lists as made by a run that
-// named none: the title and directory that run gave, and a creation time at or
-// after started (opencode stamps it in milliseconds). Only the newest sessions
-// are asked for, since the run's is among them, and an id that does not have the
+// named none: exactly the title that run gave (which carries a token of the run's
+// own), its directory, and a creation time at or after started (opencode stamps
+// it in milliseconds). opencode 1.18.30 lists the sessions of the project of the
+// directory it runs in, so it runs in dir, the checkout the run was made in. The
+// newest openCodeListMax sessions are asked for, and an id that does not have the
 // shape of one is never returned, for it goes to a command line.
 func openCodeStrays(bin, title, dir string, started time.Time) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), openCodeDeleteTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "session", "list", "--format", "json", "-n", strconv.Itoa(openCodeListMax))
+	cmd.Dir = existingDir(dir)
 	cmd.Stdin = nil
 	out, errs := &limitBuffer{limit: maxExecOutput}, &limitBuffer{limit: 4096}
 	cmd.Stdout, cmd.Stderr = out, errs
@@ -333,14 +366,25 @@ func openCodeStrays(bin, title, dir string, started time.Time) ([]string, error)
 	return ids, nil
 }
 
-// openCodeDelete removes an OpenCode session this run created. The caller's
+// existingDir is dir if it is a directory now, else "" (the caller's own): a
+// checkout that is gone by the time a rollback runs must not stop the rollback.
+func existingDir(dir string) string {
+	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		return dir
+	}
+	return ""
+}
+
+// openCodeDelete removes an OpenCode session this run created, from the checkout
+// it was made in. The caller's
 // cancellation is not honoured: an interrupted run is the one most likely to
 // have a session to delete. name is how the failure spells bin to the human, who
 // is told the command to run by hand.
-func openCodeDelete(bin, name, id string) error {
+func openCodeDelete(bin, name, id, dir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), openCodeDeleteTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "session", "delete", id)
+	cmd.Dir = existingDir(dir)
 	cmd.Stdin = nil
 	var out limitBuffer
 	out.limit = 4096

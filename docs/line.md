@@ -244,22 +244,34 @@ core now ships OpenCode 2, which parley does not support yet.
      `$TMPDIR` as for a Codex session (mode 0700, a marker with the line and the
      nick), and the primer carries the path of the session's reply file in it.
    - It starts the session with `opencode run --format json --title "parley line
-     <channel> <nick>"` in the checkout, `-m <model>` when you gave one (an
+     <channel> <nick> <token>"` in the checkout, `-m <model>` when you gave one (an
      OpenCode model is `provider/model`, as `opencode models` lists them), and a
-     five-minute limit. The primer goes in on stdin, because `opencode run` wraps
-     a message argument that holds spaces in double quotes and escapes the quotes
-     in it, and the session's first message should be the primer as it is. Your
-     environment is passed on as it is. The turn must have completed: every event
-     of the run must carry one session id of the shape OpenCode makes, and the last
-     step must end with `stop`. A session that did not complete, or hung, is
-     deleted (`opencode session delete`), and the add fails and undoes itself;
-     one stopped before its first event, which has made a session it never named,
-     is found in `opencode session list` by its title, its directory and the time
-     it was made, and deleted too.
-     `opencode run` has no terminal to ask in, so a permission ask in that turn is
-     refused (OpenCode 1.18.30 refuses it), not answered. The session id is
+     five-minute limit. The token is the random part of the reply directory's name,
+     which no other add shares, so a session found by its title is this run's. The
+     primer goes in on stdin, because `opencode run` wraps a message argument that
+     holds spaces in double quotes and escapes the quotes in it, and the session's
+     first message should be the primer as it is. Your environment is passed on as
+     it is. The turn must have completed: every event of the run must carry the
+     same session id, of the shape OpenCode makes (an event with none fails the
+     turn), and the last step must end with `stop`. A session that did not
+     complete, or did not end within the limit, is deleted (`opencode session
+     delete`, run from the checkout), and the add fails and undoes itself. Events
+     that name two sessions do not say which one the run made, so nothing is
+     deleted then: the error names both ids, and you look with `opencode session
+     list` in the checkout. A run stopped before its first event has made a session
+     it never named: `opencode session list --format json -n 200` is asked for,
+     from the checkout (OpenCode lists the sessions of the project of the directory
+     it runs in), and the session with exactly this title and directory, made after
+     the run began, is deleted too; the log says when that list ran and found
+     nothing. `opencode run` has no terminal to ask in, so a permission ask in that
+     turn is refused (OpenCode 1.18.30 refuses it), not answered. The session id is
      recorded for `--session auto`, and printed with the session's answer to the
      primer.
+   - **A limit of creating the session through `opencode run`:** it carries
+     OpenCode's own session-level denies for the `question` tool and for plan mode
+     (1.18.30 sets them when the run is not interactive). The session cannot ask
+     you a structured question or enter plan mode, and asks in plain text; nothing
+     parley does changes that.
 
    Then it prints the commands that remain, in this order, because the pump checks
    as it starts that the TUI's server answers and knows the session. In the
@@ -282,17 +294,24 @@ core now ships OpenCode 2, which parley does not support yet.
    both; give both another if the TUI says it is taken. The pump takes the same
    breaker as the other fronts and registers the nick. It posts each delivery into
    the session as one user message, the peer header included, **only while the
-   session is idle**: OpenCode has no queue, and a message sent during a turn is
+   session is idle**: OpenCode has no queue, and a message sent during a turn may be
    folded into that turn, so what arrives while the session works is held in the
    stream and goes over as one delivery when the turn ends. A delivery counts as
    made once the session's history shows it, and a crash delivers again rather
    than drop (`docs/reference.md`, "opencode: the OpenCode front"). A line you
    submit in the TUI at the instant of a post is merged into your own turn, and the
-   server's API cannot prevent that.
+   server's API cannot prevent that. A delivery is posted whole, with one bound: a
+   message whose rendering is over 128 KiB, and a message that would take one
+   delivery past 512 KiB, is not posted, and a stub takes its place, its own
+   header over a one-line notice naming it, while the full text stays in the stream
+   for you to read.
 
-   Three things the pump does not do for you. **The first write of the reply file
+   Three things the pump does not do for you. **Every write of the reply file
    raises OpenCode's `external_directory` ask**, since the reply directory is under
-   `$TMPDIR`, outside the checkout: answer it in the TUI, where it appears.
+   `$TMPDIR`, outside the checkout, and "Allow once" asks again on the next reply
+   (all 11 writes of a live run asked): answer **"Allow always"** for the reply
+   directory in the TUI, where the ask appears, so that later replies do not stop
+   on one. That "always" holds for the later writes was not exercised live.
    **`OPENCODE_SERVER_PASSWORD`**: the server `--port` opens answers any process on
    this machine unless you set a password, so set it (and
    `OPENCODE_SERVER_USERNAME` if you want a name other than `opencode`) in the

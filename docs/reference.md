@@ -304,8 +304,8 @@ startup is exit 1: an HTTP answer that is not the one expected stops the pump wi
 nothing committed.
 
 **Delivery.** OpenCode has no queue: a prompt posted while a turn runs is folded
-into that turn at its next step boundary, and the model answers it in place of the
-answer it was writing. So the pump delivers only into an idle session. When a
+into that turn at its next step boundary, and the model may answer it in place of
+the answer it was writing. So the pump delivers only into an idle session. When a
 delivery is ready it waits for the session to be idle, and if it had to wait, it
 reads the stream again from the cursor it started at, so that everything that
 arrived meanwhile goes over as **one** delivery and not as one turn each. It
@@ -319,10 +319,17 @@ the post and before the commit, or whose read-back times out (it then stops, exi
 1, with nothing committed), delivers again on restart rather than drops. A human
 submitting a prompt in the TUI between the idle check and the post is merged into
 the human's own turn; with no queue on the server there is no closing that window.
+A delivery is posted whole, with one bound, in the Codex front's register: a
+message whose rendering is over 128 KiB, and a message that would take one
+delivery past 512 KiB, is not posted, and a stub takes its place, its own header
+over a one-line notice naming it, while the full text stays in the stream for the
+human to read; a delivery that comes to 1 MiB with its stubs counted ends in one
+notice for the rest.
 A server that goes away after startup (the TUI was restarted) is waited for: the
-pump holds the deliveries in the stream, logs it once, tries again with a backoff
-of at most 5 seconds, and checks the version again when the server is back. A post
-that fails to connect is nothing delivered, and goes back to waiting.
+pump holds the deliveries in the stream, logs it once and tries again with a
+backoff of at most 5 seconds. The server's health, its version (a 2.x is refused)
+and the session's directory are checked before every delivery. A post that fails
+to connect is nothing delivered, and goes back to waiting.
 
 **Credentials.** A server started with `OPENCODE_SERVER_PASSWORD` wants HTTP basic
 credentials. The pump reads the same variables OpenCode's own CLI does, the
@@ -354,7 +361,7 @@ message: a human pastes it in, or the session is started with it as its first
 prompt, which is what `parley table new`, `parley build new` and `parley line add`
 do for Codex and `parley line add` for OpenCode. The opencode text has no git
 paragraph and says nothing of a sandbox, which OpenCode has none of; it says that
-the first write of the reply file goes through OpenCode's own permission ask
+each write of the reply file goes through OpenCode's own permission ask
 (`external_directory`), answered in the TUI. The build and table forms carry three facts as values, and `--chair`, `--target` and
 `--worktree` are required: the human's registered nick, the target repo and
 this session's worktree of it, each directory absolute and existing, printed as
@@ -768,25 +775,34 @@ exit 2.
   thread recorded in `codex-thread`.
   An OpenCode session (OpenCode 1.x) gets no launch file and nothing else written in
   its checkout, which may be any directory. It gets the same reply directory, and a
-  session started by `opencode run --format json --title "parley line <id> <nick>"`
-  in the checkout, `-m <model>` if given, the environment passed on as it is, a
+  session started by `opencode run --format json --title "parley line <id> <nick>
+  <token>"` in the checkout, the token being the random part of the reply
+  directory's name, which no other add shares, `-m <model>` if given, the environment passed on as it is, a
   five-minute limit and a process group of its own, which a stop takes whole, so
   that no turn is left running on a session about to be deleted. The primer is on
   stdin and not an argument: `opencode run` wraps an argument that holds spaces in
   double quotes and escapes the quotes in it (1.18.30), and the first message
   should be the primer as it is. The turn must have completed: its stdout must
   carry JSON events that all name one session id of the shape OpenCode makes
-  (`ses_` and 26 letters or digits), at least one `step_finish`, the last with the
-  reason `stop`, no `error` event and an end not cut off at 1 MiB, whatever the
-  exit status; a run that hung (a turn that waits for an ask `opencode run` has no
-  terminal to answer is ended by the bound) is stopped. The session is registered
-  for deletion (`opencode session delete`) as soon as its id is seen, whatever
-  becomes of the turn. opencode makes the session before its first event, so a run
-  stopped before it has made one it never named: then `opencode session list
-  --format json` is asked for the newest sessions, and those with the run's title,
-  the checkout as their directory, an id of the right shape and a creation time
-  after the run began are deleted too. The id is recorded in `opencode-session`, and the session's
-  answer to the primer, the text of the turn's last step, is printed.
+  (`ses_` and 26 letters or digits; an event with none fails the turn, and counts
+  for nothing), at least one `step_finish`, the last with the reason `stop`, no
+  `error` event and an end not cut off at 1 MiB, whatever the exit status; a run
+  that does not end within the bound is stopped. The session is registered for
+  deletion (`opencode session delete`, run from the checkout) as soon as its id is
+  seen, whatever becomes of the turn, except when the events name two sessions:
+  that does not say which the run made, so nothing is deleted, and the error names
+  both ids and says to look with `opencode session list` in the checkout.
+  opencode makes the session before its first event, so a run stopped before it
+  has made one it never named: then `opencode session list --format json -n 200`
+  is run from the checkout (1.18.30 lists the sessions of the project of the
+  directory it runs in), and the session with exactly the run's title, the
+  checkout as its directory, an id of the right shape and a creation time after the
+  run began is deleted too; the log says when the list ran and found none. The
+  session `opencode run` makes carries OpenCode's own session-level denies for the
+  `question` tool and plan mode (1.18.30 sets them for a run that is not
+  interactive), a known limit of creating it that way. The id is recorded in
+  `opencode-session`, and the session's answer to the primer, the text of the
+  turn's last step, is printed.
   Files are created with no overwrite and never through a link. When the checkout
   is the root of a git checkout, the launch file's line (`/.mcp.json` or
   `/.codex/config.toml`) is appended to the file `git rev-parse --git-path
@@ -807,9 +823,11 @@ exit 2.
   line, `parley opencode ... --session auto --port <port> --skill line ...
   --state-dir <base>`, the check that the session has loaded the `parley-line`
   skill, which OpenCode loads with its skill tool and has no slash command for,
-  a note that the first write of the reply file raises OpenCode's
-  `external_directory` ask, which is answered in the TUI, and a note that
-  `OPENCODE_SERVER_PASSWORD`, if used, is set for both commands).
+  a note that each write of the reply file raises OpenCode's `external_directory`
+  ask, which is answered in the TUI with "Allow always" for the reply directory
+  since "Allow once" asks again on every reply, a note that the session was made by
+  `opencode run` and so has OpenCode's denies for the question tool and plan mode,
+  and a note that `OPENCODE_SERVER_PASSWORD`, if used, is set for both commands).
 - `line drop <id> <nick> [--force] [--state-dir <dir>]` takes one session off. It
   takes the id's lock and the session's nick lock without waiting, and refuses, exit
   1, while the session or its pump holds the latter. It removes the session's

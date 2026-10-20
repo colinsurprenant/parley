@@ -16,7 +16,8 @@ import (
 type fakeOpenCode struct {
 	version string
 	// strip lists flags (as openCodeSurfaces spells them) and subcommands, as
-	// "delete", the help of the named command must not list; the TUI's is "tui".
+	// "delete", the help of the named command must not list; the TUI's is "tui"
+	// and session list's is "session-list".
 	strip map[string][]string
 	// helpOnStdout prints the help on stdout instead.
 	helpOnStdout bool
@@ -33,7 +34,7 @@ func (f fakeOpenCode) install(t *testing.T, dir string) (bin, log string) {
 	if err := os.MkdirAll(helpDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"tui", "run", "session"} {
+	for _, name := range []string{"tui", "run", "session", "session-list"} {
 		raw, err := os.ReadFile(filepath.Join("testdata", "opencode-1.18.30-"+name+".help"))
 		if err != nil {
 			t.Fatal(err)
@@ -58,6 +59,7 @@ case "$1 $2" in
 "--version "*) echo "%[2]s"; exit %[3]d ;;
 "--help ") cat %[4]q/tui %[5]s; exit 0 ;;
 "run --help" | "session --help") cat %[4]q/"$1" %[5]s; exit 0 ;;
+"session list") if [ "$3" = --help ]; then cat %[4]q/session-list %[5]s; exit 0; fi ;;
 esac
 echo "fake opencode: unexpected arguments: $*" >&2
 exit 64
@@ -83,17 +85,18 @@ func stripLines(text, prefix string) string {
 func TestOpenCodeWithEveryFlagIsAllOK(t *testing.T) {
 	bin, _ := fakeOpenCode{version: OpenCodeVerified}.install(t, t.TempDir())
 	rs := Check(context.Background(), Options{OpenCode: true, OpenCodeBin: bin})
-	if len(rs) != 5 || len(lines(rs, OK)) != 5 {
-		t.Fatalf("want five ok lines:\n%s", render(rs))
+	if len(rs) != 6 || len(lines(rs, OK)) != 6 {
+		t.Fatalf("want six ok lines:\n%s", render(rs))
 	}
-	for _, surface := range []string{"opencode", "opencode version", "opencode tui", "opencode run", "opencode session"} {
+	for _, surface := range []string{"opencode", "opencode version", "opencode tui", "opencode run", "opencode session", "opencode session list"} {
 		find(t, rs, surface)
 	}
 	// What each line says it checked is what parley uses.
 	for surface, want := range map[string]string{
-		"opencode tui":     "--port -s/--session",
-		"opencode run":     "--format -m/--model --title",
-		"opencode session": "subcommand delete",
+		"opencode tui":          "--port -s/--session",
+		"opencode run":          "--format -m/--model --title",
+		"opencode session":      "subcommand delete subcommand list",
+		"opencode session list": "--format -n/--max-count",
 	} {
 		if got := find(t, rs, surface).Detail; got != want {
 			t.Errorf("%s says %q, want %q", surface, got, want)
@@ -124,6 +127,10 @@ func TestOpenCodeMissingAFlagOrSubcommandIsAFAILNamingIt(t *testing.T) {
 		{"run -m/--model", "opencode run", map[string][]string{"run": {"-m/--model"}}, "-m/--model"},
 		{"run --title", "opencode run", map[string][]string{"run": {"--title"}}, "--title"},
 		{"session delete", "opencode session", map[string][]string{"session": {"delete"}}, "the delete subcommand"},
+		{"session list", "opencode session", map[string][]string{"session": {"list"}}, "the list subcommand"},
+		// A stopped run's stray session is found with list --format json -n.
+		{"session list --format", "opencode session list", map[string][]string{"session-list": {"--format"}}, "--format"},
+		{"session list -n/--max-count", "opencode session list", map[string][]string{"session-list": {"-n/--max-count"}}, "-n/--max-count"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, _ := fakeOpenCode{version: OpenCodeVerified, strip: tc.strip}.install(t, t.TempDir())
@@ -312,7 +319,7 @@ func TestOpenCodeProbesEveryHelpItReads(t *testing.T) {
 	bin, log := fakeOpenCode{version: OpenCodeVerified}.install(t, t.TempDir())
 	Check(context.Background(), Options{OpenCode: true, OpenCodeBin: bin})
 	got, _ := os.ReadFile(log)
-	for _, want := range []string{"--version\n", "--help\n", "run --help\n", "session --help\n"} {
+	for _, want := range []string{"--version\n", "--help\n", "run --help\n", "session --help\n", "session list --help\n"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("opencode was never run as %q:\n%s", strings.TrimSpace(want), got)
 		}

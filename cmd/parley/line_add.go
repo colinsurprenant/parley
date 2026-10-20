@@ -804,9 +804,14 @@ func (r *lineAddRun) startOpenCode(ctx context.Context) error {
 		Cap:       p.rec.Cap,
 		Window:    p.rec.windowDuration(),
 	})
+	// The title carries the random string of the reply directory, which is this
+	// run's own: two adds of one nick on lines of one id under different state
+	// directories give their sessions different titles, so a session found by its
+	// title is this run's.
+	token := strings.TrimPrefix(filepath.Base(r.replyDir), lineReplyPrefix(p.id))
 	id, answer, err := startOpenCodeSession(ctx, r, openCodeSession{
 		nick: p.nick, model: p.model, dir: p.checkout,
-		bin: p.openCodeBin, name: p.openCodeName(), title: fmt.Sprintf("parley line %s %s", p.id, p.nick),
+		bin: p.openCodeBin, name: p.openCodeName(), title: fmt.Sprintf("parley line %s %s %s", p.id, p.nick, token),
 		prompt: text, base: p.base, stream: p.rec.Stream,
 	})
 	if err != nil {
@@ -994,8 +999,9 @@ func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
 		q(p.self), q(p.rec.Stream), p.nick, r.port, p.rec.Chair, p.rec.Cap, p.window, q(p.base)))
 	next("Check that the session has loaded the parley-line skill. OpenCode loads a skill with its skill tool and has no /parley-line\n   command; if its answer to the primer below does not show it did, ask it to load the skill.")
 	fmt.Fprintf(&b, "Notes:\n")
-	fmt.Fprintf(&b, "  The session's first write of its reply file, %s, is outside its checkout, so OpenCode asks first\n", q(r.replyFile))
-	b.WriteString("  (external_directory): answer the ask in the TUI.\n")
+	fmt.Fprintf(&b, "  The reply file, %s, is outside the session's checkout, so each write of it raises OpenCode's external_directory ask in the TUI:\n", q(r.replyFile))
+	b.WriteString("  answer \"Allow always\" for the reply directory, since \"Allow once\" asks again on every reply.\n")
+	b.WriteString("  The session was made by opencode run, which denies it OpenCode's question tool and plan mode for that session (a known limit of creating it that way).\n")
 	b.WriteString("  OPENCODE_SERVER_PASSWORD, if you use one, must be set for both commands, and OPENCODE_SERVER_USERNAME too if it is not opencode.\n")
 	b.WriteString("  Without it the server on --port answers any local process.\n")
 	fmt.Fprintf(&b, "\n   Session %s's answer to its primer (opencode run, session %s):\n\n", p.nick, r.thread)

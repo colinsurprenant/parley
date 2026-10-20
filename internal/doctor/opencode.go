@@ -25,11 +25,13 @@ const openCodeV2 = "OpenCode 2 is not supported yet: parley's front speaks OpenC
 // command is the TUI, started with --port so that it serves the HTTP API the
 // front posts through, and with -s/--session to resume a session; run is how a
 // session is started with its primer as the first message; session delete is
-// how an abandoned one is removed.
+// how an abandoned one is removed, and session list --format json -n is how a
+// session a stopped run made without naming it is found.
 var openCodeSurfaces = []surface{
 	{label: "opencode tui", flags: []string{"--port", "-s/--session"}},
 	{cmd: []string{"run"}, flags: []string{"--format", "-m/--model", "--title"}},
-	{cmd: []string{"session"}, subs: []string{"delete"}},
+	{cmd: []string{"session"}, subs: []string{"delete", "list"}},
+	{cmd: []string{"session", "list"}, flags: []string{"--format", "-n/--max-count"}},
 }
 
 // checkOpenCode is the static OpenCode check: the binary, its version (OpenCode

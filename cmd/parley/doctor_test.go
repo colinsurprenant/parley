@@ -52,9 +52,10 @@ case "$1 $2" in
 "--help ") cat %q >&2; exit 0 ;;
 "run --help") cat %q >&2; exit 0 ;;
 "session --help") cat %q >&2; exit 0 ;;
+"session list") if [ "$3" = --help ]; then cat %q >&2; exit 0; fi ;;
 esac
 exit 64
-`, version, help("tui"), help("run"), help("session"))
+`, version, help("tui"), help("run"), help("session"), help("session-list"))
 	bin := filepath.Join(dir, "opencode")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -400,7 +401,7 @@ func TestDoctorHarnessOpenCodeChecksOpenCodeAndItsSkills(t *testing.T) {
 			skills++
 		}
 	}
-	for _, surface := range []string{"ok   opencode ", "ok   opencode version", "ok   opencode tui", "ok   opencode run", "ok   opencode session"} {
+	for _, surface := range []string{"ok   opencode ", "ok   opencode version", "ok   opencode tui", "ok   opencode run", "ok   opencode session", "ok   opencode session list"} {
 		found := false
 		for _, l := range ls {
 			found = found || strings.HasPrefix(l, surface)

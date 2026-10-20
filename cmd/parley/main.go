@@ -471,16 +471,23 @@ verbs:
            taken as the line's own. An OpenCode session (OpenCode 1.x) gets no
            launch file and nothing else written in its checkout; it gets the
            same kind of reply directory as a Codex one, and a session started by
-           opencode run --format json --title "parley line <id> <nick>" in the
-           checkout (-m provider/model when a model is given), with the primer
-           on stdin, so that it reaches the model as it is, stdin otherwise
-           closed, the environment passed on and a 5-minute limit, whose events
-           must all carry one session id of the shape OpenCode makes and end with
-           a step_finish whose reason is stop; the id is recorded in the
-           opencode-session file --session auto reads. A failure
-           or an interrupt takes down what the run made, a started Codex thread
-           (codex delete --force) or OpenCode session (opencode session delete)
-           included. The output is what is left for that
+           opencode run --format json --title "parley line <id> <nick> <token>"
+           in the checkout (the token is the random part of the reply directory's
+           name, the run's own; -m provider/model when a model is given), with
+           the primer on stdin, so that it reaches the model as it is, stdin
+           otherwise closed, the environment passed on and a 5-minute limit,
+           whose events must all carry one session id of the shape OpenCode makes
+           (an event with none fails the turn) and end with a step_finish whose
+           reason is stop; the id is recorded in the opencode-session file
+           --session auto reads. A failure or an interrupt takes down what the
+           run made, a started Codex thread (codex delete --force) or OpenCode
+           session (opencode session delete, run from the checkout) included;
+           events that name two sessions delete none and name both; a run
+           stopped before its first event, which made a session it never named,
+           is looked for with opencode session list --format json -n 200 in the
+           checkout, by its exact title, and deleted. The session carries
+           OpenCode's session-level denies for the question tool and plan mode,
+           as opencode run makes it. The output is what is left for that
            session: for Claude the cd and the launch line (plus --model), the
            same plus --resume <session-id> for a conversation under way,
            /parley-line, the /mcp and Channels-notice checks; for Codex the
@@ -489,9 +496,10 @@ verbs:
            opencode --port <free port> --session <id> line, which comes first
            because the pump checks the server it serves, the pump line with
            --session auto and the same port, the check that the session has
-           loaded the parley-line skill, a note that the first write of its reply
-           file raises OpenCode's external_directory ask, which is answered in
-           the TUI, and a note on OPENCODE_SERVER_PASSWORD. drop <id> <nick> takes the
+           loaded the parley-line skill, a note that each write of its reply
+           file raises OpenCode's external_directory ask, answered in the TUI
+           with Allow always, a note on the denies, and a note on
+           OPENCODE_SERVER_PASSWORD. drop <id> <nick> takes the
            id's lock and the session's nick lock without waiting and refuses,
            exit 1, while either is held. It removes the session's thread record
            or session record (only if it holds the recorded thread or session), its
