@@ -163,7 +163,9 @@ func (h *harness) peerSend(nick, body string) {
 }
 
 // cursorPast waits for the pump to persist a cursor that is neither empty nor
-// prev, which is how a test waits for the write that follows a delivery.
+// prev, which is how a test waits for the write that follows a delivery. prev is
+// taken before the event that makes the pump save, never after it: a pump that has
+// already saved would be waited on for ever.
 func (h *harness) cursorPast(prev string) string {
 	h.t.Helper()
 	deadline := time.Now().Add(testDeadline)
@@ -175,8 +177,13 @@ func (h *harness) cursorPast(prev string) string {
 		if c != "" && c != prev {
 			return c
 		}
+		select {
+		case <-h.done:
+			h.t.Fatalf("the pump stopped (%v) before it saved a cursor; logs:\n%s", h.runErr, h.logs.String())
+		default:
+		}
 		if !time.Now().Before(deadline) {
-			h.t.Fatalf("no cursor was saved within %s; logs:\n%s", testDeadline, h.logs.String())
+			h.t.Fatalf("no cursor other than %q was saved within %s (it is %q); logs:\n%s", prev, testDeadline, c, h.logs.String())
 		}
 		time.Sleep(pollInterval)
 	}
@@ -493,18 +500,24 @@ func TestCancelAfterTheDeliveryShowedStillCommitsIt(t *testing.T) {
 
 	h.peerSend(peerNick, "delivered, then Ctrl-C")
 	f.waitPosts(1)
-	h.cursorPast("")
+	saved := h.cursorPast("")
 	cancel()
 	if err := h.join(); err != nil {
 		t.Fatalf("Run returned %v on cancel, want nil", err)
 	}
 
-	// The next start finds nothing to deliver.
+	// The next start finds nothing to deliver, and delivers what comes after.
 	again := newHarnessOn(t, f.client(), h.path, h.dir, nil)
 	again.start()
-	time.Sleep(200 * time.Millisecond)
-	if n := len(f.postBodies()); n != 1 {
-		t.Fatalf("%d prompts after the restart, want the one from before", n)
+	again.peerSend(peerNick, "after the restart")
+	posts := f.waitPosts(2)
+	next := postedText(t, posts[1].Body)
+	if !strings.Contains(next, "after the restart") || strings.Contains(next, "Ctrl-C") {
+		t.Fatalf("the delivery after the restart is\n%q\nwant the new message alone", next)
+	}
+	again.cursorPast(saved)
+	if n := len(f.postBodies()); n != 2 {
+		t.Fatalf("%d prompts after the restart, want 2 in all", n)
 	}
 }
 
@@ -571,8 +584,9 @@ func TestCancelBetweenTheConfirmationAndTheCommitStillCommitsTheDelivery(t *test
 	if len(posts) != 1 {
 		t.Fatalf("%d prompts, want the one", len(posts))
 	}
-	if got, want := h.savedCursor(), string(h.read().Cursor); got == "" || got != want {
-		t.Fatalf("the saved cursor is %q, want the end of the delivery %q", got, want)
+	saved := h.savedCursor()
+	if want := string(h.read().Cursor); saved == "" || saved != want {
+		t.Fatalf("the saved cursor is %q, want the end of the delivery %q", saved, want)
 	}
 
 	// The next start finds nothing to deliver, and delivers what comes after.
@@ -584,7 +598,7 @@ func TestCancelBetweenTheConfirmationAndTheCommitStillCommitsTheDelivery(t *test
 	if !strings.Contains(next, "after the restart") || strings.Contains(next, "the shutdown came") {
 		t.Fatalf("the delivery after the restart is\n%q\nwant the new message alone", next)
 	}
-	again.cursorPast(h.savedCursor())
+	again.cursorPast(saved)
 	if n := len(f.postBodies()); n != 2 {
 		t.Fatalf("%d prompts after the restart, want 2 in all", n)
 	}
