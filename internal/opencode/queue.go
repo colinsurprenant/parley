@@ -154,6 +154,10 @@ type landing struct {
 	// waiting, parked and tooLong are whether the wait behind a busy turn, the
 	// parked entry and the inbox that is too large to read have been logged.
 	waiting, parked, tooLong bool
+	// outage is whether the server is held for: it was said not to answer, and no
+	// look at the delivery has been made in full since. held is whether the look in
+	// hand has had to hold for it.
+	outage, held bool
 	// idle is how many reads of an idle session with the delivery in the inbox, and
 	// idleAt when the last was counted.
 	idle   int
@@ -194,11 +198,18 @@ func (p *Pump) landed(ctx context.Context, id, text string) error {
 
 // landedStep is one look at where the delivery is. It returns done if it is a
 // message (or was cancelled), and an error for anything that ends the wait; a look
-// that got no answer holds for the server and is neither.
-func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (bool, error) {
+// that got no answer, or a 5xx, holds for the server and is neither. A look that
+// the server answered in every read it needed ends an outage.
+func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (done bool, err error) {
+	l.held = false
+	defer func() {
+		if err == nil && !l.held {
+			p.answered(l)
+		}
+	}()
 	msg, found, err := p.client.Message(ctx, p.session, id)
 	if err != nil {
-		return false, p.readFailed(ctx, err)
+		return false, p.readFailed(ctx, err, l)
 	}
 	if found {
 		return true, p.confirm(msg, text)
@@ -218,7 +229,7 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (boo
 		return false, nil
 	}
 	if err != nil {
-		return false, p.readFailed(ctx, err)
+		return false, p.readFailed(ctx, err, l)
 	}
 	var item *InboxItem
 	for i := range inbox {
@@ -234,7 +245,7 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (boo
 		// step, so the message is there now if that is what it was.
 		msg, found, err = p.client.Message(ctx, p.session, id)
 		if err != nil {
-			return false, p.readFailed(ctx, err)
+			return false, p.readFailed(ctx, err, l)
 		}
 		if found {
 			return true, p.confirm(msg, text)
@@ -245,7 +256,7 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (boo
 
 	busy, err := p.client.Busy(ctx, p.session)
 	if err != nil {
-		return false, p.readFailed(ctx, err)
+		return false, p.readFailed(ctx, err, l)
 	}
 	if busy {
 		if !l.waiting {
@@ -271,16 +282,18 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (boo
 }
 
 // readFailed decides what a failed read means. A shutdown ends the wait. A server
-// that is away is waited for, since the delivery was admitted and the message may
-// yet show: the pump holds until the server answers (finding it again in discovery
-// mode) and the look is made again. A session that is gone, or an answer this front
-// cannot read, ends it.
-func (p *Pump) readFailed(ctx context.Context, err error) error {
+// that is away, or answers a 5xx (starting, restarting, in trouble), is waited for,
+// since the delivery was admitted and the message may yet show, and stopping would
+// have the next start post it again under an id of its own: the pump holds until
+// the server answers (finding it again in discovery mode) and the look is made
+// again. A session that is gone, any other status, or an answer this front cannot
+// read, ends it.
+func (p *Pump) readFailed(ctx context.Context, err error, l *landing) error {
 	switch {
 	case ctx.Err() != nil:
 		return ctx.Err()
-	case IsTransport(err):
-		return p.awaitServer(ctx, err)
+	case IsTransport(err), IsServerError(err):
+		return p.awaitServer(ctx, err, l)
 	case errors.Is(err, ErrSessionNotFound):
 		return fmt.Errorf("the delivery was posted to session %s, which the server no longer knows, so it cannot be confirmed; nothing was committed: %w", p.session, err)
 	case IsTooLong(err):

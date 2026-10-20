@@ -120,6 +120,13 @@ func IsTransport(err error) bool {
 	return errors.As(err, &t)
 }
 
+// IsServerError reports whether err is the server's own 5xx: it is starting,
+// restarting or in trouble, and what it was asked is for a later try.
+func IsServerError(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code >= http.StatusInternalServerError
+}
+
 // IsDial reports whether err is a request that never reached the server.
 func IsDial(err error) bool {
 	var t *TransportError

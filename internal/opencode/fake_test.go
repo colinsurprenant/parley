@@ -109,6 +109,10 @@ type fakeOpenCode struct {
 	// reads it under, as an inbox full of attachments does.
 	inboxTooLong bool
 	reads        map[string]int
+	// failNext is, per route ("active", "inbox", "message"), the statuses the next
+	// reads are answered with in place of their answers: a service that is starting
+	// or in trouble.
+	failNext map[string][]int
 
 	srv  *httptest.Server
 	addr string
@@ -326,6 +330,9 @@ func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"version": f.version, "pid": f.pid, "urls": []string{"http://" + f.addr}})
 	case path == "/api/session/active" && r.Method == http.MethodGet:
 		f.reads["active"]++
+		if f.failedLocked(w, "active") {
+			return
+		}
 		busy := f.busyLocked()
 		if f.busyLeft > 0 {
 			// The turn ends with this read: the session is free after it, and takes
@@ -360,6 +367,9 @@ func (f *fakeOpenCode) sessionLocked(w http.ResponseWriter, r *http.Request, tai
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": testSession, "title": "t", "location": map[string]any{"directory": f.dir}}})
 	case tail == "inbox" && r.Method == http.MethodGet:
 		f.reads["inbox"]++
+		if f.failedLocked(w, "inbox") {
+			return
+		}
 		if f.inboxTooLong {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"data":[{"id":"msg_x","delivery":"queue","pad":"` + strings.Repeat("x", maxMessageBody) + `"}]}`))
@@ -372,6 +382,9 @@ func (f *fakeOpenCode) sessionLocked(w http.ResponseWriter, r *http.Request, tai
 		writeJSON(w, http.StatusOK, map[string]any{"data": out})
 	case strings.HasPrefix(tail, "message/") && r.Method == http.MethodGet:
 		f.reads["message"]++
+		if f.failedLocked(w, "message") {
+			return
+		}
 		f.messageLocked(w, strings.TrimPrefix(tail, "message/"))
 	case tail == "prompt" && r.Method == http.MethodPost:
 		f.promptLocked(w, r)
@@ -380,6 +393,18 @@ func (f *fakeOpenCode) sessionLocked(w http.ResponseWriter, r *http.Request, tai
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// failedLocked answers a read of route with the next status the test queued for
+// it, and says whether it did.
+func (f *fakeOpenCode) failedLocked(w http.ResponseWriter, route string) bool {
+	q := f.failNext[route]
+	if len(q) == 0 {
+		return false
+	}
+	f.failNext[route] = q[1:]
+	writeJSON(w, q[0], map[string]any{"_tag": "ServiceUnavailable", "message": "the service is in trouble"})
+	return true
 }
 
 func inboxJSON(it fakeItem) map[string]any {

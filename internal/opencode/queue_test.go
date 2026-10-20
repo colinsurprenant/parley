@@ -965,3 +965,88 @@ func TestTheWaitForAnAdmittedDeliveryReadsOnlyThroughAnAttachThatSucceeded(t *te
 		t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
 	}
 }
+
+// TestA5xxDuringTheWaitForAnAdmittedDeliveryIsHeldForAndNotFatal: the entry is in
+// the session's inbox, and the service answers a 503 and then a 500 to a read of
+// the wait (the message, the inbox or the list of active sessions) before it is
+// well again. A stop here would have the next start post the delivery again under an
+// id of its own, so the pump holds as for a server that is away: it says so once,
+// attaches again before it reads again, and the delivery commits once.
+func TestA5xxDuringTheWaitForAnAdmittedDeliveryIsHeldForAndNotFatal(t *testing.T) {
+	for _, route := range []string{"message", "inbox", "active"} {
+		t.Run(route, func(t *testing.T) {
+			f := newFake(t)
+			f.set(func() { f.busyOnPost = true })
+			h := newHarness(t, f, nil)
+			h.start()
+
+			h.peerSend(peerNick, "behind a turn, with the service in trouble")
+			f.waitPosts(1)
+			f.waitReads("inbox", 2)
+			infos := f.read("info")
+			f.set(func() { f.failNext = map[string][]int{route: {503, 500}} })
+			pending := func() int {
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				return len(f.failNext[route])
+			}
+			for deadline := time.Now().Add(testDeadline); pending() > 0; time.Sleep(pollInterval) {
+				if !time.Now().Before(deadline) {
+					t.Fatalf("the pump never made the reads that were to fail; logs:\n%s", h.logs.String())
+				}
+			}
+			h.waitLog("OpenCode is back")
+			select {
+			case <-h.done:
+				t.Fatalf("the pump stopped on a 5xx: %v\n%s", h.runErr, h.logs.String())
+			default:
+			}
+			// Each of the two failed reads was followed by an attach before the next read.
+			if got := f.read("info") - infos; got < 2 {
+				t.Fatalf("%d attach(es) after two failed reads, want at least 2", got)
+			}
+
+			f.set(func() { f.busyOnPost = false })
+			f.release()
+			h.cursorPast("")
+			logs := h.logs.String()
+			if n := strings.Count(logs, "OpenCode is not answering"); n != 1 {
+				t.Fatalf("the outage was said %d times, want once:\n%s", n, logs)
+			}
+			if n := strings.Count(logs, "OpenCode is back"); n != 1 {
+				t.Fatalf("the return was said %d times, want once:\n%s", n, logs)
+			}
+			if !strings.Contains(logs, "503") {
+				t.Fatalf("the log does not say what the service answered:\n%s", logs)
+			}
+			if n := len(f.postBodies()); n != 1 {
+				t.Fatalf("%d posts, want the one", n)
+			}
+			if users := f.userTexts(); len(users) != 1 {
+				t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
+			}
+		})
+	}
+}
+
+// TestA4xxOtherThanA404DuringTheWaitStillStopsThePump: only the server being away
+// or in trouble is held for; a refusal of the request is the end of the wait, with
+// nothing committed.
+func TestA4xxOtherThanA404DuringTheWaitStillStopsThePump(t *testing.T) {
+	f := newFake(t)
+	f.set(func() { f.busyOnPost = true })
+	h := newHarness(t, f, nil)
+	h.start()
+
+	h.peerSend(peerNick, "behind a turn")
+	f.waitPosts(1)
+	f.waitReads("inbox", 2)
+	f.set(func() { f.failNext = map[string][]int{"message": {400}} })
+	err := h.join()
+	if err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("Run returned %v, want the refusal", err)
+	}
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved", c)
+	}
+}

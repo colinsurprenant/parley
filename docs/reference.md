@@ -393,9 +393,12 @@ read (it carries every queued entry's payload, attachments included, and the hum
 own large queued prompt can pass the 16 MiB bound), cancelled cannot be told from
 queued, so the pump says so once, names the attachments as the likely cause, and goes
 on asking for the message: it neither stops nor commits on it. A server that goes
-away during the wait is held for with the backoff of the idle wait (finding the
-service again in discovery mode, and no read is made until the attach has
-succeeded), since the entry is in its database. There is no
+away during the wait, or answers a 5xx to a read of it (starting, restarting, in
+trouble), is held for with the backoff of the idle wait (finding the service again
+in discovery mode, and no read is made until the attach has succeeded), since the
+entry is in its database; it is logged once, however many reads fail, and any other
+refusal of a read, a 4xx but the 404 that says the message is not there yet, stops
+the pump with nothing committed. There is no
 step to see the turn begin: a queued post waits for its own turn and is never merged
 into a running one. Delivery is at-least-once: a pump that dies after the post and
 before the commit delivers again on restart rather than drops. Two residual cases are

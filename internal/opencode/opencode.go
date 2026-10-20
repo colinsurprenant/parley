@@ -56,7 +56,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -456,33 +455,44 @@ func (p *Pump) attachWithin(ctx context.Context, backoff time.Duration) error {
 // failure as it is.
 func holdForService(err error) error {
 	var stale *StaleServiceError
-	var se *StatusError
 	switch {
 	case IsTransport(err):
 		return err
 	case errors.Is(err, ErrNoService), errors.As(err, &stale):
 		return &TransportError{Op: "find the OpenCode service", Err: err}
-	case errors.As(err, &se) && se.Code >= http.StatusInternalServerError:
+	case IsServerError(err):
 		return &TransportError{Op: "ask the OpenCode service", Err: err}
 	}
 	return err
 }
 
-// awaitServer holds, after a request to the server failed to get an answer, until
+// awaitServer holds, after a request to the server got no answer or a 5xx, until
 // the server answers again, with the backoff the idle wait uses, and says so once
-// when it goes and once when it is back. Whatever else fails is the end of the wait.
-// The entry the pump is waiting on is in the server's database and survives its
-// restart.
-func (p *Pump) awaitServer(ctx context.Context, cause error) error {
-	p.logf("OpenCode is not answering (%v): the delivery is queued there, holding for the server", cause)
+// when the outage begins (l is what has been said of the wait). Whatever else fails
+// is the end of the wait. The entry the pump is waiting on is in the server's
+// database and survives its restart. It returns once the attach has succeeded; the
+// outage ends, and is said to, with the next look at the delivery that the server
+// answers in every read (answered), so that a service that is well for one read and
+// not for the next is one outage and not two.
+func (p *Pump) awaitServer(ctx context.Context, cause error, l *landing) error {
+	l.held = true
+	if !l.outage {
+		p.logf("OpenCode is not answering (%v): the delivery is queued there, holding for the server", cause)
+		l.outage = true
+	}
 	if !p.sleep(ctx, p.idlePoll) {
 		return ctx.Err()
 	}
-	if err := p.attachWithin(ctx, min(p.idlePoll*2, p.maxBackoff)); err != nil {
-		return err
+	return p.attachWithin(ctx, min(p.idlePoll*2, p.maxBackoff))
+}
+
+// answered notes that the server answered a whole look at the delivery, which ends
+// an outage that awaitServer began.
+func (p *Pump) answered(l *landing) {
+	if l.outage {
+		p.logf("OpenCode is back")
+		l.outage = false
 	}
-	p.logf("OpenCode is back")
-	return nil
 }
 
 // tooLongLimit is the bound a TooLongError says it was over.
