@@ -29,14 +29,14 @@ func serviceFile(t *testing.T, content string, mode os.FileMode) string {
 	return p
 }
 
-const goodService = `{"id":"1b0e1e96-26b8-470c-9aee-f6f58e02b495","version":"2.0.32","url":"http://127.0.0.1:51868","pid":79859,"password":"` + secret2 + `"}`
+const goodService = `{"id":"1b0e1e96-26b8-470c-9aee-f6f58e02b495","version":"2.0.32","url":"http://127.0.0.1:51868","pid":79859,"password":"` + testPassword + `"}`
 
 func TestReadServiceReadsWhatOpenCodeWrites(t *testing.T) {
 	s, err := ReadService(serviceFile(t, goodService, 0o600))
 	if err != nil {
 		t.Fatalf("ReadService = %v", err)
 	}
-	if s.ID != "1b0e1e96-26b8-470c-9aee-f6f58e02b495" || s.Version != "2.0.32" || s.URL != "http://127.0.0.1:51868" || s.PID != 79859 || s.Password != secret2 {
+	if s.ID != "1b0e1e96-26b8-470c-9aee-f6f58e02b495" || s.Version != "2.0.32" || s.URL != "http://127.0.0.1:51868" || s.PID != 79859 || s.Password != testPassword {
 		t.Fatalf("ReadService = %v (password %q)", s, s.Password)
 	}
 	// Unknown fields are tolerated, and a service without a password is read
@@ -69,8 +69,8 @@ func TestReadServiceRefusesWhatOnlyTheUsersOwnOpenCodeWrites(t *testing.T) {
 		"empty url":       {`{"url":"","pid":2}`, 0o600, "no url and pid"},
 		"no pid":          {`{"url":"http://127.0.0.1:1"}`, 0o600, "no url and pid"},
 		"a zero pid":      {`{"url":"http://127.0.0.1:1","pid":0}`, 0o600, "no url and pid"},
-		"a string pid":    {`{"url":"http://127.0.0.1:1","pid":"7","password":"` + secret2 + `"}`, 0o600, "not the JSON object"},
-		"a number url":    {`{"url":5,"pid":7,"password":"` + secret2 + `"}`, 0o600, "not the JSON object"},
+		"a string pid":    {`{"url":"http://127.0.0.1:1","pid":"7","password":"` + testPassword + `"}`, 0o600, "not the JSON object"},
+		"a number url":    {`{"url":5,"pid":7,"password":"` + testPassword + `"}`, 0o600, "not the JSON object"},
 		"trailing values": {goodService + ` {}`, 0o600, "not the JSON object"},
 	} {
 		_, err := ReadService(serviceFile(t, tc.content, tc.mode))
@@ -79,7 +79,7 @@ func TestReadServiceRefusesWhatOnlyTheUsersOwnOpenCodeWrites(t *testing.T) {
 			continue
 		}
 		// The refusal never carries the password, whatever was wrong with the file.
-		if strings.Contains(err.Error(), secret2) {
+		if strings.Contains(err.Error(), testPassword) {
 			t.Errorf("%s: the refusal holds the password: %v", name, err)
 		}
 	}
@@ -126,7 +126,7 @@ func TestAServiceNeverPrintsItsPassword(t *testing.T) {
 		fmt.Sprintf("%v", s), fmt.Sprintf("%+v", s), fmt.Sprintf("%#v", s), fmt.Sprintf("%s", s),
 		fmt.Sprintf("%v", &s), fmt.Sprintf("%#v", &s), ServiceWhere(s),
 	} {
-		if strings.Contains(out, secret2) {
+		if strings.Contains(out, testPassword) {
 			t.Errorf("the password is in %q", out)
 		}
 	}
@@ -137,14 +137,14 @@ func TestAServiceNeverPrintsItsPassword(t *testing.T) {
 
 func TestServiceClientHoldsToLoopback(t *testing.T) {
 	for _, u := range []string{"http://example.com:8080", "http://localhost:8080", "http://192.168.1.5:8080", "https://127.0.0.1:8080", "http://0.0.0.0:8080", "http://127.0.0.1:8080/api", "http://127.0.0.1"} {
-		_, err := Service{URL: u, PID: 1, Password: secret2}.Client()
+		_, err := Service{URL: u, PID: 1, Password: testPassword}.Client()
 		if err == nil {
 			t.Errorf("Service.Client accepted %s", u)
-		} else if strings.Contains(err.Error(), secret2) {
+		} else if strings.Contains(err.Error(), testPassword) {
 			t.Errorf("the refusal of %s holds the password: %v", u, err)
 		}
 	}
-	c, err := Service{URL: "http://127.0.0.1:51868", PID: 1, Password: secret2}.Client()
+	c, err := Service{URL: "http://127.0.0.1:51868", PID: 1, Password: testPassword}.Client()
 	if err != nil || c == nil {
 		t.Fatalf("Service.Client of a loopback service = %v", err)
 	}

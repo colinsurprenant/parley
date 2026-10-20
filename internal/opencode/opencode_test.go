@@ -508,6 +508,88 @@ func TestCancelAfterTheDeliveryShowedStillCommitsIt(t *testing.T) {
 	}
 }
 
+// cancelOnConfirm is a Client whose Message cancels the pump's context just before
+// it returns the message it was asked for, when the session has it: the shutdown
+// that lands between the read-back that confirms a delivery and the commit.
+type cancelOnConfirm struct {
+	Client
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	fired  bool
+}
+
+func (c *cancelOnConfirm) arm(cancel context.CancelFunc) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cancel = cancel
+}
+
+func (c *cancelOnConfirm) canceled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fired
+}
+
+func (c *cancelOnConfirm) Message(ctx context.Context, session, id string) (UserMessage, bool, error) {
+	msg, found, err := c.Client.Message(ctx, session, id)
+	if err == nil && found {
+		c.mu.Lock()
+		cancel := c.cancel
+		c.cancel, c.fired = nil, c.fired || cancel != nil
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}
+	return msg, found, err
+}
+
+// TestCancelBetweenTheConfirmationAndTheCommitStillCommitsTheDelivery: the shutdown
+// arrives with the read-back that proves the delivery, before the pump has
+// committed it. The session holds the message, so it was delivered; the pump
+// commits and saves the cursor all the same, and the next start does not post it
+// again.
+func TestCancelBetweenTheConfirmationAndTheCommitStillCommitsTheDelivery(t *testing.T) {
+	f := newFake(t)
+	cc := &cancelOnConfirm{Client: f.client()}
+	path := filepath.Join(t.TempDir(), "chat.ndjson")
+	dir, err := state.Open(t.TempDir(), selfNick, "file:"+path)
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	h := newHarnessOn(t, cc, path, dir, nil)
+	cc.arm(h.start())
+
+	h.peerSend(peerNick, "delivered, and the shutdown came with the confirmation")
+	if err := h.join(); err != nil {
+		t.Fatalf("Run returned %v on cancel, want nil", err)
+	}
+	if !cc.canceled() {
+		t.Fatalf("the context was never canceled at the confirmation; logs:\n%s", h.logs.String())
+	}
+	posts := f.postBodies()
+	if len(posts) != 1 {
+		t.Fatalf("%d prompts, want the one", len(posts))
+	}
+	if got, want := h.savedCursor(), string(h.read().Cursor); got == "" || got != want {
+		t.Fatalf("the saved cursor is %q, want the end of the delivery %q", got, want)
+	}
+
+	// The next start finds nothing to deliver, and delivers what comes after.
+	again := newHarnessOn(t, f.client(), path, dir, nil)
+	again.start()
+	again.peerSend(peerNick, "after the restart")
+	posts = f.waitPosts(2)
+	next := postedText(t, posts[1].Body)
+	if !strings.Contains(next, "after the restart") || strings.Contains(next, "the shutdown came") {
+		t.Fatalf("the delivery after the restart is\n%q\nwant the new message alone", next)
+	}
+	again.cursorPast(h.savedCursor())
+	if n := len(f.postBodies()); n != 2 {
+		t.Fatalf("%d prompts after the restart, want 2 in all", n)
+	}
+}
+
 func TestAnEmptyDeliveryIsCommittedAndPostsNothing(t *testing.T) {
 	f := newFake(t)
 	h := newHarness(t, f, func(c *Config) { c.Timeout = 100 * time.Millisecond })

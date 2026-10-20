@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/colinsurprenant/parley/internal/codex"
@@ -250,10 +251,40 @@ func probeFor(ctx context.Context, d time.Duration, bin string, args ...string) 
 	// it is capped, as on every other child-process path.
 	so, se := &limitBuffer{limit: maxProbeOutput}, &limitBuffer{limit: maxProbeOutput}
 	cmd.Stdout, cmd.Stderr = so, se
+	ownGroup(cmd)
 	// A descendant that inherited the pipes must not hold the report hostage.
 	cmd.WaitDelay = 2 * time.Second
 	err = cmd.Run()
+	if err != nil {
+		killGroup(cmd)
+	}
 	return so.String(), se.String(), err
+}
+
+// ownGroup makes the probe a process group of its own, which a timeout takes
+// whole. A harness's CLI may be a launcher that runs the program as a child, as
+// an npm install's is, and the default cancellation of CommandContext kills the
+// launcher alone and leaves the child that hangs on --version or --help. When the
+// wait delay expires Run returns without Cancel having run, which is why a probe
+// that failed is followed by killGroup.
+func ownGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+}
+
+// killGroup takes whatever is left of the process group of a probe that ended
+// badly: the launcher may have exited while a child still held the pipes, and a
+// group lives as long as it has a member. It is called after the command has been
+// waited for, so the group is the probe's own or empty.
+func killGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 }
 
 // describe is how a failed probe reads in a report line: the exit status, and

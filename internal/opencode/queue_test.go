@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -489,6 +490,64 @@ func TestADeliveryOverTheBoundGoesOverAsAStubTheReadBackConfirms(t *testing.T) {
 	h.cursorPast("")
 	if users := f.userTexts(); len(users) != 1 || users[0] != text {
 		t.Fatalf("the session holds %d bytes of user text, want the stub once", len(strings.Join(users, "")))
+	}
+}
+
+// TestACoalescedDeliveryIsBoundedAndTheMessagesPastTheBoundAreStubs: the backlog
+// of a long turn goes over as one delivery, and one delivery is not unbounded.
+// Each message here is within its own bound, and together they pass the bound of a
+// delivery: the ones that fit go whole, the one past it goes as a stub under its own
+// header, the read-back confirms the text that was posted, and the cursor moves past
+// every message, the stubbed one included.
+func TestACoalescedDeliveryIsBoundedAndTheMessagesPastTheBoundAreStubs(t *testing.T) {
+	f := newFake(t)
+	f.set(func() { f.manualBusy = true })
+	h := newHarness(t, f, nil)
+	h.start()
+
+	h.peerSend(peerNick, "first, small")
+	waitActiveReads(t, f, h, 3)
+	body := strings.Repeat("z", 100<<10)
+	for i := 0; i < 6; i++ {
+		h.peerSend(peerNick, fmt.Sprintf("%d %s", i, body))
+	}
+	if n := len(f.postBodies()); n != 0 {
+		t.Fatalf("%d prompt(s) posted into a busy session", n)
+	}
+	f.set(func() { f.manualBusy = false })
+
+	posts := f.waitPosts(1)
+	got := postedText(t, posts[0].Body)
+	if len(got) > maxDeliveryBytes {
+		t.Fatalf("the delivery is %d bytes, over its bound %d", len(got), maxDeliveryBytes)
+	}
+	if n := strings.Count(got, "[parley] from=claude-b id="); n != 7 {
+		t.Fatalf("%d messages in the delivery, want all 7 (one of them a stub)", n)
+	}
+	if n := strings.Count(got, "body withheld"); n != 1 {
+		t.Fatalf("%d stubs, want the one past the bound:\n%s", n, got[max(0, len(got)-700):])
+	}
+	if !strings.Contains(got, fmt.Sprintf("this delivery is over its %d byte bound", maxDeliveryBytes)) {
+		t.Fatalf("the stub does not say the delivery was over its bound:\n%s", got[max(0, len(got)-700):])
+	}
+	if !strings.Contains(got, "\n  first, small\n") || !strings.Contains(got, "\n  4 zzz") || strings.Contains(got, "\n  5 zzz") {
+		t.Fatalf("the delivery does not hold the first five whole and not the sixth: first %v, 4th %v, 5th %v",
+			strings.Contains(got, "\n  first, small\n"), strings.Contains(got, "\n  4 zzz"), strings.Contains(got, "\n  5 zzz"))
+	}
+	// The read-back compared the session's message with what was posted, and
+	// the stub stands for the message past the bound: the stream is consumed to its end.
+	if got, want := h.cursorPast(""), string(h.read().Cursor); got != want {
+		t.Fatalf("the saved cursor is %q, want the end of the backlog %q", got, want)
+	}
+	if users := f.userTexts(); len(users) != 1 || users[0] != got {
+		t.Fatalf("the session does not hold the delivery once, byte for byte")
+	}
+	if !strings.Contains(h.logs.String(), "1 of 7 message(s) go over as stubs") {
+		t.Fatalf("the stub was not logged:\n%s", h.logs.String())
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := len(f.postBodies()); n != 1 {
+		t.Fatalf("%d prompts, want the one delivery", n)
 	}
 }
 

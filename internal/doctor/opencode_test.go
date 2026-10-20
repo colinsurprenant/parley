@@ -239,8 +239,8 @@ func TestOpenCodeOtherThanTheVerifiedOneWarns(t *testing.T) {
 }
 
 // TestOpenCodeOtherThanTwoIsAFAILWithTheWayOut: the pump refuses a server that is
-// not a 2, so the report says so on the version line, and does not read the CLI. A
-// 1.x is told where OpenCode 2 comes from.
+// not a 2, or whose version it cannot read, so the report says so on the version
+// line, and does not read the CLI. A 1.x is told where OpenCode 2 comes from.
 func TestOpenCodeOtherThanTwoIsAFAILWithTheWayOut(t *testing.T) {
 	for _, tc := range []struct{ version, want string }{
 		{"1.18.30", "the legacy 1.x"},
@@ -249,6 +249,7 @@ func TestOpenCodeOtherThanTwoIsAFAILWithTheWayOut(t *testing.T) {
 		{"opencode v3.0.0", "not a major version parley speaks to"},
 		{"10.0.0", "not a major version parley speaks to"},
 		{"0.9.0", "not a major version parley speaks to"},
+		{"development", "holds no version parley can read"},
 	} {
 		bin, log := fakeOpenCode{version: tc.version}.install(t, t.TempDir())
 		rs := Check(context.Background(), Options{OpenCode: true, OpenCodeBin: bin})
@@ -285,7 +286,7 @@ func TestOpenCodeVersionIsReadFromEitherPrintedForm(t *testing.T) {
 		{"v" + OpenCodeVerified, OK, "the version last verified"},
 		{OpenCodeVerified, OK, "the version last verified"},
 		{"opencode v2.9.0", Warn, "newer than " + OpenCodeVerified},
-		{"opencode", Warn, "holds no version"},
+		{"opencode", Fail, "holds no version parley can read"},
 	} {
 		bin, _ := fakeOpenCode{version: tc.out}.install(t, t.TempDir())
 		rs := Check(context.Background(), Options{OpenCode: true, OpenCodeBin: bin})

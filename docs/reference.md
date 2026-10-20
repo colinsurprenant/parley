@@ -959,7 +959,8 @@ that links the project's install page. `--harness claude`, `--harness codex` or
 without one, and OpenCode only when named, so a machine without it is not failed
 for lacking it; the server and ergo are checked either way. OpenCode must be a 2.x
 (the legacy 1.x is a `FAIL` that says where OpenCode 2 comes from, and so is any
-other major version, since the pump refuses a server of it); its version is read
+other major version or a version that cannot be read, since the pump refuses a
+server of it); its version is read
 against the one last verified (2.0.32), a different 2.x is a `warn` that says
 parley was last verified against that one in simulation mode and not yet on a live
 model, that a newer 2.x is expected to work, and what to do if a session

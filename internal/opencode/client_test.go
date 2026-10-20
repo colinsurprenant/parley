@@ -8,14 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 const (
 	testMsgID = "msg_157612985001ZP97n73ncfxOnr"
-	// secret2 is a password that must not show up in anything the client says.
-	secret2 = "p4ssw0rd-that-must-stay-secret"
+	// testPassword is a password that must not show up in anything the client says.
+	testPassword = "p4ssw0rd-that-must-stay-secret"
 )
 
 // serving starts a server with the given handler and returns a client for it.
@@ -23,7 +24,7 @@ func serving(t *testing.T, h http.HandlerFunc) *HTTPClient {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	c, err := NewHTTPClient(srv.URL, Auth{Password: secret2}, WithRequestTimeout(2*time.Second))
+	c, err := NewHTTPClient(srv.URL, Auth{Password: testPassword}, WithRequestTimeout(2*time.Second))
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestTheClientSendsTheCredentialsToLoopbackAndSaysNothingOfThem(t *testing.T
 		_, _ = io.WriteString(w, `{"_tag":"UnauthorizedError","message":"Authentication required"}`)
 	})
 	_, err := c.Info(context.Background())
-	if !ok || user != ServiceUser || pass != secret2 {
+	if !ok || user != ServiceUser || pass != testPassword {
 		t.Fatalf("credentials %q %q %v", user, pass, ok)
 	}
 	var se *StatusError
@@ -277,13 +278,13 @@ func TestTheClientSendsTheCredentialsToLoopbackAndSaysNothingOfThem(t *testing.T
 			t.Errorf("the 401 does not say %q: %v", want, err)
 		}
 	}
-	auth := Auth{Password: secret2}
+	auth := Auth{Password: testPassword}
 	for _, out := range []string{
 		err.Error(),
 		fmt.Sprintf("%v %+v %#v %s", auth, auth, auth, auth),
 		fmt.Sprintf("%v %+v %#v", &auth, &auth, &auth),
 	} {
-		if strings.Contains(out, secret2) {
+		if strings.Contains(out, testPassword) {
 			t.Errorf("the password is in %q", out)
 		}
 	}
@@ -292,7 +293,7 @@ func TestTheClientSendsTheCredentialsToLoopbackAndSaysNothingOfThem(t *testing.T
 	for _, u := range []string{"http://example.com:80", "http://localhost:80", "http://10.0.0.1:80", "https://127.0.0.1:80", "http://127.0.0.1", "http://user@127.0.0.1:80", "http://0.0.0.0:80"} {
 		if _, err := NewHTTPClient(u, auth); err == nil {
 			t.Errorf("NewHTTPClient accepted %s", u)
-		} else if strings.Contains(err.Error(), secret2) {
+		} else if strings.Contains(err.Error(), testPassword) {
 			t.Errorf("the refusal of %s holds the password: %v", u, err)
 		}
 	}
@@ -322,5 +323,76 @@ func TestAnUnreachableServerIsADialError(t *testing.T) {
 	f.stop()
 	if _, err := c.Info(context.Background()); !IsDial(err) {
 		t.Fatalf("Info of a server that is down = %v, want a dial error", err)
+	}
+}
+
+// TestATimeoutIsATransportErrorButNotADial: a server that accepts the connection
+// and never answers is a transport failure, and not a failure to connect. The
+// difference is the pump's rule for a post: one that never connected sent nothing
+// and is started over under a fresh id, while one that got no answer may have been
+// admitted and is posted again under the same id.
+func TestATimeoutIsATransportErrorButNotADial(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	// Cleanups run last in, first out: the handler is let go before the server
+	// waits for it.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	c, err := NewHTTPClient(srv.URL, Auth{}, WithRequestTimeout(80*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, call := range map[string]func() error{
+		"Info":   func() error { _, err := c.Info(context.Background()); return err },
+		"Prompt": func() error { return c.Prompt(context.Background(), testSession, testMsgID, "hello") },
+	} {
+		start := time.Now()
+		err := call()
+		if !IsTransport(err) || IsDial(err) {
+			t.Errorf("%s of a server that never answers = %v, want a transport error that is not a dial", name, err)
+		}
+		if time.Since(start) > 5*time.Second {
+			t.Errorf("%s took %s against an 80ms timeout", name, time.Since(start))
+		}
+	}
+}
+
+// TestACanceledContextIsNotATransportError: the caller's cancel is the shutdown, and
+// says nothing about the server, so it is not a failure to hold for.
+func TestACanceledContextIsNotATransportError(t *testing.T) {
+	calls := map[string]func(*HTTPClient, context.Context) error{
+		"Info":   func(c *HTTPClient, ctx context.Context) error { _, err := c.Info(ctx); return err },
+		"Prompt": func(c *HTTPClient, ctx context.Context) error { return c.Prompt(ctx, testSession, testMsgID, "hello") },
+	}
+	for name, call := range calls {
+		// Canceled before the request is made.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := call(newFake(t).client(), ctx); !errors.Is(err, context.Canceled) || IsTransport(err) {
+			t.Errorf("%s on a canceled context = %v", name, err)
+		}
+
+		// And canceled while the request is in flight.
+		release := make(chan struct{})
+		started := make(chan struct{})
+		var once sync.Once
+		c := serving(t, func(http.ResponseWriter, *http.Request) {
+			once.Do(func() { close(started) })
+			<-release
+		})
+		t.Cleanup(func() { close(release) })
+		ctx, cancel = context.WithCancel(context.Background())
+		errc := make(chan error, 1)
+		go func() { errc <- call(c, ctx) }()
+		<-started
+		cancel()
+		select {
+		case err := <-errc:
+			if !errors.Is(err, context.Canceled) || IsTransport(err) {
+				t.Errorf("%s canceled in flight = %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s: a canceled request did not return", name)
+		}
 	}
 }
