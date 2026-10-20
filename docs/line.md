@@ -364,7 +364,8 @@ against 2.0.32 in OpenCode's simulation mode, which blocks all model traffic, an
    under `$TMPDIR`, outside the checkout, and "Allow once" asks again on the next
    reply (all 11 writes of a live run asked): answer **"Allow always"** for the
    reply directory in the TUI, where the ask appears, so that later replies do not
-   stop on one. That "always" holds for the later writes was not exercised live.
+   stop on one. On 1.18.30 "always" lasts as long as the TUI's server runs: after a
+   restart of the TUI, the next write asks once more (seen live).
    **On 2.x it asks nothing**: `external_directory` is allowed by default there
    (`GET /api/agent/build` on a 2.0.32 server shows the base policy, and the
    OpenCode permissions docs say "the default policy allows `external_directory`"),

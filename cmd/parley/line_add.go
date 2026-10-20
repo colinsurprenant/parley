@@ -1044,7 +1044,7 @@ func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
 	next("Check that the session has loaded the parley-line skill. OpenCode loads a skill with its skill tool and has no /parley-line\n   command; if its answer to the primer below does not show it did, ask it to load the skill.")
 	fmt.Fprintf(&b, "Notes:\n")
 	fmt.Fprintf(&b, "  The reply file, %s, is outside the session's checkout, so each write of it raises OpenCode's external_directory ask in the TUI:\n", q(r.replyFile))
-	b.WriteString("  answer \"Allow always\" for the reply directory, since \"Allow once\" asks again on every reply.\n")
+	b.WriteString("  answer \"Allow always\" for the reply directory, since \"Allow once\" asks again on every reply; \"always\" asks once more after the TUI restarts.\n")
 	b.WriteString("  The session was made by opencode run, which denies it OpenCode's question tool and plan mode for that session (a known limit of creating it that way).\n")
 	b.WriteString("  OPENCODE_SERVER_PASSWORD, if you use one, must be set for both commands, and OPENCODE_SERVER_USERNAME too if it is not opencode.\n")
 	b.WriteString("  Without it the server on --port answers any local process.\n")
