@@ -176,7 +176,7 @@ module. The sessions take it from there and come back to the chair for the two
 calls the spec could not settle: five posts in seven minutes, sped up eight
 times, with the wait while `claude` wrote the spec cut short.
 
-VIDEO_URL_PENDING
+https://github.com/user-attachments/assets/14dc1f30-6f49-4eca-a665-fcfbd94a317c
 
 An earlier run of a similar task, where the review caught a bug. Posts are cut
 at `[…]`.
