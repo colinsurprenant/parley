@@ -495,12 +495,12 @@ func (p *Pump) logf(format string, a ...any) {
 }
 
 // CheckVersion refuses a server this front cannot speak to: one whose major
-// version is anything but 2, or whose version cannot be read. The front speaks
-// OpenCode 2's HTTP API and was verified on 2.0.32 (doctor.OpenCodeVerified). OpenCode 1,
-// the legacy line, has no such API, and a front that guessed at one could deliver
-// into the wrong place or nowhere; a 0 or a 3 is a version it was never shown, and
-// no more a thing to guess at. The version comes from the server, so what is quoted
-// of it is bounded.
+// version is anything but 2, or whose version cannot be read. A 1 is the legacy
+// line, which has no HTTP API of this shape, and a front that guessed at one could
+// deliver into the wrong place or nowhere; a 0 or a 3 is a version it was never
+// shown, and no more a thing to guess at. Any 2.x passes (doctor.OpenCodeVerified
+// is the one it was last verified on). The version comes from the server, so what
+// is quoted of it is bounded.
 func CheckVersion(version string) error {
 	major, ok := majorVersion(version)
 	if !ok {

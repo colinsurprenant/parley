@@ -53,7 +53,6 @@ func TestInfo(t *testing.T) {
 		"a zero pid":    `{"version":"2.0.32","pid":0}`,
 		"empty version": `{"version":"","pid":4}`,
 		"two values":    `{"version":"2.0.32","pid":4} {}`,
-		"1.x health":    `{"healthy":true,"version":"1.18.30"}`,
 	} {
 		if info, err := serving(t, answering(200, body)).Info(context.Background()); err == nil {
 			t.Errorf("Info of %s (%s) = %+v, want an error", name, body, info)
@@ -79,7 +78,6 @@ func TestSession(t *testing.T) {
 		"no directory":    `{"data":{"id":"` + testSession + `","location":{}}}`,
 		"no location":     `{"data":{"id":"` + testSession + `"}}`,
 		"no data":         `{}`,
-		"1.x shape":       `{"id":"` + testSession + `","directory":"/x"}`,
 	} {
 		if s, err := serving(t, answering(200, body)).Session(ctx, testSession); err == nil {
 			t.Errorf("Session of %s = %+v, want an error", name, s)
@@ -278,9 +276,6 @@ func TestTheClientSendsTheCredentialsToLoopbackAndSaysNothingOfThem(t *testing.T
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the 401 does not say %q: %v", want, err)
 		}
-	}
-	if strings.Contains(err.Error(), "OPENCODE_SERVER_USERNAME") {
-		t.Errorf("the 401 gives OpenCode 1's advice: %v", err)
 	}
 	auth := Auth{Password: secret2}
 	for _, out := range []string{

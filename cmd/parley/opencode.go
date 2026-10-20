@@ -37,9 +37,10 @@ const sessionAuto = "auto"
 // cmdCodex does, and differs in where the delivery goes and in what is checked
 // before anything is opened: the server has to be there, be one this front speaks
 // to, and know the session, and a pump pointed at nothing is a bad invocation that
-// must cost the nick no IRC account, no connection and no lock to say so. Nothing is printed on stdout:
-// the deliveries go into the OpenCode session, and everything this process has
-// to say goes to stderr, so the terminal running it stays a log and nothing else.
+// must cost the nick no IRC account, no connection and no lock to say so. Nothing
+// is printed on stdout: the deliveries go into the OpenCode session, and everything
+// this process has to say goes to stderr, so the terminal running it stays a log and
+// nothing else.
 func cmdOpencode(args []string) error {
 	fs := flag.NewFlagSet("parley opencode", flag.ContinueOnError)
 	fs.Usage = func() {

@@ -13,7 +13,7 @@ import (
 
 // The links skills/install.sh makes, one per skill under each root: ~/.claude
 // for Claude Code, ~/.agents for the agentskills.io convention Codex reads.
-// OpenCode 1.18.30 loads a SKILL.md from both. TestSkillLinksAreTheOnesInstallMakes
+// OpenCode 2 loads a SKILL.md from both. TestSkillLinksAreTheOnesInstallMakes
 // keeps these in step with the script.
 var (
 	claudeSkillRoot = []string{".claude", "skills"}

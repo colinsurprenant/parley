@@ -29,25 +29,25 @@ import (
 // The versions parley was last verified against, live, by a person: the Codex
 // CLI and ergo by `parley doctor --live`, Claude Code at a table (a live table
 // ran end to end on 2.1.296), and OpenCode 2 against its help texts and a server
-// in the simulation mode that blocks all model traffic (2.0.32; no model turn has
-// run on it yet). A different version is not a failure, except an OpenCode of a
-// major version other than 2, which parley does not speak to: the report says it
-// may work and what to do if a table or a build misbehaves; to the maintainer it
-// is the cue to verify again, and then to move the constant (and the help
-// fixtures under testdata, named for the version they were read from).
-// ErgoVerified is the ergo the embedded configuration
-// (internal/ergoconf/ircd.yaml) was written for.
-// OpenCodeVerifiedNote is the one phrase that says what OpenCode parley was last
-// verified against, for the usage text, the runbook and the doctor's remedy; the
-// docs say it in the same words, and a test holds them to OpenCodeVerified.
-const OpenCodeVerifiedNote = "last verified against OpenCode " + OpenCodeVerified + ", in OpenCode's simulation mode (which blocks all model traffic) and not yet on a live model"
-
+// in the simulation mode that blocks all model traffic (no model turn has run on
+// it yet). A different version is not a failure, except an OpenCode of a major
+// version other than 2, which parley does not speak to: the report says it may
+// work and what to do if a table or a build misbehaves; to the maintainer it is
+// the cue to verify again, and then to move the constant (and the help fixtures
+// under testdata, named for the version they were read from).
+// ErgoVerified is the ergo the embedded configuration (internal/ergoconf/ircd.yaml)
+// was written for.
 const (
 	CodexVerified    = "0.161.0"
 	ClaudeVerified   = "2.1.296"
 	OpenCodeVerified = "2.0.32"
 	ErgoVerified     = "2.19.1"
 )
+
+// OpenCodeVerifiedNote is the one phrase that says what OpenCode parley was last
+// verified against, for the usage text, the runbook and the doctor's remedy; the
+// docs say it in the same words, and a test holds them to OpenCodeVerified.
+const OpenCodeVerifiedNote = "last verified against OpenCode " + OpenCodeVerified + ", in OpenCode's simulation mode (which blocks all model traffic) and not yet on a live model"
 
 // Where a person installs each of them, each the project's own install page
 // (ergo's is the one its README sends people to). A report that finds a binary

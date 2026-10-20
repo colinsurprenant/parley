@@ -36,8 +36,8 @@ func runParleyEnvIn(t *testing.T, dir string, env []string, args ...string) resu
 }
 
 // fakeOpenCodeBin writes a stand-in for the opencode CLI in dir: --version
-// prints version and the help texts are the real 1.18.30 ones, printed on
-// stderr as yargs does. The fixtures are named by absolute path, since the
+// prints version and the help texts are the real ones of the version last
+// verified, printed on stderr as yargs does. The fixtures are named by absolute path, since the
 // script runs from the system temp directory.
 func fakeOpenCodeBin(t *testing.T, dir, version string) string {
 	t.Helper()
@@ -440,8 +440,8 @@ func TestDoctorOpenCodeCanBeAddedToTheOthers(t *testing.T) {
 }
 
 // TestDoctorOpenCodeIsSpokenToOnlyAsATwo: the front speaks OpenCode 2's HTTP API
-// and 2.0.32 is the 2.x verified; the legacy 1.x is a FAIL that says where OpenCode
-// 2 comes from, and any other major version is a FAIL.
+// and the version last verified passes; the legacy 1.x is a FAIL that says where
+// OpenCode 2 comes from, and any other major version is a FAIL.
 func TestDoctorOpenCodeIsSpokenToOnlyAsATwo(t *testing.T) {
 	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
 	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "opencode v"+doctor.OpenCodeVerified)
@@ -467,7 +467,7 @@ func TestDoctorOpenCodeIsSpokenToOnlyAsATwo(t *testing.T) {
 }
 
 // TestDoctorOpenCodeADifferentTwoVersionIsAWarning: a 2.x other than the verified
-// one warns, and says what to install if a session misbehaves.
+// one warns, and says what parley was last verified against.
 func TestDoctorOpenCodeADifferentTwoVersionIsAWarning(t *testing.T) {
 	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
 	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "2.9.0")

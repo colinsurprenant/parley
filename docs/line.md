@@ -40,8 +40,8 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
 `~/.agents/skills`; the line skill is then `/parley-line` in Claude Code and
 `$parley-line` in Codex, and OpenCode, which reads both roots, loads it with its
 skill tool. `parley doctor` checks the links with the rest. A line takes OpenCode
-2.x sessions: install it with `brew install opencode` (Homebrew core) or `npm i -g
-@opencode/cli`. The legacy 1.x (npm's `opencode-ai`, the installer at
+sessions, on OpenCode 2: install it with `brew install opencode` (Homebrew core) or
+`npm i -g @opencode/cli`. The legacy 1.x (npm's `opencode-ai`, the installer at
 `opencode.ai/install`) has no API parley can speak to, and `parley doctor` fails
 it. Parley was last verified against OpenCode 2.0.32 in OpenCode's simulation mode,
 which blocks all model traffic, and **not yet on a live model**: run one line live
@@ -128,7 +128,7 @@ before relying on it; a newer 2.x is expected to work.
    nothing changed, a nick that is invalid, reserved (`tables`, `builds`, `lines`),
    the chair's, or already in the line, all without regard to ASCII case; a model
    outside the charset `table new` takes (so `provider/model#variant`, which OpenCode
-   2 takes, is not given here), or for OpenCode one that is not `provider/model`; a `<checkout>` that is not an absolute, existing directory,
+   takes, is not given here), or for OpenCode one that is not `provider/model`; a `<checkout>` that is not an absolute, existing directory,
    or holds a `$`; a Codex or OpenCode session with `$TMPDIR` inside the checkout;
    and a launch file that is in the checkout and is not this line's, below. A nick whose lock a running session or pump
    holds is refused with exit 1, and so is a machine that `parley doctor`'s static
@@ -257,29 +257,31 @@ before relying on it; a newer 2.x is expected to work.
      quotes in it, and the session's first message should be the primer as it is.
      Your environment is passed on as it is. The turn must have completed: every
      event of the run must carry that id (an event with none fails the turn), and
-     the last step must end with `stop`. If the turn did not complete, or did not end
-     within the limit, or you interrupt the add, `opencode session delete <id>` is run
-     from the checkout and the add fails and undoes itself. The id is known before
-     the run, so that delete is made whatever the run did and nothing is searched
-     for; an answer of "Session not found", for a run that failed before it made the
-     session, is not a failure. The id is recorded for `--session auto`, and printed
-     with the session's answer to the primer.
-   - The run starts the user's one background service if none runs, and the session
-     lives in it. The service detaches itself (checked on 2.0.32: its own process
-     group and session, stdin and stdout on `/dev/null`, stderr not on parley's
-     pipes), so a run that parley stops by taking its process group, on a timeout or
-     an interrupt, leaves the service and the TUIs on it alone, and a run that
-     succeeds is not held up by it.
-   - **The run adds no rule to the session** (the session has no `permissions`,
-     read from the source and from a session it made). `opencode run` has no terminal
-     to ask in, so it answers the asks of its own turn by rejecting each one, with a
+     the last step must end with `stop`. A step that began and never finished fails
+     the turn too. If the turn did not complete, or did not end within the limit, or
+     you interrupt the add, `opencode session delete <id>` is run from the checkout
+     and the add fails and undoes itself. The id is known before the run, so that
+     delete is made whatever the run did; an answer of "Session not found", for a
+     run that failed before it made the session, is not a failure. The id is
+     recorded for `--session auto`, and printed with the session's answer to the
+     primer.
+   - The run starts OpenCode's background service, one per user, if none runs, and
+     the session lives in it. The service detaches itself (its own process group and
+     session, its stdio on `/dev/null`), so a run that parley stops by taking its
+     process group, on a timeout or an interrupt, leaves the service and the TUIs on
+     it alone, and a run that succeeds is not held up by it.
+   - **The session carries no permission rules of its own.** `opencode run` creates
+     it with an id, an agent, a model and a directory, and nothing else
+     (`packages/cli/src/session-target.ts` in the OpenCode source), so there are no
+     denies on it. What `run` does about permissions is for its own turn: with no
+     terminal to ask in, it answers each permission ask by rejecting it, with a
      message that tells the model to carry on without the action, and cancels each
      question the same way. From the first message you send it, the session's agent
      and your OpenCode configuration decide.
 
    Then it prints the commands that remain, in this order, because the pump checks
    as it starts that the server answers and knows the session. In the session's
-   checkout, the TUI, which reaches the one background service (and starts it if none
+   checkout, the TUI, which reaches the background service (and starts it if none
    runs):
 
    ```
@@ -305,40 +307,50 @@ before relying on it; a newer 2.x is expected to work.
    pump holds while the file is absent or the service is starting, and stops on a 401
    after reading the file again. The service's password is the file's, sent to that
    address as HTTP basic credentials under the user `opencode` and never printed, so
-   there is nothing to set. For an `opencode serve` you started yourself, give
-   `--port` and set `OPENCODE_PASSWORD` (or the older `OPENCODE_SERVER_PASSWORD`) to
-   the password it was started with.
+   there is nothing to set. For an `opencode serve --port <n>` you started yourself,
+   give `--port <n>` and set `OPENCODE_PASSWORD` (or the older
+   `OPENCODE_SERVER_PASSWORD`) to the password it was started with.
 
    The pump takes the same breaker as the other fronts and registers the nick. It
    posts each delivery into the session as one user message, the peer header
-   included, **only while the session is idle**: OpenCode queues the post and starts
-   a turn of its own for it, but the pump waits for an idle session first, so that
-   what arrives while the session works is held in the stream and goes over as one
-   delivery when the turn ends. A delivery counts as made once the message the pump
-   posted under its own id holds exactly those bytes, and a crash delivers again
-   rather than drop (`docs/reference.md`, "opencode: the OpenCode front"). The
-   delivery is queued and is never merged into a turn that runs; the other way round,
-   a prompt you submit as a steer while a delivery's turn runs is folded into that
-   turn, as any steer is. If you interrupt the session while a delivery waits in its
-   inbox, the delivery stays parked there and the pump says so once and waits: it goes
-   over when you resume the session, and the pump never steers it, which would put it
-   into whatever turn runs next. If you delete a queued delivery in the TUI, the pump
-   counts it as handed over and does not send it again. A delivery is posted whole,
-   with one bound: a message whose rendering is over 128 KiB, and a message that would
-   take one delivery past 512 KiB, is not posted, and a stub takes its place, its own
-   header over a one-line notice naming it, while the full text stays in the stream
-   for you to read.
+   included, **only while the session is idle**: what arrives while the session
+   works is held in the stream and goes over as one delivery when the turn ends.
+   The post is queued, as a turn of its own: OpenCode runs it after the turn that is
+   under way, and never merges it into a turn that runs. A delivery counts as made
+   once the message the pump posted under its own id holds exactly those bytes, and
+   a crash delivers again rather than drop (`docs/reference.md`, "opencode: the
+   OpenCode front"). If you interrupt the session while a delivery waits in its
+   inbox, the delivery stays parked there and the pump says so once and waits: it
+   goes over when you resume the session, and the pump never steers it, which would
+   put it into whatever turn runs next. If you delete a queued delivery in the TUI,
+   the pump counts it as handed over and does not send it again. A delivery is
+   posted whole, with one bound: a message whose rendering is over 128 KiB, and a
+   message that would take one delivery past 512 KiB, is not posted, and a stub
+   takes its place, its own header over a one-line notice naming it, while the full
+   text stays in the stream for you to read.
+
+   Two residual cases are documented and not closed. A prompt you submit as a steer
+   while a delivery's turn runs is folded into that turn, as any steer is. And a post
+   whose answer is lost is posted again under the same id; if you deleted the
+   admitted entry in that instant, the second post admits it once more, since
+   OpenCode keeps no tombstone of a cancelled id, and the delivery goes over,
+   once, although you took it back.
 
    Two things the pump does not do for you. **Writing the reply file asks nothing**:
-   `external_directory` is allowed by default in OpenCode (`GET /api/agent/build`
-   shows the base policy, and the OpenCode permissions docs say "the default policy
-   allows `external_directory`"), so the reply directory, which is under `$TMPDIR`,
-   outside the checkout, is written without a prompt. To be asked, add this rule to
-   your `opencode.jsonc` (rules are ordered and the last match wins, so a narrower
-   `allow` after it can exempt the reply directory):
+   OpenCode's default policy allows `external_directory`, so the reply directory,
+   which is under `$TMPDIR`, outside the checkout, is written without a prompt
+   (the OpenCode permissions documentation says so, and `GET /api/agent/build` shows
+   the base policy). To be asked, add a rule to your `opencode.jsonc`. Rules are
+   ordered and the last match wins, so a narrower `allow` after the `ask` can
+   exempt the reply directory:
 
    ```
-   { "permissions": [ { "action": "external_directory", "resource": "*", "effect": "ask" } ] }
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "permissions": [
+       { "action": "external_directory", "resource": "*", "effect": "ask" },
+     ],
+   }
    ```
 
    And there is no `/parley-line`: OpenCode loads a skill with its skill tool, which
@@ -476,9 +488,9 @@ before it has read the others', run a table instead: a line has no seal.
   arrives, before it has posted itself; the breaker is the only gate.
 - **An OpenCode session hears nothing while it works.** The pump posts only into
   an idle session, so what arrives during a turn waits in the stream, and goes
-  over as one delivery when the turn ends. A turn that waits on an
-  `external_directory` ask, or on any other question to you in the TUI, holds
-  every delivery behind it until you answer. A TUI that is closed or restarted
+  over as one delivery when the turn ends. A turn that waits on a permission ask
+  (the `external_directory` one, if you restored it) or on any other question to
+  you in the TUI holds every delivery behind it until you answer. A TUI that is closed or restarted
   stops nothing: the service outlives the TUI. A service that is stopped is waited
   for: the pump holds the deliveries, tries again and delivers once it answers, and
   when it comes back, at another address or not, the pump finds it again from its

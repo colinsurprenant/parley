@@ -65,8 +65,8 @@ two-peer, and a third is refused, naming that. The order of the two flags
 counts: the first peer is the one you hand message one to, listed first on its
 `participants:` line, and the second is the **integrator**, the peer that merges
 the two branches at the end (see "After the build"), unless the task names
-another. OpenCode peers are not supported yet (a line takes OpenCode sessions, see
-`docs/line.md`); a build's are next on the list. A model is at most 128 bytes of
+another. OpenCode peers are not supported for now (a line takes OpenCode sessions, see
+`docs/line.md`), and open to explore. A model is at most 128 bytes of
 ASCII letters and digits and `. _ - : / @ [ ] +`,
 which holds the ids Claude Code and Codex take (`opus`, `sonnet[1m]`,
 `claude-sonnet-4-5-20250929`, `us.anthropic.claude-sonnet-4-5-20250929-v1:0`,

@@ -14,12 +14,13 @@ import (
 const openCodeRemedy = "Parley was " + OpenCodeVerifiedNote + "; a newer 2.x is expected to work, and an older one may lack something it needs (" + OpenCodeInstallURL + "). If an OpenCode session misbehaves, note the OpenCode version it ran."
 
 // openCodeSurfaces are the flags and subcommands of OpenCode's CLI that parley
-// uses or tells a human to use, read from the 2.0.32 help. The default command is
-// the TUI, which reaches the background service, and -s/--session is how it
-// continues a session; run is how a session is started with its primer as the first
-// message, under the id it is given with -s/--session (which creates the session if
-// it does not exist); session delete is how it is removed again, and nothing is
-// searched for: the id is parley's own.
+// uses or tells a human to use, read from the help of the version last verified.
+// The default command is the TUI, which reaches the background service, and
+// -s/--session is how it continues a session; run is how a session is started with
+// its primer as the first message, under the id it is given with -s/--session
+// (which creates the session if it does not exist); session delete is how it is
+// removed again, and session list is how a human finds an id. Nothing is searched
+// for: the id is parley's own.
 var openCodeSurfaces = []surface{
 	{label: "opencode tui", flags: []string{"-s/--session"}},
 	{cmd: []string{"run"}, flags: []string{"--format", "-m/--model", "--title", "-s/--session"}},
@@ -27,8 +28,8 @@ var openCodeSurfaces = []surface{
 }
 
 // OpenCodeVersion is the version number in what opencode --version printed:
-// "opencode v2.0.32" (the legacy 1.x prints it bare, "1.18.30"). It is empty if
-// there is none.
+// "opencode v2.0.32" (a bare "1.18.30", as the legacy 1.x prints it, is read too, so
+// that it can be refused). It is empty if there is none.
 func OpenCodeVersion(stdout string) string { return versionRE.FindString(stdout) }
 
 // checkOpenCode is the static OpenCode check: the binary, its version, and the

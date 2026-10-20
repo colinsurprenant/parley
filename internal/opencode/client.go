@@ -106,7 +106,7 @@ var ErrSessionNotFound = errors.New("opencode: session not found")
 // anything; for any other transport failure of a POST, what the server did with
 // the request is not known.
 type TransportError struct {
-	Op   string // the request, e.g. "GET /session/status"
+	Op   string // the request, e.g. "GET /api/session/active"
 	Err  error
 	Dial bool
 }
@@ -146,10 +146,9 @@ func (e *StatusError) Error() string {
 	return s
 }
 
-// InstallHint says how to get an OpenCode this front speaks to. A package manager
-// or an installer may hand out the legacy 1.x, which has no API this front can
-// speak to: the legacy npm package opencode-ai and the installer at
-// opencode.ai/install give 1.x.
+// InstallHint says how to get an OpenCode this front speaks to. The names matter:
+// the legacy npm package opencode-ai and the installer at opencode.ai/install hand
+// out OpenCode 1, which has no API this front can speak to.
 const InstallHint = "install OpenCode 2: `brew install opencode` (Homebrew core), or `npm i -g @opencode/cli`"
 
 // Auth is the HTTP basic credentials of an OpenCode server, whose user name is
@@ -188,10 +187,9 @@ const (
 	errorExcerpt = 200
 )
 
-// HTTPClient speaks OpenCode 2's HTTP API (2.0.32 is the version it was verified
-// against, in simulation mode) to a server on loopback: loopback addresses only,
-// no proxy, no redirect, a time limit on every request, and a bound on every body
-// read.
+// HTTPClient speaks OpenCode 2's HTTP API to a server on loopback: loopback
+// addresses only, no proxy, no redirect, a time limit on every request, and a
+// bound on every body read.
 type HTTPClient struct {
 	base    string
 	auth    Auth
@@ -257,7 +255,7 @@ func NewHTTPClient(baseURL string, auth Auth, opts ...Option) (*HTTPClient, erro
 			// No proxy: this is a loopback server and the credentials must not
 			// be handed to anything on the way to it. No keep-alive: a pump makes
 			// a few requests a minute at most, and a connection kept across a
-			// restart of the TUI would only fail on its first reuse.
+			// restart of the server would only fail on its first reuse.
 			Proxy:             nil,
 			DialContext:       (&net.Dialer{Timeout: dialTimeout}).DialContext,
 			DisableKeepAlives: true,

@@ -26,16 +26,16 @@ What you can count on:
   write again.
 - **Nothing types into your terminal.** Each harness receives messages through
   its own push path: a Claude Code channel, `codex queue` for Codex, the HTTP API
-  of the TUI for OpenCode.
+  of the OpenCode server for OpenCode.
 - **No lead, no record.** Parley has no lead session and no task queue, and it
   keeps no stream content beyond the chat server's own history. The work and its
   records stay where they live.
 
-Parley works across harnesses: Claude Code and Codex, and a line takes OpenCode
-(2.x) sessions too, last verified against OpenCode 2.0.32 in OpenCode's simulation
-mode (which blocks all model traffic) and not yet on a live model; table seats and
-build peers on OpenCode are next on the list. If every session is Claude Code and one-to-one messages are all you need,
-Claude Code's own
+Parley works across harnesses: Claude Code and Codex, and a line takes OpenCode 2
+sessions too, last verified against OpenCode 2.0.32 in OpenCode's simulation mode
+(which blocks all model traffic) and not yet on a live model; table seats and build
+peers on OpenCode are not supported for now, and open to explore. If every session
+is Claude Code and one-to-one messages are all you need, Claude Code's own
 [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
 does that natively. If you want one agent handing work to the others, you want an
 orchestrator. [Related projects](#related-projects) names tools of both kinds.
@@ -63,7 +63,7 @@ How it works:
   names as last verified. `contrib/ergo/README.md` installs it.
 - **Claude Code**, **Codex CLI** and/or **OpenCode**, at the versions `parley
   doctor` names as last verified. A different version is a warning from
-  `doctor`, not a failure. OpenCode must be 2.x, and only a line takes it:
+  `doctor`, not a failure. OpenCode must be version 2, and only a line takes it:
   `brew install opencode` (Homebrew core) or `npm i -g @opencode/cli`. The legacy
   1.x (npm's `opencode-ai`, the installer at opencode.ai/install) has no API
   parley can speak to, and `doctor` fails it. Parley was last verified against
@@ -145,7 +145,7 @@ sharing one, and a nick for yourself.
    `--harness codex`: `line add` starts a new thread for it and prints its pump
    and `codex resume` lines, so run those, and type `$parley-line` there. An
    OpenCode session is `--harness opencode`: `line add` starts a new session for
-   it, writes nothing in the checkout, and prints the `opencode --port` line to
+   it, writes nothing in the checkout, and prints the `opencode -s <id>` line to
    start in that checkout and the `parley opencode` pump line, in that order.
 4. Give each session its role, one line each, in the channel:
 

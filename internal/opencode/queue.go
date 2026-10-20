@@ -18,7 +18,7 @@ import (
 // The delivery is made in two phases. In the first the pump chooses the id of the
 // message, so it knows it before the server does, and posts; a post that got no
 // answer is posted again under the same id, which the server answers with its
-// first (see Client2.Prompt). That phase is bounded by the read-back deadline, and
+// first (see Client.Prompt). That phase is bounded by the read-back deadline, and
 // ends when the server has admitted the prompt and said so, with the text that was
 // posted. In the second the pump waits, with no deadline, for the message with
 // that id to hold the posted bytes, and only then is the delivery committed.

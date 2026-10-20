@@ -468,8 +468,8 @@ func TestAPostThatConnectedOnceIsNotStartedOverAfterADial(t *testing.T) {
 }
 
 // TestADeliveryOverTheBoundGoesOverAsAStubTheReadBackConfirms: the bound on a
-// delivery applies to OpenCode 2 as to OpenCode 1, and what is posted is the
-// rendering of the bounded delivery.
+// delivery is the one the Codex front applies, and what is posted is the rendering
+// of the bounded delivery.
 func TestADeliveryOverTheBoundGoesOverAsAStubTheReadBackConfirms(t *testing.T) {
 	f := newFake(t)
 	h := newHarness(t, f, nil)

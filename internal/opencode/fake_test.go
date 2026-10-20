@@ -49,9 +49,9 @@ type fakePost struct {
 // parked session takes nothing until the human resumes it, and an entry
 // leaves the inbox and becomes a message in one step.
 //
-// A turn is counted in reads of the active list and not in time, as the OpenCode 1
-// fake's are, so a test is the same on a loaded machine as on an idle one: after
-// an entry is taken up the list reads busy turnReads times.
+// A turn is counted in reads of the active list and not in time, so a test is the
+// same on a loaded machine as on an idle one: after an entry is taken up the list
+// reads busy turnReads times.
 type fakeOpenCode struct {
 	t *testing.T
 

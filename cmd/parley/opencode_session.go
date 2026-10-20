@@ -23,9 +23,8 @@ import (
 // what ends it.
 //
 // `opencode run --session <id>` continues the session, or creates it if it does not
-// exist (2.0.32), so the id is parley's own: known before the run, whatever the run
-// does, and the one thing the rollback deletes. Nothing is read back to learn it and
-// nothing is searched for.
+// exist, so the id is parley's own: known before the run, whatever the run does,
+// and the one thing the rollback deletes.
 //
 // What parley trusts here: opencode run is the human's own binary, but its output
 // is read as untrusted. A turn counts as done only on its own events, every one of
@@ -189,8 +188,8 @@ func openCodeErrorText(raw json.RawMessage) string {
 // The environment is the caller's as it is.
 //
 // The run starts the user's background service when none runs. The service
-// detaches itself (checked on 2.0.32: its own session and process group, stdin and
-// stdout on /dev/null), so the group-kill of a run that ended badly leaves it, and
+// detaches itself (checked on 2.0.32: its own session and process group, its stdio
+// on /dev/null), so the group-kill of a run that ended badly leaves it, and
 // the TUIs on it, alone, and a run that succeeds is not held up by it.
 func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) (id, answer string, err error) {
 	timeout := c.timeout

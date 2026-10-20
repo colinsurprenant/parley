@@ -319,9 +319,10 @@ moment before the service is up), or the server answers a 5xx (starting), the pu
 holds with its backoff and says so once; a 401 after the file was read again is the
 end of the pump, since the password is the service's own. The server is asked who it
 is, and held against the file, before the session is asked for, so a stale file
-reads as stale. With `--port` nothing is found again, and the pump asks `GET /api/info` of
-`127.0.0.1:<port>` with the password from `OPENCODE_PASSWORD`, else
-`OPENCODE_SERVER_PASSWORD`, under the user `opencode`.
+reads as stale. With `--port` there is no file to read: the pump asks `GET /api/info`
+of `127.0.0.1:<port>` with the password from `OPENCODE_PASSWORD`, else
+`OPENCODE_SERVER_PASSWORD`, under the user `opencode`, and the failures are the
+server's own.
 
 **Startup.** Before the stream is opened (so a refused start costs the nick no IRC
 account, no connection and no lock), the pump asks the server whether it is there,
@@ -391,12 +392,13 @@ on asking for the message: it neither stops nor commits on it. A server that goe
 away during the wait is held for with the backoff of the idle wait (finding the
 service again in discovery mode), since the entry is in its database. There is no
 step to see the turn begin: a queued post waits for its own turn and is never merged
-into a running one. The converse is the usual rule of a steer: a prompt the human
-submits as steer while a delivery's turn runs is folded into that turn, as any steer
-is. Delivery is at-least-once, and one place is narrower still: a post whose answer is lost is posted again under the
-same id, and if the human deleted the admitted entry in that instant, the second post
-admits it once more, since OpenCode keeps no tombstone of a cancelled id; the
-delivery then goes over although the human took it back, once.
+into a running one. Delivery is at-least-once: a pump that dies after the post and
+before the commit delivers again on restart rather than drops. Two residual cases are
+documented and not closed. A prompt the human submits as a steer while a delivery's
+turn runs is folded into that turn, as any steer is. And a post whose answer is lost
+is posted again under the same id; if the human deleted the admitted entry in that
+instant, the second post admits it once more, since OpenCode keeps no tombstone of a
+cancelled id, and the delivery goes over, once, although the human took it back.
 
 **Credentials.** An OpenCode server always wants HTTP basic credentials, under the
 user `opencode`. The service's password is the one in its service file, which the pump
@@ -858,17 +860,17 @@ exit 2.
   escapes the quotes in it, and the first message should be the primer as it is. The
   turn must have completed: its stdout must carry JSON events that all name the id
   parley chose (an event with none fails the turn, and counts for nothing), at least
-  one `step_finish`, the last with the reason `stop`, no `error` event and an end not
-  cut off at 1 MiB, whatever the exit status; a run that does not end within the
+  one `step_finish`, the last with the reason `stop`, no step that began and never
+  finished, no `error` event and an end not cut off at 1 MiB, whatever the exit status; a run that does not end within the
   bound is stopped. The session is registered for deletion (`opencode session
-  delete`, run from the checkout) as soon as the run returns, whatever it did, and
-  nothing is searched for: the id is known before the run. A delete answered "Session
-  not found", for a run that failed before it made the session, found nothing to
-  remove and is not a failure. The run adds no session-level rule (the session has no
-  `permissions`): it rejects the asks of its own turn and cancels its questions with
-  a message to carry on, and that is the whole of it. It starts the user's
+  delete`, run from the checkout) as soon as the run returns, whatever it did: the id
+  is known before the run. A delete answered "Session not found", for a run that
+  failed before it made the session, found nothing to remove and is not a failure.
+  The run adds no session-level rule (it creates the session with an id, an agent, a
+  model and a directory only): it rejects the asks of its own turn and cancels its
+  questions with a message to carry on, and that is the whole of it. It starts the user's
   background service if none runs, which detaches itself (its own process group and
-  session, stdin and stdout on `/dev/null`), so stopping the run leaves it alone. A
+  session, its stdio on `/dev/null`), so stopping the run leaves it alone. A
   failed turn of a server in OpenCode's simulation mode, the one kind of turn that
   can be run without a model (it retries, every try a `step_start`, then an `error`
   event and exit status 1), fails the add with the error's own words and rolls the

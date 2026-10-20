@@ -324,7 +324,7 @@ func TestUsageDocumentsTheOpencodeFront(t *testing.T) {
 		"opencode serve --port <n>", "opencode -s <id>", "service.json",
 		"OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD",
 		"parley was " + doctor.OpenCodeVerifiedNote,
-		"the legacy line, is a FAIL",
+		"the legacy 1.x is told the way to OpenCode 2",
 		"a message that renders to over 128 KiB, and every message once the delivery has 512 KiB, is replaced by a stub",
 		"is made again before every delivery",
 		"opencode-session",
@@ -362,7 +362,7 @@ func closedPort(t *testing.T) int {
 }
 
 // TestOpencodeFindsTheServiceAndDeliversIntoTheSession drives the real binary the
-// way the human runs it beside an OpenCode 2 TUI: no port, the service found from
+// way the human runs it beside an OpenCode TUI: no port, the service found from
 // its file, one queued prompt carrying exactly what `parley wait` would have
 // printed, peer header included, and the service's password nowhere in sight.
 func TestOpencodeFindsTheServiceAndDeliversIntoTheSession(t *testing.T) {

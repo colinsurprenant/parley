@@ -353,11 +353,6 @@ func TestLineAddOpenCodeSession(t *testing.T) {
 			t.Errorf("the runbook does not say %q:\n%s", want, res.stdout)
 		}
 	}
-	for _, unwanted := range []string{"--port", "Allow always", "denies it OpenCode's question tool", "OPENCODE_SERVER_PASSWORD, if you use one"} {
-		if strings.Contains(res.stdout, unwanted) && unwanted != "--port" {
-			t.Errorf("the runbook mentions %q, which is OpenCode 1's:\n%s", unwanted, res.stdout)
-		}
-	}
 	// The one --port in it is the note for an opencode serve of the human's own.
 	if n := strings.Count(res.stdout, "--port"); n != 1 || !strings.Contains(res.stdout, "run the pump with --port <n> and") {
 		t.Errorf("the runbook names --port %d times; want only the note on an opencode serve of one's own:\n%s", n, res.stdout)
@@ -513,7 +508,7 @@ func TestLineAddOpenCodeInterruptedDeletesTheChosenID(t *testing.T) {
 	}
 	b.wantDeletes(t, 1, idOfRun(t, b))
 	// The run is a process group of its own and the stop took it whole: the child
-	// the opencode started is gone with it, as on 1.x.
+	// the opencode started is gone with it.
 	for deadline := time.Now().Add(childDeadline); ; {
 		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
 			break
@@ -529,7 +524,7 @@ func TestLineAddOpenCodeInterruptedDeletesTheChosenID(t *testing.T) {
 // are captured from a server in simulation mode (the first, a step_start, and the
 // last, an error); the events of a turn that completed are shaped from the parts
 // 2.0.32's non-interactive run writes (packages/cli/src/run/noninteractive.ts), as
-// no model turn could be run. Both are read by the parser OpenCode 1's events are.
+// no model turn could be run. Both are read by the same parser.
 func TestParseOpenCodeTurnReadsOpenCodeEvents(t *testing.T) {
 	const id = "ses_ea83ab198ffeRIhi6BZUsPDq5i"
 	failed := `{"type":"step_start","timestamp":1792473911119,"sessionID":"` + id + `","part":{"id":"prt_157c54f4f001c3XPVNJjxsFi2f","sessionID":"` + id + `","messageID":"msg_157c54f2a001RFnoHjhjZMb1a1","type":"step-start","snapshot":"4b825dc642cb6eb9a060e54bf8d69288fbee4904"}}

@@ -257,10 +257,10 @@ verbs:
            claude|codex|opencode, repeatable, narrows the binary, version,
            skill-link and --live checks to the harnesses you have, claude and
            codex without it; the server and ergo are checked either way.
-           opencode is checked only when named: its version (a 2.x; a 1.x, the
-           legacy line, is a FAIL with the way to OpenCode 2, and so is any
-           other major version), the flags and subcommands of its commands that
-           parley uses, and a skill link under either root.
+           opencode is checked only when named: its version (a 2.x; any other
+           major version is a FAIL, and the legacy 1.x is told the way to
+           OpenCode 2), the flags and subcommands of its commands that parley
+           uses, and a skill link under either root.
            A binary that is missing is a FAIL that links the project's install
            page; a version other than the last verified one is a warn that says
            it may work as it is, and what to install if a table or a build
@@ -503,9 +503,8 @@ verbs:
            interrupt takes down what the run made, a started Codex thread
            (codex delete --force) or the OpenCode session (opencode session
            delete, run from the checkout, whatever the run did: the id is known
-           before it, nothing is searched for, and an answer of "Session not
-           found" for a run that failed before it made the session is not a
-           failure). The run adds no rule to the session, and rejects the
+           before it, and an answer of "Session not found" for a run that
+           failed before it made the session is not a failure). The run adds no rule to the session, and rejects the
            permission asks and cancels the questions of its own turn. It starts
            the user's background service if none runs; the service detaches
            itself, so stopping the run leaves it alone. The output is what is

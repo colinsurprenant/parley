@@ -320,7 +320,7 @@ func skillLines(rs []Result) []Result {
 	return out
 }
 
-// TestOpenCodeFindsASkillUnderEitherRoot: OpenCode 1.18.30 loads a SKILL.md
+// TestOpenCodeFindsASkillUnderEitherRoot: OpenCode 2 loads a SKILL.md
 // from ~/.claude/skills and from ~/.agents/skills, so one valid link of the two
 // is a skill it has, and a machine installed for one of the other harnesses is
 // installed for it.
