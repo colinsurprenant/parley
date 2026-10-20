@@ -33,8 +33,6 @@ const (
 	// openCodeTurnTimeout bounds the primer turn, as seatTurnTimeout bounds a
 	// Codex seat's: a primer is one short turn.
 	openCodeTurnTimeout = seatTurnTimeout
-	// openCodeDeleteTimeout bounds one `opencode session delete`.
-	openCodeDeleteTimeout = time.Minute
 	// maxOpenCodeEvents bounds the event types a refusal lists.
 	maxOpenCodeEvents = 12
 	// openCodeListMax is how many of the newest sessions are asked for when
@@ -42,6 +40,10 @@ const (
 	// made in the project since the run began do not push it off.
 	openCodeListMax = 200
 )
+
+// openCodeDeleteTimeout bounds one `opencode session delete` or `session list`; a
+// variable only so that a test can shorten it.
+var openCodeDeleteTimeout = time.Minute
 
 // openCodeSession is one OpenCode session to start on its primer.
 type openCodeSession struct {
@@ -70,9 +72,11 @@ type openCodeTurn struct {
 	Others    []string
 	NoID      []string
 	// Steps is the number of step_finish events and LastReason the reason of the
-	// last of them.
+	// last of them; Open is whether a step has begun since the last one finished,
+	// which then has no reason: a turn whose last step never finished is not done.
 	Steps      int
 	LastReason string
+	Open       bool
 	// Answer is the text of the last step: what the session said last.
 	Answer string
 	// Failure is the first error event's message.
@@ -124,6 +128,8 @@ func parseOpenCodeTurn(out string) openCodeTurn {
 		switch ev.Type {
 		case "step_start":
 			answer = nil
+			t.LastReason = ""
+			t.Open = true
 		case "text":
 			if ev.Part.Text != "" {
 				answer = append(answer, ev.Part.Text)
@@ -131,6 +137,7 @@ func parseOpenCodeTurn(out string) openCodeTurn {
 		case "step_finish":
 			t.Steps++
 			t.LastReason = ev.Part.Reason
+			t.Open = false
 		case "error":
 			if t.Failure == "" {
 				t.Failure = openCodeErrorText(ev.Error)
@@ -281,6 +288,9 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 	if turn.Steps == 0 {
 		return "", "", fmt.Errorf("opencode run for session %s: it exited 0, but its output has no step_finish event, so the turn is not shown to have completed; the events were: %s", c.nick, eventList(turn.Events))
 	}
+	if turn.Open {
+		return "", "", fmt.Errorf("opencode run for session %s: it exited 0, but its last step began and never finished (no step_finish follows the last step_start), so the turn is not shown to have completed", c.nick)
+	}
 	if turn.LastReason != "stop" {
 		return "", "", fmt.Errorf("opencode run for session %s: it exited 0, but its last step ended with reason %s and not \"stop\", so the turn is not shown to have completed", c.nick, clipQuoted(turn.LastReason))
 	}
@@ -303,6 +313,35 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 	return turn.SessionID, turn.Answer, nil
 }
 
+// ownGroup makes every run of the opencode binary a process group of its own, which
+// a stop takes whole. opencode may be a launcher that runs the program as a child,
+// as an npm install's is, and killing only the launcher leaves the child running:
+// a turn that goes on with its tools on a session about to be deleted. The default
+// cancellation of CommandContext kills the launcher alone, so it is replaced.
+// WaitDelay keeps a descendant that holds the pipes from holding the run hostage,
+// and when it expires Run returns without Cancel having run, which is why a run
+// that failed is followed by killGroup.
+func ownGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
+}
+
+// killGroup takes whatever is left of the process group of a command that ended
+// badly: the launcher may have exited while a child still held the pipes, and a
+// group lives as long as it has a member. It is called after the command has been
+// waited for, so the group is the command's own or empty.
+func killGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}
+
 // runOpenCodeTurn runs one `opencode run --format json` turn with stdin as its
 // message and parses what it said, even when it did not end well: a run that was
 // stopped has still announced the session that has to be deleted. A run that
@@ -318,18 +357,13 @@ func runOpenCodeTurn(ctx context.Context, bin, dir string, args []string, stdin 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			return cmd.Process.Kill()
-		}
-		return nil
-	}
+	ownGroup(cmd)
 	stdout, stderr := &limitBuffer{limit: maxExecOutput}, &limitBuffer{limit: 4096}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	// A descendant that inherited the pipes must not hold the run hostage.
-	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
+	if err != nil {
+		killGroup(cmd)
+	}
 	turn := parseOpenCodeTurn(stdout.String())
 	turn.Truncated = stdout.truncated
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
@@ -352,10 +386,11 @@ func openCodeStrays(bin, title, dir string, started time.Time) (ids []string, fu
 	cmd := exec.CommandContext(ctx, bin, "session", "list", "--format", "json", "-n", strconv.Itoa(openCodeListMax))
 	cmd.Dir = existingDir(dir)
 	cmd.Stdin = nil
+	ownGroup(cmd)
 	out, errs := &limitBuffer{limit: maxExecOutput}, &limitBuffer{limit: 4096}
 	cmd.Stdout, cmd.Stderr = out, errs
-	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Run(); err != nil {
+		killGroup(cmd)
 		return nil, false, fmt.Errorf("opencode session list: %w: %s", err, codex.PlainLine(firstLine(strings.TrimSpace(errs.String()))))
 	}
 	if out.truncated {
@@ -400,11 +435,12 @@ func openCodeDelete(bin, name, id, dir string) error {
 	cmd := exec.CommandContext(ctx, bin, "session", "delete", id)
 	cmd.Dir = existingDir(dir)
 	cmd.Stdin = nil
+	ownGroup(cmd)
 	var out limitBuffer
 	out.limit = 4096
 	cmd.Stdout, cmd.Stderr = &out, &out
-	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Run(); err != nil {
+		killGroup(cmd)
 		return fmt.Errorf("%s session delete %s: %w: %s (remove it yourself with: %s session delete %s)", name, id, err, codex.PlainLine(firstLine(strings.TrimSpace(out.String()))), name, id)
 	}
 	return nil

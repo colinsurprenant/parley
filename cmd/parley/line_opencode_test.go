@@ -86,6 +86,17 @@ run)
 		start "$id"; text "$id" ready
 		finish "ses_$(printf '%026d' 99)" stop
 		exit 0 ;;
+	unfinished)
+		start "$id"; text "$id" ready; finish "$id" stop
+		start "$id"
+		exit 0 ;;
+	orphan)
+		# The launcher ends the turn and exits at once, leaving a child that holds
+		# the pipes.
+		sleep 300 &
+		echo $! > "$d/child-pid"
+		start "$id"; text "$id" ready; finish "$id" stop
+		exit 0 ;;
 	mismatchfail)
 		start "$id"; text "$id" ready
 		finish "ses_$(printf '%026d' 99)" stop
@@ -130,6 +141,12 @@ run)
 	finish "$id" stop
 	exit 0 ;;
 session)
+	if [ "$mode" = holdcmd ]; then
+		sleep 300 &
+		echo $! > "$d/child-pid-$n"
+		wait
+		exit 0
+	fi
 	case "$2" in
 	delete)
 		if [ "$mode" = faildelete ]; then echo "cannot delete" >&2; exit 5; fi
@@ -651,6 +668,9 @@ func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 		{"a step_start that names no session, before others did", "noidfirst", "event(s) of type step_start carry no sessionID", true, true},
 		{"the run fails after the session exists", "failafter", "the model went away", true, true},
 		{"exit 0 but an error event", "errorzero", "stream broke", true, true},
+		// A step_finish(stop) followed by a step that began and never finished: the
+		// last step is not done.
+		{"a last step that never finished", "unfinished", "never finished", true, true},
 		{"a last step that is not a stop", "nostop", `reason "tool-calls"`, true, true},
 		{"no step_finish at all", "nostep", "no step_finish event", true, true},
 		{"stdout past the cap", "overflow", "cut off", true, true},
@@ -971,15 +991,92 @@ func TestLineAddOpenCodeInterruptedRollsEverythingBack(t *testing.T) {
 	}
 	b.wantDeletes(t, 1, ocID(1))
 	// The child the opencode started is gone with it.
-	for deadline := time.Now().Add(childDeadline); ; {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the opencode's child %d outlived the run", pid)
-		}
-		time.Sleep(10 * time.Millisecond)
+	waitGone(t, pid, "the opencode's child")
+	if got := b.snap(t, co); got != before {
+		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
 	}
+}
+
+// processGone is whether the process is not there: no such process, or a zombie,
+// which is what a killed orphan is until init reaps it (and for good in a
+// container with no init), and which kill 0 still finds.
+func processGone(pid int) bool {
+	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err != nil || strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+// waitGone fails unless the process is gone within the deadline: a kill is
+// delivered at once, but the process takes a moment to be gone.
+func waitGone(t *testing.T, pid int, what string) {
+	t.Helper()
+	for deadline := time.Now().Add(childDeadline); !processGone(pid); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s (process %d) is still there", what, pid)
+		}
+	}
+}
+
+// TestOpenCodeDeleteAndListStopTheWholeProcessGroup: the delete and the list are
+// run as the turn is, each a process group of its own that a stop takes whole, so
+// a launcher's child does not outlive the command that is stopped at its bound.
+func TestOpenCodeDeleteAndListStopTheWholeProcessGroup(t *testing.T) {
+	old := openCodeDeleteTimeout
+	openCodeDeleteTimeout = time.Second
+	t.Cleanup(func() { openCodeDeleteTimeout = old })
+	for _, c := range []struct {
+		name string
+		run  func(b *ocLineBench, co string) error
+	}{
+		{"session delete", func(b *ocLineBench, co string) error {
+			return openCodeDelete(b.db.opencode, "opencode", ocID(1), co)
+		}},
+		{"session list", func(b *ocLineBench, co string) error {
+			_, _, err := openCodeStrays(b.db.opencode, "t", co, time.Now())
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := newOCLineBench(t)
+			b.setMode(t, 1, "holdcmd")
+			co := b.plainCheckout(t, "co")
+			if err := c.run(b, co); err == nil {
+				t.Fatal("a command that never ended was taken for a success")
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(b.file(t, "child-pid-1")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			waitGone(t, pid, "the child of the stopped "+c.name)
+		})
+	}
+}
+
+// TestLineAddOpenCodeKillsAChildTheLauncherLeft: a launcher that ends the turn and
+// exits at once while a child still holds the pipes makes Run return at the wait
+// delay without the cancellation having run. The child is killed before line add
+// returns to its rollback, so it cannot go on with tools on a session about to be
+// deleted, and the session is deleted.
+func TestLineAddOpenCodeKillsAChildTheLauncherLeft(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	co := b.gitCheckout(t, "co")
+	b.setMode(t, 1, "orphan")
+	before := b.snap(t, co)
+	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
+	if res.code != 1 || !strings.Contains(res.stderr, "WaitDelay") {
+		t.Fatalf("exit %d, want 1 naming the wait delay\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(b.file(t, "child-pid")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	waitGone(t, pid, "the child the launcher left")
+	b.wantDeletes(t, 1, ocID(1))
 	if got := b.snap(t, co); got != before {
 		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
 	}
@@ -1043,14 +1140,7 @@ func TestStartOpenCodeSessionEndsAHungTurnAndRegistersItsSession(t *testing.T) {
 	}
 	b.wantDeletes(t, 1, ocID(1))
 	pid, _ := strconv.Atoi(strings.TrimSpace(b.file(t, "child-pid")))
-	for deadline := time.Now().Add(childDeadline); ; time.Sleep(10 * time.Millisecond) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the child %d of the stopped run is still there", pid)
-		}
-	}
+	waitGone(t, pid, "the child of the stopped run")
 	if len(env.dirs) != 0 {
 		t.Errorf("a record directory was made for a turn that did not complete: %v", env.dirs)
 	}
@@ -1097,6 +1187,17 @@ func TestParseOpenCodeTurn(t *testing.T) {
 	got = parseOpenCodeTurn(`{"type":"error","sessionID":"` + id + `","error":{"x":1}}`)
 	if want := `an error event: "{\"x\":1}"`; got.Failure != want {
 		t.Errorf("failure = %q, want %s", got.Failure, want)
+	}
+	// A step that began after the last finish is open, and has no reason of its own.
+	got = parseOpenCodeTurn(strings.Join([]string{
+		ev("step_start", id, `{}`), ev("step_finish", id, `{"reason":"stop"}`), ev("step_start", id, `{}`),
+	}, "\n"))
+	if !got.Open || got.LastReason != "" || got.Steps != 1 {
+		t.Errorf("a step_finish(stop) then an unfinished step_start parsed as %+v, want an open step with no reason", got)
+	}
+	got = parseOpenCodeTurn(strings.Join([]string{ev("step_start", id, `{}`), ev("step_finish", id, `{"reason":"stop"}`)}, "\n"))
+	if got.Open || got.LastReason != "stop" {
+		t.Errorf("a finished step parsed as %+v", got)
 	}
 	// An event that names no session certifies nothing: it is not a step, an
 	// answer or a reason, and its type is kept for the error.
