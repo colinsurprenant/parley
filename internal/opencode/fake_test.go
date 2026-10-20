@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,6 +30,12 @@ type fakeMsg struct {
 	Role     string
 	ParentID string
 	Parts    []map[string]any
+}
+
+// plantedMsg is a message the fake adds when a prompt is accepted. partType, if
+// set, replaces the type of its text part.
+type plantedMsg struct {
+	role, partType, text string
 }
 
 type fakePost struct {
@@ -74,6 +81,14 @@ type fakeOpenCode struct {
 	// stopped answering without closing anything.
 	stallMessages bool
 	stallStatus   bool
+	// burst is how many assistant messages the turn has written by the time the
+	// first read after an accepted prompt is answered, each answering burstParent
+	// (the prompt's own message when that is empty).
+	burst       int
+	burstParent string
+	// plant is put in the history when a prompt is accepted, after the prompt's own
+	// message if there is one: what a read-back must not take for the delivery.
+	plant []plantedMsg
 
 	// manualBusy is a turn the test holds open, as a human's own prompt would.
 	manualBusy bool
@@ -366,13 +381,31 @@ func (f *fakeOpenCode) messagesLocked(w http.ResponseWriter, r *http.Request) {
 	// The server lists by id, whatever order the messages were created in.
 	msgs := append([]fakeMsg(nil), f.msgs...)
 	sort.SliceStable(msgs, func(i, j int) bool { return msgs[i].ID < msgs[j].ID })
-	if s := r.URL.Query().Get("limit"); s != "" {
+	q := r.URL.Query()
+	if c := q.Get("before"); c != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(c)
+		var cur struct {
+			ID string `json:"id"`
+		}
+		if err != nil || json.Unmarshal(raw, &cur) != nil || cur.ID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"_tag": "BadRequest"})
+			return
+		}
+		i := sort.Search(len(msgs), func(i int) bool { return msgs[i].ID >= cur.ID })
+		msgs = msgs[:i]
+	}
+	if s := q.Get("limit"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"name": "BadRequest"})
 			return
 		}
 		if n > 0 && n < len(msgs) {
+			// The cursor of the page before this one, which exists while anything
+			// older is left.
+			oldest := msgs[len(msgs)-n]
+			cur, _ := json.Marshal(map[string]any{"id": oldest.ID, "time": 1})
+			w.Header().Set("X-Next-Cursor", base64.RawURLEncoding.EncodeToString(cur))
 			msgs = msgs[len(msgs)-n:]
 		}
 	}
@@ -404,8 +437,10 @@ func (f *fakeOpenCode) promptLocked(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"name": "BadRequest"})
 		return
 	}
+	user := ""
 	if !f.hold {
 		m := f.newMsgLocked("user", "", req.Parts[0].Text)
+		user = m.ID
 		if f.nextUserID != "" {
 			m.ID, f.nextUserID = f.nextUserID, ""
 		}
@@ -417,6 +452,20 @@ func (f *fakeOpenCode) promptLocked(w http.ResponseWriter, r *http.Request) {
 		}
 		f.raceIdle, f.busyPolls = f.turnRace, f.turnPolls
 		f.running = f.busyPolls > 0
+	}
+	for _, pl := range f.plant {
+		m := f.newMsgLocked(pl.role, "", pl.text)
+		if pl.partType != "" {
+			m.Parts[len(m.Parts)-1]["type"] = pl.partType
+		}
+		f.msgs = append(f.msgs, m)
+	}
+	parent := user
+	if f.burstParent != "" {
+		parent = f.burstParent
+	}
+	for i := 0; i < f.burst; i++ {
+		f.msgs = append(f.msgs, f.newMsgLocked("assistant", parent, fmt.Sprintf("step %d", i)))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

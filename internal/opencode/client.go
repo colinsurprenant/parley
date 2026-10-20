@@ -58,13 +58,24 @@ type Client interface {
 	// belongs to, and a status read for any other directory, the one the server
 	// itself runs in included, lists nothing and so reads every session idle.
 	Busy(ctx context.Context, session, directory string) (bool, error)
-	// Messages returns the newest limit messages of the session, oldest first.
-	// limit must be positive: OpenCode reads zero as "all of them".
-	Messages(ctx context.Context, session string, limit int) ([]Message, error)
+	// Messages returns one page of the session's history: the newest limit
+	// messages of it, oldest first, or with a before cursor, which only a
+	// MessagePage.Next is, the limit messages just older than the page that
+	// cursor came with. limit must be positive: OpenCode reads zero as "all of
+	// them".
+	Messages(ctx context.Context, session string, limit int, before string) (MessagePage, error)
 	// Prompt appends text to the session as one user message and starts a turn
 	// on it, returning once the server has accepted it. Acceptance is not
 	// arrival: the message lands in the history a moment later.
 	Prompt(ctx context.Context, session, text string) error
+}
+
+// MessagePage is one page of a session's history, oldest message first. Next is
+// the cursor of the page before it, to be passed as before, and is empty when
+// there is nothing older.
+type MessagePage struct {
+	Messages []Message
+	Next     string
 }
 
 // SessionInfo is the part of a session the front needs.
@@ -274,6 +285,7 @@ type reply struct {
 	code        int
 	body        []byte
 	contentType string
+	nextCursor  string
 	tooLong     bool
 }
 
@@ -354,7 +366,7 @@ func (c *HTTPClient) exchange(ctx context.Context, method, path string, query ur
 		}
 		return reply{}, &TransportError{Op: op, Err: fmt.Errorf("read the response: %w", err)}
 	}
-	r := reply{code: resp.StatusCode, body: b}
+	r := reply{code: resp.StatusCode, body: b, nextCursor: resp.Header.Get("X-Next-Cursor")}
 	if mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err == nil {
 		r.contentType = mt
 	}
@@ -513,27 +525,46 @@ func (c *HTTPClient) Busy(ctx context.Context, session, directory string) (bool,
 	return *st.Type != "idle", nil
 }
 
-// Messages implements Client: GET /session/{id}/message?limit=N. Verified on
-// OpenCode 1.18.30: limit=N returns the newest N messages, oldest of them first
-// (by message id, which the server assigns when it creates the message, so the
-// order is the server's and not the order the prompts were posted in), and
-// limit=0 returns every message.
-func (c *HTTPClient) Messages(ctx context.Context, session string, limit int) ([]Message, error) {
+// Messages implements Client: GET /session/{id}/message?limit=N[&before=C].
+// Verified on OpenCode 1.18.30: limit=N returns the newest N messages, oldest of
+// them first (by message id, which the server assigns when it creates the
+// message, so the order is the server's and not the order the prompts were posted
+// in), and limit=0 returns every message. The reply names the page before it in
+// an X-Next-Cursor header, present while anything older remains, and
+// before=<that cursor> returns the N messages older than the page it came with.
+// The cursor is opaque to this front and is not a message id: a bare id as
+// before is a 400. It is passed back as it came, after a check that it is the
+// short token it looks like.
+func (c *HTTPClient) Messages(ctx context.Context, session string, limit int, before string) (MessagePage, error) {
 	if limit < 1 {
-		return nil, fmt.Errorf("opencode: message limit %d: OpenCode reads a limit below 1 as no limit", limit)
+		return MessagePage{}, fmt.Errorf("opencode: message limit %d: OpenCode reads a limit below 1 as no limit", limit)
+	}
+	if before != "" && !validCursor(before) {
+		return MessagePage{}, errors.New("opencode: the cursor to read before is not one the server gave")
 	}
 	path := sessionPath(session, "/message")
 	op := "GET " + path
-	code, body, err := c.do(ctx, http.MethodGet, path, url.Values{"limit": {strconv.Itoa(limit)}}, nil, maxMessageBody)
-	if err != nil {
-		return nil, err
+	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	if before != "" {
+		q.Set("before", before)
 	}
-	switch code {
+	r, err := c.exchange(ctx, http.MethodGet, path, q, nil, maxMessageBody)
+	if err != nil {
+		return MessagePage{}, err
+	}
+	if r.tooLong {
+		return MessagePage{}, &TooLongError{Op: op, Limit: maxMessageBody}
+	}
+	body := r.body
+	switch r.code {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, session)
+		return MessagePage{}, fmt.Errorf("%w: %s", ErrSessionNotFound, session)
 	default:
-		return nil, statusError(op, code, body)
+		return MessagePage{}, statusError(op, r.code, body)
+	}
+	if r.nextCursor != "" && !validCursor(r.nextCursor) {
+		return MessagePage{}, fmt.Errorf("opencode: %s: the X-Next-Cursor header is not a cursor this front passes back", op)
 	}
 	var wire []*struct {
 		Info *struct {
@@ -547,15 +578,15 @@ func (c *HTTPClient) Messages(ctx context.Context, session string, limit int) ([
 		} `json:"parts"`
 	}
 	if err := decode(op, body, &wire); err != nil {
-		return nil, err
+		return MessagePage{}, err
 	}
 	if wire == nil {
-		return nil, fmt.Errorf("opencode: %s: the answer is not a list", op)
+		return MessagePage{}, fmt.Errorf("opencode: %s: the answer is not a list", op)
 	}
 	out := make([]Message, 0, len(wire))
 	for i, w := range wire {
 		if w == nil || w.Info == nil || w.Info.ID == nil || *w.Info.ID == "" || w.Info.Role == nil || *w.Info.Role == "" {
-			return nil, fmt.Errorf("opencode: %s: message %d has no info.id and info.role", op, i)
+			return MessagePage{}, fmt.Errorf("opencode: %s: message %d has no info.id and info.role", op, i)
 		}
 		m := Message{ID: *w.Info.ID, Role: *w.Info.Role}
 		if w.Info.ParentID != nil {
@@ -563,7 +594,7 @@ func (c *HTTPClient) Messages(ctx context.Context, session string, limit int) ([
 		}
 		for j, p := range w.Parts {
 			if p == nil || p.Type == nil || *p.Type == "" {
-				return nil, fmt.Errorf("opencode: %s: message %d part %d has no type", op, i, j)
+				return MessagePage{}, fmt.Errorf("opencode: %s: message %d part %d has no type", op, i, j)
 			}
 			part := Part{Type: *p.Type}
 			if p.Text != nil {
@@ -573,7 +604,28 @@ func (c *HTTPClient) Messages(ctx context.Context, session string, limit int) ([
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return MessagePage{Messages: out, Next: r.nextCursor}, nil
+}
+
+// maxCursor is the longest cursor this front passes back. The server's is a
+// base64 of an id and a time, about a hundred bytes.
+const maxCursor = 512
+
+// validCursor reports whether c is a token of the alphabet a base64 cursor is
+// written in, short enough to be one. It goes into a query string, so nothing a
+// query treats as its own gets in.
+func validCursor(c string) bool {
+	if c == "" || len(c) > maxCursor {
+		return false
+	}
+	for i := 0; i < len(c); i++ {
+		switch b := c[i]; {
+		case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z', b == '-', b == '_', b == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // promptBody is the whole of what this front ever POSTs: one text part, and no

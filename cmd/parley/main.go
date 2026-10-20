@@ -265,8 +265,8 @@ verbs:
            skill-link and --live checks to the harnesses you have, claude and
            codex without it; the server and ergo are checked either way.
            opencode is checked only when named: its version (1.x and 2.x are
-           both read, each against the version verified for it; a major version
-           after 2 is a FAIL), the flags and subcommands of its commands that
+           both read, each against the version verified for it; any other major
+           version is a FAIL), the flags and subcommands of its commands that
            parley uses, by the version it is, and a skill link under either
            root.
            A binary that is missing is a FAIL that links the project's install

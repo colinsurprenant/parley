@@ -218,7 +218,6 @@ func TestOpenCodeVersionsAgainstTheVerifiedOne(t *testing.T) {
 		{"equal", OpenCodeVerified, OK, "the version last verified"},
 		{"newer", "1.19.3", Warn, "newer than " + OpenCodeVerified},
 		{"older", "1.18.2", Warn, "older than " + OpenCodeVerified},
-		{"an older major", "0.9.0", Warn, "older than " + OpenCodeVerified},
 		{"unreadable", "opencode", Warn, "holds no version"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -386,16 +385,17 @@ func TestOpenCodeTwoHelpIsReadInItsOwnForm(t *testing.T) {
 	}
 }
 
-// TestOpenCodeThreeIsAFAIL: the pump refuses a server that is neither 1.x nor 2.x,
+// TestOpenCodeThreeIsAFAIL: the pump refuses a server that is neither 1.x nor 2.x
+// (a 0.x included),
 // so the report says so on the version line, and does not read the CLI.
 func TestOpenCodeThreeIsAFAIL(t *testing.T) {
-	for _, version := range []string{"3.1.4", "opencode v3.0.0", "10.0.0"} {
+	for _, version := range []string{"3.1.4", "opencode v3.0.0", "10.0.0", "0.9.0"} {
 		bin, log := fakeOpenCode{version: version}.install(t, t.TempDir())
 		rs := Check(context.Background(), Options{OpenCode: true, OpenCodeBin: bin})
 		if len(rs) != 2 || rs[0].Level != OK || rs[1].Level != Fail || rs[1].Surface != "opencode version" {
 			t.Fatalf("%s: want found, then one version FAIL:\n%s", version, render(rs))
 		}
-		if !strings.Contains(rs[1].Detail, "later major version") || !strings.Contains(rs[1].Detail, OpenCodeInstallURL) {
+		if !strings.Contains(rs[1].Detail, "major version of the 1.x and 2.x") || !strings.Contains(rs[1].Detail, OpenCodeInstallURL) {
 			t.Errorf("%s: the FAIL is %q", version, rs[1])
 		}
 		if strings.Contains(rs[1].Detail, "not supported yet") || strings.Contains(rs[1].Detail, "\n") {

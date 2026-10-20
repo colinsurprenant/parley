@@ -915,13 +915,17 @@ func TestNewRefusesWhatItCannotRun(t *testing.T) {
 		t.Fatalf("New of a good config: %v", err)
 	}
 	for name, mod := range map[string]func(*Config){
-		"no deliverer":      func(c *Config) { c.Deliverer = nil },
-		"no cursors":        func(c *Config) { c.Cursors = nil },
-		"no client":         func(c *Config) { c.Client = nil },
-		"no session":        func(c *Config) { c.Session = " " },
-		"negative timeout":  func(c *Config) { c.Timeout = -1 },
-		"negative debounce": func(c *Config) { c.Debounce = -1 },
-		"negative poll":     func(c *Config) { c.IdlePoll = -1 },
+		"no deliverer":             func(c *Config) { c.Deliverer = nil },
+		"no cursors":               func(c *Config) { c.Cursors = nil },
+		"no client":                func(c *Config) { c.Client = nil },
+		"no session":               func(c *Config) { c.Session = " " },
+		"negative timeout":         func(c *Config) { c.Timeout = -1 },
+		"negative debounce":        func(c *Config) { c.Debounce = -1 },
+		"negative idle poll":       func(c *Config) { c.IdlePoll = -1 },
+		"negative read-back poll":  func(c *Config) { c.ReadBackPoll = -1 },
+		"negative read-back bound": func(c *Config) { c.ReadBackTimeout = -1 },
+		"negative settle bound":    func(c *Config) { c.SettleTimeout = -1 },
+		"negative backoff cap":     func(c *Config) { c.MaxBackoff = -1 },
 	} {
 		c := ok
 		mod(&c)
@@ -932,15 +936,30 @@ func TestNewRefusesWhatItCannotRun(t *testing.T) {
 }
 
 func TestCheckVersion(t *testing.T) {
-	for _, v := range []string{"1.18.30", "1.19.3", "1.0.0", "1", "0.9.1", "1.18.30-beta.1"} {
+	for _, v := range []string{"1.18.30", "1.19.3", "1.0.0", "1", "1.18.30-beta.1"} {
 		if err := CheckVersion(v); err != nil {
 			t.Errorf("CheckVersion(%q) = %v, want nil", v, err)
 		}
 	}
-	for _, v := range []string{"2.0.32", "2", "2.0.0-rc.1", "3.1.4", "10.0.0"} {
+	// Anything but a 1 is refused. A 0 is not OpenCode 2, and says so.
+	for _, v := range []string{"0.9.1", "0", "0.0.0", "0.0.0-dev-202610191200", "00.1.0"} {
 		err := CheckVersion(v)
-		if err == nil || !strings.Contains(err.Error(), "not OpenCode 1") {
+		if err == nil || !strings.Contains(err.Error(), "this front speaks OpenCode 1's HTTP API") || strings.Contains(err.Error(), "OpenCode 2 is not supported yet") || !strings.Contains(err.Error(), "opencode-ai") {
+			t.Errorf("CheckVersion(%q) = %v, want the refusal of a version other than 1", v, err)
+		}
+	}
+	// A 2 is OpenCode 2, which has a client of its own and is told where to go; a 3
+	// or later is a version no client was written against, and is refused as such.
+	for _, v := range []string{"2.0.32", "2", "2.0.0-rc.1"} {
+		err := CheckVersion(v)
+		if err == nil || !strings.Contains(err.Error(), "not OpenCode 1") || !strings.Contains(err.Error(), "finds an OpenCode 2 server itself") {
 			t.Errorf("CheckVersion(%q) = %v, want the refusal of a server that is not OpenCode 1", v, err)
+		}
+	}
+	for _, v := range []string{"3.1.4", "10.0.0"} {
+		err := CheckVersion(v)
+		if err == nil || !strings.Contains(err.Error(), "is not supported") || !strings.Contains(err.Error(), "not on a version") || !strings.Contains(err.Error(), "opencode.ai/v2/install") {
+			t.Errorf("CheckVersion(%q) = %v, want the refusal of a version after 2", v, err)
 		}
 	}
 	for _, v := range []string{"", "latest", "v1.2.3", "dev", ".1.2", "+1.0.0", "-1.0.0", "99999999999999999999.0.0", "1 .0"} {

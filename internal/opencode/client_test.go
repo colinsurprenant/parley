@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,10 +229,11 @@ func TestMessages(t *testing.T) {
 	f.seed("assistant", "three")
 	c := f.client()
 
-	got, err := c.Messages(ctx, testSession, 2)
+	page, err := c.Messages(ctx, testSession, 2, "")
 	if err != nil {
 		t.Fatalf("Messages: %v", err)
 	}
+	got := page.Messages
 	// The newest two, oldest first.
 	if len(got) != 2 || got[0].Role != "user" || got[1].Role != "assistant" || got[0].ID >= got[1].ID {
 		t.Fatalf("Messages(2) = %+v, want the newest two in order", got)
@@ -247,17 +249,17 @@ func TestMessages(t *testing.T) {
 	}
 
 	for _, n := range []int{0, -1} {
-		if _, err := c.Messages(ctx, testSession, n); err == nil {
+		if _, err := c.Messages(ctx, testSession, n, ""); err == nil {
 			t.Errorf("Messages accepted limit %d, which OpenCode reads as no limit", n)
 		}
 	}
-	if _, err := c.Messages(ctx, "ses_000000000000000000000000AA", 1); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := c.Messages(ctx, "ses_000000000000000000000000AA", 1, ""); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Messages of an unknown session = %v", err)
 	}
 
 	empty := serving(t, answering(200, `[]`))
-	if msgs, err := empty.Messages(ctx, testSession, 1); err != nil || len(msgs) != 0 {
-		t.Errorf("Messages of an empty history = %v, %v", msgs, err)
+	if page, err := empty.Messages(ctx, testSession, 1, ""); err != nil || len(page.Messages) != 0 || page.Next != "" {
+		t.Errorf("Messages of an empty history = %v, %v", page, err)
 	}
 	for name, body := range map[string]string{
 		"an object":         `{}`,
@@ -273,15 +275,87 @@ func TestMessages(t *testing.T) {
 		"text a number":     `[{"info":{"id":"m","role":"user"},"parts":[{"type":"text","text":5}]}]`,
 		"trailing garbage":  `[] x`,
 	} {
-		if msgs, err := serving(t, answering(200, body)).Messages(ctx, testSession, 1); err == nil {
+		if msgs, err := serving(t, answering(200, body)).Messages(ctx, testSession, 1, ""); err == nil {
 			t.Errorf("Messages accepted %s (%s): %+v", name, body, msgs)
 		}
 	}
 	// A message with no parts at all, and a part with no text, are well formed.
 	ok := serving(t, answering(200, `[{"info":{"id":"m","role":"assistant","parentID":"p","extra":{"a":1}}},{"info":{"id":"n","role":"user"},"parts":[{"type":"file","url":"x"}]}]`))
-	msgs, err := ok.Messages(ctx, testSession, 2)
+	page2, err := ok.Messages(ctx, testSession, 2, "")
+	msgs := page2.Messages
 	if err != nil || len(msgs) != 2 || msgs[0].ParentID != "p" || msgs[1].Parts[0].Type != "file" || msgs[1].Parts[0].Text != "" {
 		t.Errorf("Messages of unusual but well formed entries = %+v, %v", msgs, err)
+	}
+}
+
+// TestMessagesPageBackwardsByTheCursorTheServerGave: the reply names the page
+// before it, the cursor is passed back as it came, and the pages together are the
+// history, newest page first, with no cursor on the last. Checked live on
+// 1.18.30: before takes that cursor and not a message id.
+func TestMessagesPageBackwardsByTheCursorTheServerGave(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	for i := 0; i < 7; i++ {
+		f.seed("user", fmt.Sprintf("m%d", i))
+	}
+	c := f.client()
+
+	var texts []string
+	before, pages := "", 0
+	for {
+		page, err := c.Messages(ctx, testSession, 3, before)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		pages++
+		var these []string
+		for _, m := range page.Messages {
+			these = append(these, m.Parts[0].Text)
+		}
+		texts = append(these, texts...)
+		if page.Next == "" {
+			break
+		}
+		before = page.Next
+		if pages > 5 {
+			t.Fatal("the pages never ended")
+		}
+	}
+	if pages != 3 || strings.Join(texts, " ") != "m0 m1 m2 m3 m4 m5 m6" {
+		t.Fatalf("%d pages gave %v, want 3 pages that are the history in order", pages, texts)
+	}
+}
+
+func TestACursorIsPassedBackAsItCameAndOnlyIfItLooksLikeOne(t *testing.T) {
+	ctx := context.Background()
+	var seen []string
+	c := serving(t, func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Query().Get("before"))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Next-Cursor", "eyJpZCI6Im1zZ18xIn0_-=")
+		_, _ = w.Write([]byte(`[]`))
+	})
+	page, err := c.Messages(ctx, testSession, 3, "")
+	if err != nil || page.Next != "eyJpZCI6Im1zZ18xIn0_-=" {
+		t.Fatalf("Messages = %+v, %v", page, err)
+	}
+	if _, err := c.Messages(ctx, testSession, 3, page.Next); err != nil || seen[1] != page.Next {
+		t.Fatalf("the cursor went back as %q (err %v), want %q", seen, err, page.Next)
+	}
+	for _, bad := range []string{"a&limit=0", "a b", "a/b", "é", "a\nb", strings.Repeat("a", maxCursor+1)} {
+		before := len(seen)
+		if _, err := c.Messages(ctx, testSession, 3, bad); err == nil || len(seen) != before {
+			t.Errorf("Messages accepted the cursor %q (err %v, requests made: %d)", bad, err, len(seen)-before)
+		}
+	}
+	// A cursor from the server that is not one is an error, not something passed on.
+	hostile := serving(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Next-Cursor", "a&limit=0")
+		_, _ = w.Write([]byte(`[]`))
+	})
+	if _, err := hostile.Messages(ctx, testSession, 3, ""); err == nil || !strings.Contains(err.Error(), "X-Next-Cursor") {
+		t.Fatalf("Messages of a reply with a hostile cursor = %v", err)
 	}
 }
 
@@ -399,13 +473,13 @@ func TestAHistoryReplyOverTheBoundIsATooLongError(t *testing.T) {
 		}
 		_, _ = w.Write([]byte("]"))
 	})
-	_, err := c.Messages(context.Background(), testSession, 10)
+	_, err := c.Messages(context.Background(), testSession, 10, "")
 	var tl *TooLongError
 	if !errors.As(err, &tl) || !IsTooLong(err) || tl.Limit != maxMessageBody || IsTransport(err) {
 		t.Fatalf("Messages of a reply over the bound = %v, want a TooLongError for %d", err, maxMessageBody)
 	}
 	// It is not a general-purpose error: a reply that fits is read as before.
-	if msgs, err := serving(t, answering(200, `[]`)).Messages(context.Background(), testSession, 10); err != nil || len(msgs) != 0 {
+	if msgs, err := serving(t, answering(200, `[]`)).Messages(context.Background(), testSession, 10, ""); err != nil || len(msgs.Messages) != 0 {
 		t.Fatalf("Messages of an empty history = %v, %v", msgs, err)
 	}
 }

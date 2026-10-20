@@ -31,7 +31,7 @@ import (
 // ran end to end on 2.1.296), OpenCode 1 by hand against a live server and its
 // help texts (1.18.30), OpenCode 2 against its help texts and a server in the
 // simulation mode that blocks all model traffic (2.0.32; no model turn has run on
-// it yet). A different version is not a failure, except an OpenCode 3 or later,
+// it yet). A different version is not a failure, except an OpenCode of a major version other than 1 or 2,
 // whose HTTP API parley has not been written against: the report says it may
 // work and what to do if a table or a build misbehaves; to the maintainer it is
 // the cue to verify again, and then to move the constant.

@@ -47,7 +47,7 @@ func OpenCodeVersion(stdout string) string { return versionRE.FindString(stdout)
 // checkOpenCode is the static OpenCode check: the binary, its version, and the
 // flags and subcommands of the commands parley uses, by the major version the
 // binary says it is: 1.x and 2.x are different CLIs, and parley speaks to both.
-// A major version after 2 is a FAIL, since the pump refuses it. There is no live
+// A major version before 1 or after 2 is a FAIL, since the pump refuses it. There is no live
 // half: the front is verified against a server by hand. OpenCode creates its own
 // empty data, cache, config and state directories on any invocation, --version
 // and --help included.
@@ -66,8 +66,8 @@ func checkOpenCode(ctx context.Context, bin string) []Result {
 		switch major := numericParts(have)[0]; {
 		case major == 2:
 			verified, remedy, surfaces = OpenCodeVerified2, openCodeRemedy2, openCode2Surfaces
-		case major > 2:
-			return append(rs, Result{Fail, "opencode version", fmt.Sprintf("OpenCode %s is a later major version than the 1.x and 2.x that parley speaks to: its pump refuses a server of any other, so a session on it could not be delivered into; install OpenCode 2.x (%s)", have, OpenCodeInstallURL)})
+		case major > 2 || major < 1:
+			return append(rs, Result{Fail, "opencode version", fmt.Sprintf("OpenCode %s is not a major version of the 1.x and 2.x that parley speaks to (a later major version, or an earlier one): its pump refuses a server of any other, so a session on it could not be delivered into; install OpenCode 1.x or 2.x (%s)", have, OpenCodeInstallURL)})
 		}
 	}
 	rs = append(rs, compareVersion("opencode", stdout, verified, remedy))

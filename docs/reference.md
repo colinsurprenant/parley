@@ -293,8 +293,11 @@ no host or URL flag, so the credentials below cannot be sent anywhere else.
 `--session` is the session id, as `opencode
 session list` shows it, or `auto`, which reads the id recorded for this nick and
 stream in `opencode-session`, under the state directory `--state-dir` names, by
-`parley line add`; with no record it exits 2, saying to run `parley line add` or
-pass `--session <id>`. `auto` is reserved, and no session id looks like it.
+`parley line add`; with no record it exits 2. Under `--skill line` it says to run
+`parley line add --harness opencode` or pass `--session <id>`; under `build` or
+`table`, which take no OpenCode seats yet and so have nothing that records one, it
+says so and to pass `--session <id>`. `auto` is reserved, and no session id looks
+like it.
 `--skill` is `build` by default and takes `table` and `line`, each with `--chair`
 and `--cap`, both required; `line` also takes `--window`, 10m by default. A line
 session is started with `--skill line` by `parley line add`, which prints the pump
@@ -837,7 +840,7 @@ exit 2.
   doctor's static checks fail, as when the `parley-line` skill is not linked under
   the root the harness reads (`~/.claude/skills` for Claude Code,
   `~/.agents/skills` for Codex, either for OpenCode, which reads both), an OpenCode
-  that is a later major version than 2, and a nick whose lock a running session or
+  whose major version is neither 1 nor 2, and a nick whose lock a running session or
   pump holds.
   A Claude session gets `<checkout>/.mcp.json`, one server `parley` whose
   command is the binary and whose args are `channel --stream irc://<server>/#<id>
@@ -858,7 +861,7 @@ exit 2.
   <model>` if given, a five-minute limit and a turn that must have completed, the
   thread recorded in `codex-thread`.
   An OpenCode session (1.x or 2.x, told by `opencode --version`, which prints a bare
-  `1.18.30` on 1.x and `opencode v2.0.32` on 2.x; a later major version is refused)
+  `1.18.30` on 1.x and `opencode v2.0.32` on 2.x; any other major version is refused)
   gets no launch file and nothing else written in
   its checkout, which may be any directory. It gets the same reply directory, and a
   session started by `opencode run --format json --title "parley line <id> <nick>
@@ -998,7 +1001,7 @@ are different CLIs and are each read against their own help (2.x has no `--port`
 its TUI and lists its subcommands under `SUBCOMMANDS`): a 1.x other than the
 verified 1.18.30 is a `warn`, and so is a 2.x other than the verified 2.0.32, whose
 line says that 2.x was verified in simulation mode and not yet on a live model; a
-major version after 2 is a `FAIL`, since the pump refuses a server of it. An OpenCode skill link under either root passes. The Claude Code line says that a launch needs
+major version other than 1 or 2 is a `FAIL`, since the pump refuses a server of it. An OpenCode skill link under either root passes. The Claude Code line says that a launch needs
 `--dangerously-load-development-channels`, which doctor cannot check.
 `--server` names a server other than `127.0.0.1:6667`, and `--codex-bin`,
 `--claude-bin`, `--opencode-bin` and `--ergo-bin` name a binary that is not on the

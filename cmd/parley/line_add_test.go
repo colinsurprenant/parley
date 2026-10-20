@@ -223,6 +223,17 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 			}
 			return env{args: b.ladd("demo", "build", "codex", co)}
 		}},
+		// A leftover record of the other harness's kind is refused the same way.
+		{"a nick with an OpenCode session record, for a Codex session", "already has an OpenCode session record", func(t *testing.T, b *lineBench, co string) env {
+			sr, err := state.OpenSessionRecord(b.base, "build", b.stream("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sr.Write("ses_00000000000000000000000009"); err != nil {
+				t.Fatal(err)
+			}
+			return env{args: b.ladd("demo", "build", "codex", co)}
+		}},
 		{"no parley-line skill under the Claude root", "parley-line", func(t *testing.T, b *lineBench, co string) env {
 			if err := os.Remove(filepath.Join(b.db.home, ".claude", "skills", "parley-line")); err != nil {
 				t.Fatal(err)

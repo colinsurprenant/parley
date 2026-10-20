@@ -439,7 +439,7 @@ func TestDoctorOpenCodeCanBeAddedToTheOthers(t *testing.T) {
 }
 
 // TestDoctorOpenCodeTwoIsSupported: the front speaks OpenCode 2's HTTP API too,
-// and 2.0.32 is the 2.x verified; a major version after 2 is a FAIL.
+// and 2.0.32 is the 2.x verified; any other major version is a FAIL.
 func TestDoctorOpenCodeTwoIsSupported(t *testing.T) {
 	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
 	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "opencode v"+doctor.OpenCodeVerified2)
@@ -454,7 +454,7 @@ func TestDoctorOpenCodeTwoIsSupported(t *testing.T) {
 	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "opencode v3.0.0")
 	res = b.run(t, "--harness", "opencode")
 	fails := withLevel(reportLines(t, res.stdout), "FAIL")
-	if res.code != 1 || len(fails) != 1 || !strings.Contains(fails[0], "later major version") {
+	if res.code != 1 || len(fails) != 1 || !strings.Contains(fails[0], "major version of the 1.x and 2.x") {
 		t.Errorf("an OpenCode 3: exit %d, FAIL lines %v\n%s", res.code, fails, res.stdout)
 	}
 }
