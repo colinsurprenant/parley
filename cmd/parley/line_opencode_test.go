@@ -15,28 +15,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colinsurprenant/parley/internal/doctor"
 	"github.com/colinsurprenant/parley/internal/state"
 )
 
 // fakeOpenCodeScript is an opencode that answers --version and the three --help
-// texts like the 1.18.30 they were copied from, and records the argv of every
+// texts like the @V@ they were copied from, and records the argv of every
 // other call in $d/call-<n>, with the directory it ran in (cwd-<n>), three
 // variables of its environment (env-<n>) and, for run, its stdin (stdin-<n>). A
 // record is written under a temporary name and renamed into place before the
 // count is published, so a reader that sees the count at n finds call-n whole.
-// run prints the events of a turn whose session is ocID(n) (or $d/id) unless
-// $d/mode-<n> says otherwise; session delete succeeds.
+// run prints the events of a turn whose session is the id it was given with
+// --session (or $d/id) unless $d/mode-<n> says otherwise; session delete succeeds.
 const fakeOpenCodeScript = `#!/bin/sh
 d=@D@
 t=@T@
-ver=1.18.30
+ver="opencode v@V@"
 [ -f "$d/version" ] && ver=$(cat "$d/version")
 case "$1 $2" in
 "--version "*) echo "$ver"; exit 0 ;;
-"--help ") cat "$t/opencode-1.18.30-tui.help" >&2; exit 0 ;;
-"run --help") cat "$t/opencode-1.18.30-run.help" >&2; exit 0 ;;
-"session --help") cat "$t/opencode-1.18.30-session.help" >&2; exit 0 ;;
-"session list") if [ "$3" = --help ]; then cat "$t/opencode-1.18.30-session-list.help" >&2; exit 0; fi ;;
+"--help ") cat "$t/opencode-@V@-tui.help"; exit 0 ;;
+"run --help") cat "$t/opencode-@V@-run.help"; exit 0 ;;
+"session --help") cat "$t/opencode-@V@-session.help"; exit 0 ;;
 esac
 n=$(cat "$d/count" 2>/dev/null || echo 0)
 n=$((n+1))
@@ -49,7 +49,7 @@ mv "$d/.count.tmp" "$d/count"
 mode=ok
 [ -f "$d/mode-$n" ] && mode=$(cat "$d/mode-$n")
 id=ses_$(printf '%026d' "$n")
-# OpenCode 2 creates the session under the id it is given.
+# The run creates the session under the id it is given.
 prev=; for a in "$@"; do [ "$prev" = --session ] && id=$a; prev=$a; done
 [ -f "$d/id" ] && id=$(cat "$d/id")
 start() { printf '{"type":"step_start","timestamp":1,"sessionID":"%s","part":{"id":"prt_1","type":"step-start"}}\n' "$1"; }
@@ -61,22 +61,6 @@ run)
 	cat > "$d/stdin-$n"
 	case "$mode" in
 	fail) echo "boom: not logged in" >&2; exit 3 ;;
-	stray)
-		title=; prev=
-		for a in "$@"; do [ "$prev" = --title ] && title=$a; prev=$a; done
-		now=$(( $(date +%s) * 1000 + 999 ))
-		here=$(pwd)
-		# The session the run made, and look-alikes with its exact title that are not
-		# it: another directory of the project, made before the run, and ids that
-		# are not session ids.
-		{
-			printf '{"id":"ses_00000000000000000000stray1","title":"%s","directory":"%s","projectId":"%s","created":%s}\n' "$title" "$here" "$here" "$now"
-			printf '{"id":"ses_00000000000000000000elsewh","title":"%s","directory":"/elsewhere/co","projectId":"%s","created":%s}\n' "$title" "$here" "$now"
-			printf '{"id":"ses_00000000000000000000older1","title":"%s","directory":"%s","projectId":"%s","created":1000}\n' "$title" "$here" "$here"
-			printf '{"id":"ses_short","title":"%s","directory":"%s","projectId":"%s","created":%s}\n' "$title" "$here" "$here" "$now"
-			printf '{"id":"--force","title":"%s","directory":"%s","projectId":"%s","created":%s}\n' "$title" "$here" "$here" "$now"
-		} > "$d/stray"
-		exit 3 ;;
 	nosession)
 		echo '{"type":"step_start","timestamp":1,"part":{"type":"step-start"}}'
 		echo '{"type":"step_finish","timestamp":3,"part":{"reason":"stop"}}'
@@ -161,23 +145,10 @@ session)
 		if [ "$mode" = faildelete ]; then echo "cannot delete" >&2; exit 5; fi
 		if [ "$mode" = gone ]; then echo "Session not found: $3" >&2; exit 1; fi
 		exit 0 ;;
-	list)
-		if [ "$mode" = faillist ]; then echo "db locked" >&2; exit 4; fi
-		# The sessions of the project of the directory it runs in (a test's entries
-		# name their project), newest first (the files are in that order, one JSON
-		# object a line), at most -n of them.
-		n=20; prev=
-		for a in "$@"; do [ "$prev" = -n ] && n=$a; prev=$a; done
-		out=$({ cat "$d/newer" "$d/stray" "$d/decoys"; } 2>/dev/null | grep -F "\"projectId\":\"$(pwd)\"" | head -n "$n" | paste -s -d ',' -)
-		printf '[%s]\n' "$out"
-		exit 0 ;;
 	esac ;;
 esac
 exit 0
 `
-
-// ocID is the session id the fake opencode gives call n.
-func ocID(n int) string { return fmt.Sprintf("ses_%026d", n) }
 
 // ocLineBench is a lineBench whose opencode is the recording fake.
 type ocLineBench struct {
@@ -196,7 +167,7 @@ func newOCLineBench(t *testing.T) *ocLineBench {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := strings.NewReplacer("@D@", strconv.Quote(b.oc), "@T@", strconv.Quote(testdata)).Replace(fakeOpenCodeScript)
+	script := strings.NewReplacer("@D@", strconv.Quote(b.oc), "@T@", strconv.Quote(testdata), "@V@", doctor.OpenCodeVerified).Replace(fakeOpenCodeScript)
 	// The bench's PATH already holds an opencode, the doctor bench's; this one
 	// answers the same questions and records the rest.
 	if err := os.WriteFile(b.db.opencode, []byte(script), 0o755); err != nil {
@@ -264,28 +235,12 @@ func (b *ocLineBench) wantNoOpenCodeCalls(t *testing.T) {
 	}
 }
 
-// listCalls is how many times the fake was asked to list sessions.
-func (b *ocLineBench) listCalls(t *testing.T) int {
-	t.Helper()
-	n := 0
-	for _, c := range b.calls(t) {
-		if strings.HasPrefix(c, "session list ") {
-			n++
-		}
-	}
-	return n
-}
-
-// wantDeletes fails unless the calls after the runs are exactly these session
-// deletes, the lists of sessions a failed run is followed by left out.
+// wantDeletes fails unless the calls are exactly these runs, each followed by the
+// session deletes, and nothing else: no list of sessions is asked for, since the id
+// is known.
 func (b *ocLineBench) wantDeletes(t *testing.T, runs int, ids ...string) {
 	t.Helper()
-	var got []string
-	for _, c := range b.calls(t) {
-		if !strings.HasPrefix(c, "session list ") {
-			got = append(got, c)
-		}
-	}
+	got := b.calls(t)
 	if len(got) != runs+len(ids) {
 		t.Fatalf("opencode was called %d times (%q), want %d run(s) then %d delete(s)", len(got), got, runs, len(ids))
 	}
@@ -301,148 +256,298 @@ func (b *ocLineBench) wantDeletes(t *testing.T, runs int, ids ...string) {
 	}
 }
 
-// ocPortRE finds the port the runbook's TUI line names.
-var ocPortRE = regexp.MustCompile(` --port (\d+) --session `)
+// ocIDRE is the session id parley makes for an OpenCode 2 session: ses_, twelve
+// hex digits of time, fourteen of letters and digits.
+var ocIDRE = regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
 
-func ocPortOf(t *testing.T, runbook string) int {
+// ocID is a session id of the shape OpenCode makes, numbered, for a test that needs a
+// few that differ.
+func ocID(n int) string { return fmt.Sprintf("ses_%026d", n) }
+
+// idOfRun is the session id the first call, the run, was given with --session.
+func idOfRun(t *testing.T, b *ocLineBench) string {
 	t.Helper()
-	m := ocPortRE.FindStringSubmatch(lineWith(t, runbook, " --port ", " --session ", "ses_"))
-	if m == nil {
-		t.Fatalf("no TUI line in the runbook:\n%s", runbook)
+	argv := b.call(t, 1)
+	for i, a := range argv {
+		if a == "--session" && i+1 < len(argv) {
+			return argv[i+1]
+		}
 	}
-	n, _ := strconv.Atoi(m[1])
-	return n
+	t.Fatalf("the run was not given --session: %q", argv)
+	return ""
 }
 
 // TestLineAddOpenCodeSession is the acceptance run for an OpenCode session on the
-// fake opencode: nothing written in the checkout, the reply directory and marker,
-// the session started the way the design says, the records and what is printed.
+// fake opencode: the session id is parley's own and goes to the run with
+// --session, it is the id recorded, printed and checked in the events, nothing is
+// written in the checkout, and the runbook has no port.
 func TestLineAddOpenCodeSession(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
 	co := b.gitCheckout(t, "co-build")
 	treeBefore := treeListing(t, co)
-	env := append(b.env(), "OPENCODE=1", "OPENCODE_PID=4242", "AGENT=1")
-	res := runParleyEnvIn(t, "", env, b.ladd("demo", "build", "opencode", co, "--model", "anthropic/claude-sonnet-4-5")...)
+	res := runParleyEnvIn(t, "", b.env(), b.ladd("demo", "build", "opencode", co, "--model", "anthropic/claude-sonnet-4-5")...)
 	if res.code != 0 {
 		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
 	}
-	t.Logf("stdout:\n%s", res.stdout)
-	t.Logf("stderr:\n%s", res.stderr)
 	stream := b.stream("demo")
-
-	// Nothing is written in the checkout: no launch file, no .codex, no exclude
-	// line, and a git status that is clean.
 	if after := treeListing(t, co); after != treeBefore {
 		t.Errorf("the checkout changed.\nbefore:\n%s\nafter:\n%s", treeBefore, after)
 	}
-	for _, name := range []string{".mcp.json", ".codex"} {
-		if _, err := os.Lstat(filepath.Join(co, name)); err == nil {
-			t.Errorf("an OpenCode session got a %s", name)
-		}
-	}
-	if got := gitIn(t, co, "status", "--porcelain"); got != "" {
-		t.Errorf("the checkout is not clean: %s", got)
-	}
 
-	rec := b.record(t, "demo")
-	s := sessionByNick(t, rec, "build")
-	if s.Harness != "opencode" || s.Model != "anthropic/claude-sonnet-4-5" || s.Checkout != co || s.Thread != ocID(1) || len(s.Files) != 0 {
-		t.Errorf("session %+v", s)
-	}
-	raw := string(mustRead(t, filepath.Join(b.base, "lines", "demo", "line.json")))
-	if !strings.Contains(raw, `"files": []`) || strings.Contains(raw, "opencode_bin") {
-		t.Errorf("line.json holds the empty file list as an empty list, and no opencode_bin the line was not given:\n%s", raw)
-	}
-	fi, err := os.Stat(s.ReplyDir)
-	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("reply directory %s: %v, %v; want a directory at 0700", s.ReplyDir, fi, err)
-	}
-	if filepath.Dir(s.ReplyDir) != b.tmp || !strings.HasPrefix(filepath.Base(s.ReplyDir), "parley-line-demo-") {
-		t.Errorf("reply directory %s, want parley-line-demo-* under %s", s.ReplyDir, b.tmp)
-	}
-	if got := string(mustRead(t, filepath.Join(s.ReplyDir, ".parley-line"))); got != "demo\nbuild\n" {
-		t.Errorf("marker = %q, want the line id and the nick", got)
-	}
-
-	// The session record is where --session auto looks.
-	sr, err := state.OpenSessionRecord(b.base, "build", stream)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := sr.Read(); err != nil || got != ocID(1) {
-		t.Errorf("session record = %q, %v; want %s", got, err, ocID(1))
-	}
-	if fi, err := os.Stat(sr.Path()); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Errorf("session record mode %v (%v), want 0600", fi.Mode(), err)
-	}
-	if tr, err := state.OpenThreadRecord(b.base, "build", stream); err != nil {
-		t.Fatal(err)
-	} else if _, err := os.Lstat(tr.Path()); err == nil {
-		t.Error("an OpenCode session got a Codex thread record")
-	}
-
-	// opencode was asked once, to run, in the checkout, with the primer on its
-	// stdin and not on its command line, and with the caller's OPENCODE variables
-	// left as they were.
+	// One run, with the id parley chose; nothing was listed or deleted.
 	b.wantDeletes(t, 1)
-	argv := b.call(t, 1)
-	// The title carries the token of the reply directory, which is this run's own.
-	token := strings.TrimPrefix(filepath.Base(s.ReplyDir), "parley-line-demo-")
-	if token == "" || token == filepath.Base(s.ReplyDir) {
-		t.Fatalf("no token in the reply directory %s", s.ReplyDir)
+	id := idOfRun(t, b)
+	if !ocIDRE.MatchString(id) {
+		t.Fatalf("the session id %q is not one OpenCode makes", id)
 	}
-	if got, want := strings.Join(argv, "\x00"), strings.Join([]string{"run", "--format", "json", "--title", "parley line demo build " + token, "-m", "anthropic/claude-sonnet-4-5"}, "\x00"); got != want {
-		t.Errorf("opencode argv %q, want %q", argv, strings.Split(want, "\x00"))
+	want := []string{"run", "--format", "json", "--title", "parley line demo build", "--session", id, "-m", "anthropic/claude-sonnet-4-5"}
+	if got := b.call(t, 1); strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("opencode argv %q, want %q", got, want)
 	}
 	if got := strings.TrimSpace(b.file(t, "cwd-1")); got != co {
 		t.Errorf("opencode ran in %q, want the checkout %q", got, co)
 	}
-	if got := b.file(t, "env-1"); got != "OPENCODE=1\nOPENCODE_PID=4242\nAGENT=1\n" {
-		t.Errorf("opencode saw %q of the caller's OPENCODE variables, want them passed on as they were", got)
-	}
-	prompt := b.file(t, "stdin-1")
-	for _, want := range []string{"colin", stream, filepath.Join(s.ReplyDir, "build.reply"), "the parley-line skill, which you load with the skill tool", binPath, b.base,
-		"--nick build", "more than 8 posts within 10m", "external_directory"} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("the primer does not hold %q:\n%s", want, prompt)
-		}
-	}
-	if !strings.HasPrefix(prompt, "This primer is your first message") || !strings.HasSuffix(prompt, "\n") {
-		t.Errorf("the primer on stdin is not the rendered text:\n%q", prompt)
-	}
-	for _, a := range argv {
-		if strings.Contains(a, "This primer") {
-			t.Errorf("the primer is on the command line: %q", a)
-		}
+	if prompt := b.file(t, "stdin-1"); !strings.HasPrefix(prompt, "This primer is your first message") {
+		t.Errorf("the primer is not on stdin:\n%q", prompt)
 	}
 
-	port := ocPortOf(t, res.stdout)
-	pump := fmt.Sprintf("'%s' opencode --stream '%s' --nick build --session auto --port %d --skill line --chair colin --cap 8 --window 10m --state-dir '%s'", binPath, stream, port, b.base)
-	tui := fmt.Sprintf("opencode --port %d --session '%s'", port, ocID(1))
+	s := sessionByNick(t, b.record(t, "demo"), "build")
+	if s.Harness != "opencode" || s.Thread != id || len(s.Files) != 0 {
+		t.Errorf("session %+v, want thread %s", s, id)
+	}
+	sr, err := state.OpenSessionRecord(b.base, "build", stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := sr.Read(); err != nil || got != id {
+		t.Errorf("session record = %q, %v; want %s", got, err, id)
+	}
+
+	// The runbook: the TUI on the session with -s, no port anywhere, the pump
+	// without --port, and the notes for 2.x.
+	pump := "'" + binPath + "' opencode --stream '" + stream + "' --nick build --session auto --skill line --chair colin --cap 8 --window 10m --state-dir '" + b.base + "'"
 	wantInOrder(t, res.stdout, []string{
 		"Session build (opencode) is added to line demo, checkout " + co + ".",
 		"Wrote nothing in the checkout.",
-		"OpenCode session " + ocID(1) + ".",
+		"OpenCode session " + id + ".",
 		"What is left is yours, in this order:",
 		"cd '" + co + "'",
-		tui,
+		"opencode -s '" + id + "'",
 		pump,
 		"Notes:",
-		fmt.Sprintf("The reply file, '%s', is outside the session's checkout, so each write of it raises OpenCode's external_directory ask in the TUI:", filepath.Join(s.ReplyDir, "build.reply")),
-		`answer "Allow always" for the reply directory, since "Allow once" asks again on every reply; "always" asks once more after the TUI restarts.`,
-		"The session was made by opencode run, which denies it OpenCode's question tool and plan mode for that session (a known limit of creating it that way).",
-		"OPENCODE_SERVER_PASSWORD, if you use one, must be set for both commands, and OPENCODE_SERVER_USERNAME too if it is not opencode.",
-		fmt.Sprintf("Session build's answer to its primer (opencode run, session %s):", ocID(1)),
+		"Session build's answer to its primer (opencode run, session " + id + "):",
 		"ready, waiting for the first delivery",
 	})
-	for _, unwanted := range []string{"Network:", "codex", "/mcp", "$parley-line", "Wrote /"} {
-		if strings.Contains(res.stdout, unwanted) {
-			t.Errorf("the runbook mentions %q, which is not an OpenCode session's:\n%s", unwanted, res.stdout)
+	flat := strings.Join(strings.Fields(res.stdout), " ")
+	for _, want := range []string{
+		"OpenCode allows external_directory by default, so writing it asks nothing.",
+		`{ "permissions": [ { "action": "external_directory", "resource": "*", "effect": "ask" } ] }`,
+		"opencode run --session, which adds no permission rules of its own to the session",
+		"it rejected any permission ask and cancelled any question",
+		"The service's password is in its service file (mode 600)",
+		"sends it to the service's loopback address only; it is never printed",
+		"Parley was " + doctor.OpenCodeVerifiedNote,
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("the runbook does not say %q:\n%s", want, res.stdout)
 		}
 	}
-	if !strings.Contains(res.stderr, "starting OpenCode session build") || !strings.Contains(res.stderr, "session build is OpenCode session "+ocID(1)) {
+	for _, unwanted := range []string{"--port", "Allow always", "denies it OpenCode's question tool", "OPENCODE_SERVER_PASSWORD, if you use one"} {
+		if strings.Contains(res.stdout, unwanted) && unwanted != "--port" {
+			t.Errorf("the runbook mentions %q, which is OpenCode 1's:\n%s", unwanted, res.stdout)
+		}
+	}
+	// The one --port in it is the note for an opencode serve of the human's own.
+	if n := strings.Count(res.stdout, "--port"); n != 1 || !strings.Contains(res.stdout, "run the pump with --port <n> and") {
+		t.Errorf("the runbook names --port %d times; want only the note on an opencode serve of one's own:\n%s", n, res.stdout)
+	}
+	if !strings.Contains(res.stderr, "session build is OpenCode session "+id) {
 		t.Errorf("stderr:\n%s", res.stderr)
+	}
+}
+
+// TestLineAddOpenCodeARunThatFailsLikeASimulatedTurnRollsBackTheChosenID: the turn
+// of a 2.0.32 server in simulation mode (it is the one turn that can be run
+// without a model) retries and ends in an error event and status 1. The add fails
+// with the error's own words, deletes exactly the id it chose, and looks for
+// nothing.
+func TestLineAddOpenCodeARunThatFailsLikeASimulatedTurnRollsBackTheChosenID(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	co := b.gitCheckout(t, "co")
+	b.setMode(t, 1, "simfail")
+	before := b.snap(t, co)
+	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
+	if res.code != 1 {
+		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	id := idOfRun(t, b)
+	for _, want := range []string{"Simulation denied unregistered network destination", "exit status 1", "rolled back", "OpenCode session " + id + " (session build)"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+		}
+	}
+	b.wantDeletes(t, 1, id)
+	// The delete ran from the checkout.
+	if got := strings.TrimSpace(b.file(t, "cwd-2")); got != co {
+		t.Errorf("the delete ran in %q, want the checkout %q", got, co)
+	}
+	if got := b.snap(t, co); got != before {
+		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
+	}
+	if _, err := os.Stat(filepath.Join(b.base, "build")); err == nil {
+		if sr, err := state.OpenSessionRecord(b.base, "build", b.stream("demo")); err == nil {
+			if got, _ := sr.Read(); got != "" {
+				t.Errorf("a session record %q was left", got)
+			}
+		}
+	}
+}
+
+// TestLineAddOpenCodeARunThatMadeNoSessionIsNotAFailureToRollBack: a run that fails
+// before it makes the session leaves nothing to delete, and the delete of an id
+// the server does not know ("Session not found", status 1) is not told as one.
+func TestLineAddOpenCodeARunThatMadeNoSessionIsNotAFailureToRollBack(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	co := b.gitCheckout(t, "co")
+	b.setMode(t, 1, "unsaid")
+	b.setMode(t, 2, "gone")
+	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
+	if res.code != 1 || !strings.Contains(res.stderr, "boom: could not reach the service") {
+		t.Fatalf("exit %d, want 1 with the run's own failure\n%s", res.code, res.stderr)
+	}
+	id := idOfRun(t, b)
+	b.wantDeletes(t, 1, id)
+	if !strings.Contains(res.stderr, "rolled back") || strings.Contains(res.stderr, "could NOT roll back") || strings.Contains(res.stderr, "Session not found") {
+		t.Errorf("a delete of a session that was never made was told as a failure:\n%s", res.stderr)
+	}
+}
+
+// TestLineAddOpenCodeADeleteThatFailsIsToldWithTheCommand: a delete that fails for
+// another reason is a failure, with the command to run by hand.
+func TestLineAddOpenCodeADeleteThatFailsIsToldWithTheCommand(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	co := b.gitCheckout(t, "co")
+	b.setMode(t, 1, "failafter")
+	b.setMode(t, 2, "faildelete")
+	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
+	id := idOfRun(t, b)
+	for _, want := range []string{"could NOT roll back OpenCode session " + id, "cannot delete", "remove it yourself with: opencode session delete " + id} {
+		if res.code != 1 || !strings.Contains(res.stderr, want) {
+			t.Errorf("exit %d; stderr does not say %q:\n%s", res.code, want, res.stderr)
+		}
+	}
+}
+
+// TestLineAddOpenCodeEventsNamingAnotherSessionFailTheTurn: the id was parley's
+// choice, so every event must carry it; one that names another session does not
+// show the turn to be the session's, and the session parley made is still the one
+// deleted.
+func TestLineAddOpenCodeEventsNamingAnotherSessionFailTheTurn(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	co := b.gitCheckout(t, "co")
+	b.write(t, "id", "ses_00000000000000000000000042")
+	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
+	if res.code != 1 {
+		t.Fatalf("exit %d, want 1\n%s", res.code, res.stderr)
+	}
+	id := idOfRun(t, b)
+	for _, want := range []string{"its events name \"ses_00000000000000000000000042\" and not only " + id, "the id this run chose"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+		}
+	}
+	b.wantDeletes(t, 1, id)
+}
+
+// TestLineAddOpenCodeInterruptedDeletesTheChosenID: an interrupt, which kills the
+// run before it may have named anything, still deletes the one id, and looks for
+// nothing; the child the opencode started goes with it.
+func TestLineAddOpenCodeInterruptedDeletesTheChosenID(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	co := b.gitCheckout(t, "co")
+	b.setMode(t, 1, "hold")
+
+	cmd := exec.Command(binPath, b.ladd("demo", "build", "opencode", co)...)
+	cmd.Env = append(os.Environ(), b.env()...)
+	stderr := &syncBuffer{}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := joinCmd(cmd)
+	for deadline := time.Now().Add(childDeadline); ; {
+		if _, err := os.Stat(filepath.Join(b.oc, "announced")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("the fake opencode never announced its session:\n%s", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(b.file(t, "child-pid")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(childDeadline):
+		_ = cmd.Process.Kill()
+		t.Fatalf("the add did not end after SIGINT:\n%s", stderr.String())
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 1 {
+		t.Errorf("exit %d, want 1\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "interrupted") || !strings.Contains(stderr.String(), "rolled back") {
+		t.Errorf("stderr does not say it was interrupted and rolled back:\n%s", stderr.String())
+	}
+	b.wantDeletes(t, 1, idOfRun(t, b))
+	// The run is a process group of its own and the stop took it whole: the child
+	// the opencode started is gone with it, as on 1.x.
+	for deadline := time.Now().Add(childDeadline); ; {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the opencode's child %d outlived the run", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestParseOpenCodeTurnReadsOpenCodeEvents: the events of a failed 2.0.32 turn
+// are captured from a server in simulation mode (the first, a step_start, and the
+// last, an error); the events of a turn that completed are shaped from the parts
+// 2.0.32's non-interactive run writes (packages/cli/src/run/noninteractive.ts), as
+// no model turn could be run. Both are read by the parser OpenCode 1's events are.
+func TestParseOpenCodeTurnReadsOpenCodeEvents(t *testing.T) {
+	const id = "ses_ea83ab198ffeRIhi6BZUsPDq5i"
+	failed := `{"type":"step_start","timestamp":1792473911119,"sessionID":"` + id + `","part":{"id":"prt_157c54f4f001c3XPVNJjxsFi2f","sessionID":"` + id + `","messageID":"msg_157c54f2a001RFnoHjhjZMb1a1","type":"step-start","snapshot":"4b825dc642cb6eb9a060e54bf8d69288fbee4904"}}
+{"type":"step_start","timestamp":1792473913165,"sessionID":"` + id + `","part":{"id":"prt_157c5574d0016VGpP5sOzWlFZ9","sessionID":"` + id + `","messageID":"msg_157c54f2a001RFnoHjhjZMb1a1","type":"step-start","snapshot":"4b825dc642cb6eb9a060e54bf8d69288fbee4904"}}
+{"type":"error","timestamp":1792473995534,"sessionID":"` + id + `","error":{"type":"provider.transport","message":"Transport: Simulation denied unregistered network destination: POST https://opencode.ai/inference/openai/v1/chat/completions (POST https://opencode.ai/inference/openai/v1/chat/completions)"}}
+`
+	got := parseOpenCodeTurn(failed)
+	if got.SessionID != id || len(got.Others) != 0 || len(got.NoID) != 0 || got.Steps != 0 || !strings.HasPrefix(got.Failure, "Transport: Simulation denied unregistered network destination") {
+		t.Errorf("a failed 2.x turn parsed as %+v", got)
+	}
+
+	done := `{"type":"step_start","timestamp":1,"sessionID":"` + id + `","part":{"id":"prt_1","sessionID":"` + id + `","messageID":"msg_1","type":"step-start","snapshot":"4b82"}}
+{"type":"text","timestamp":2,"sessionID":"` + id + `","part":{"id":"prt_2","sessionID":"` + id + `","messageID":"msg_1","type":"text","text":"ready, waiting","time":{"start":1,"end":2}}}
+{"type":"step_finish","timestamp":3,"sessionID":"` + id + `","part":{"id":"prt_3","sessionID":"` + id + `","messageID":"msg_1","type":"step-finish","reason":"stop","snapshot":"4b82","cost":0,"tokens":{"input":1,"output":1}}}
+`
+	got = parseOpenCodeTurn(done)
+	if got.SessionID != id || got.Steps != 1 || got.LastReason != "stop" || got.Answer != "ready, waiting" || got.Failure != "" || len(got.NoID) != 0 {
+		t.Errorf("a completed 2.x turn parsed as %+v", got)
 	}
 }
 
@@ -468,39 +573,6 @@ func TestLineAddOpenCodeWorksInACheckoutThatIsNoGitCheckout(t *testing.T) {
 	if ents, err := os.ReadDir(co); err != nil || len(ents) != 0 {
 		t.Errorf("the checkout holds %v (%v), want it empty", ents, err)
 	}
-}
-
-// TestLineAddOpenCodeBinIsTheLinesOwn: a line made with --opencode-bin runs that
-// opencode, and says so in the TUI line, the record and the delete line a drop
-// prints.
-func TestLineAddOpenCodeBinIsTheLinesOwn(t *testing.T) {
-	b := newOCLineBench(t)
-	custom := filepath.Join(b.root, "bin")
-	if err := os.Mkdir(custom, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(custom, "oc-custom")
-	if err := os.WriteFile(bin, mustRead(t, b.db.opencode), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	res := mustLine(t, b.lineBench, b.lnew("demo", "--opencode-bin", bin)...)
-	t.Logf("%s", res.stdout)
-	if got := b.record(t, "demo").OpenCodeBin; got != bin {
-		t.Fatalf("opencode_bin = %q, want %q", got, bin)
-	}
-	// The default opencode is out of reach: the line's own is the only one used.
-	env := b.envWithPath(b.pathWith(t, "claude", "codex", "ergo", "git", "cat", "mv"))
-	co := b.gitCheckout(t, "co")
-	add := runParleyEnvIn(t, "", env, b.ladd("demo", "build", "opencode", co)...)
-	if add.code != 0 {
-		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", add.code, add.stdout, add.stderr)
-	}
-	lineWith(t, add.stdout, "'"+bin+"' --port ", " --session '"+ocID(1)+"'")
-	drop := runParleyEnvIn(t, "", env, b.ldrop("demo", "build")...)
-	if drop.code != 0 {
-		t.Fatalf("drop exit %d\n%s%s", drop.code, drop.stdout, drop.stderr)
-	}
-	lineWith(t, drop.stdout, "'"+bin+"' session delete '"+ocID(1)+"'", "# session build")
 }
 
 // TestLineNewOpenCodeBin: --opencode-bin is resolved and recorded as an absolute
@@ -531,6 +603,59 @@ func TestLineNewOpenCodeBin(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLineAddOpenCodeReadsEitherSkillRoot: OpenCode reads both skill roots, so
+// the line skill under one of them is enough.
+func TestLineAddOpenCodeReadsEitherSkillRoot(t *testing.T) {
+	for _, root := range []string{".claude", ".agents"} {
+		t.Run("only "+root, func(t *testing.T) {
+			b := newOCLineBench(t)
+			lineUp(t, b.lineBench, "demo")
+			gone := ".agents"
+			if root == ".agents" {
+				gone = ".claude"
+			}
+			if err := os.RemoveAll(filepath.Join(b.db.home, gone)); err != nil {
+				t.Fatal(err)
+			}
+			mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
+		})
+	}
+}
+
+// TestLineAddOpenCodeBinIsTheLinesOwn: a line made with --opencode-bin runs that
+// opencode, and says so in the TUI line, the record and the delete line a drop
+// prints.
+func TestLineAddOpenCodeBinIsTheLinesOwn(t *testing.T) {
+	b := newOCLineBench(t)
+	custom := filepath.Join(b.root, "bin")
+	if err := os.Mkdir(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(custom, "oc-custom")
+	if err := os.WriteFile(bin, mustRead(t, b.db.opencode), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := mustLine(t, b.lineBench, b.lnew("demo", "--opencode-bin", bin)...)
+	t.Logf("%s", res.stdout)
+	if got := b.record(t, "demo").OpenCodeBin; got != bin {
+		t.Fatalf("opencode_bin = %q, want %q", got, bin)
+	}
+	// The default opencode is out of reach: the line's own is the only one used.
+	env := b.envWithPath(b.pathWith(t, "claude", "codex", "ergo", "git", "cat", "mv"))
+	co := b.gitCheckout(t, "co")
+	add := runParleyEnvIn(t, "", env, b.ladd("demo", "build", "opencode", co)...)
+	if add.code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", add.code, add.stdout, add.stderr)
+	}
+	id := sessionByNick(t, b.record(t, "demo"), "build").Thread
+	lineWith(t, add.stdout, "'"+bin+"' -s '"+id+"'")
+	drop := runParleyEnvIn(t, "", env, b.ldrop("demo", "build")...)
+	if drop.code != 0 {
+		t.Fatalf("drop exit %d\n%s%s", drop.code, drop.stdout, drop.stderr)
+	}
+	lineWith(t, drop.stdout, "'"+bin+"' session delete '"+id+"'", "# session build")
 }
 
 // TestLineAddOpenCodeRefusesBeforeAnyChange: each refusal that is an OpenCode
@@ -585,14 +710,18 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 		{"a checkout that is not UTF-8", 2, "not valid UTF-8", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			return b.ladd("demo", "build", "opencode", co+"/bad\xffname"), nil
 		}},
-		{"no opencode on the machine", 2, "opencode-ai", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+		{"no opencode on the machine", 2, "install OpenCode 2", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			return b.ladd("demo", "build", "opencode", co), []string{"PATH=" + b.pathWith(t, "claude", "codex", "ergo", "git", "cat", "mv")}
 		}},
-		{"an OpenCode 3", 1, "major version of the 1.x and 2.x", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+		{"an OpenCode 1", 1, "the legacy 1.x", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			b.write(t, "version", "1.18.30")
+			return b.ladd("demo", "build", "opencode", co), nil
+		}},
+		{"an OpenCode 3", 1, "not a major version parley speaks to", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			b.write(t, "version", "opencode v3.0.0")
 			return b.ladd("demo", "build", "opencode", co), nil
 		}},
-		{"an OpenCode 0", 1, "major version of the 1.x and 2.x", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+		{"an OpenCode 0", 1, "not a major version parley speaks to", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			b.write(t, "version", "0.9.0")
 			return b.ladd("demo", "build", "opencode", co), nil
 		}},
@@ -633,62 +762,36 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 	}
 }
 
-// TestLineAddOpenCodeReadsEitherSkillRoot: OpenCode reads both skill roots, so
-// the line skill under one of them is enough.
-func TestLineAddOpenCodeReadsEitherSkillRoot(t *testing.T) {
-	for _, root := range []string{".claude", ".agents"} {
-		t.Run("only "+root, func(t *testing.T) {
-			b := newOCLineBench(t)
-			lineUp(t, b.lineBench, "demo")
-			gone := ".agents"
-			if root == ".agents" {
-				gone = ".claude"
-			}
-			if err := os.RemoveAll(filepath.Join(b.db.home, gone)); err != nil {
-				t.Fatal(err)
-			}
-			mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
-		})
-	}
-}
-
-// TestLineAddOpenCodeFailureRollsEverythingBack: an opencode that fails, announces
-// no session or a bad one, or ends without a completed turn is exit 1 and a
-// machine as it was, the checkout, the record and $TMPDIR included, with the
-// session it did make deleted.
+// TestLineAddOpenCodeFailureRollsEverythingBack: an opencode that fails, names a
+// session other than the one it was given or none, or ends without a completed
+// turn is exit 1 and a machine as it was, the checkout, the record and $TMPDIR
+// included, with the session it was given the id of deleted whatever it did.
 func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 	cases := []struct {
 		name string
 		mode string
 		want string
-		// deleted is whether a delete of the session of run call 1 is made, as call 2.
-		deleted bool
-		// named is whether the run's events named a session, which is the only case
-		// in which the list of sessions is not asked for one the run may have made.
-		named bool
 	}{
-		{"opencode exits nonzero", "fail", "boom: not logged in", false, false},
-		{"no sessionID in any event", "nosession", "no event carries a sessionID", false, false},
-		{"a session id that is not one", "badid", "is not an OpenCode session id", false, true},
-		{"a session id that is too short", "shortid", "is not an OpenCode session id", false, true},
-		{"a session id that begins with a dash", "dashid", "is not an OpenCode session id", false, true},
-		// Output that names two sessions does not say which the run made: none is
-		// deleted, and the error names both.
-		{"events that carry two session ids", "mismatch", "more than one session id", false, true},
-		{"events that carry two session ids, and the run fails", "mismatchfail", "more than one session id", false, true},
-		// A step_finish that names no session certifies nothing, but the id the other
-		// events announced is the run's and is deleted.
-		{"a step_finish that names no session, after others did", "mixednoid", "event(s) of type step_finish carry no sessionID", true, true},
-		{"a step_start that names no session, before others did", "noidfirst", "event(s) of type step_start carry no sessionID", true, true},
-		{"the run fails after the session exists", "failafter", "the model went away", true, true},
-		{"exit 0 but an error event", "errorzero", "stream broke", true, true},
+		{"opencode exits nonzero", "fail", "boom: not logged in"},
+		{"no sessionID in any event", "nosession", "no event carries a sessionID"},
+		{"a session id that is not one", "badid", "and not only"},
+		{"a session id that is too short", "shortid", "and not only"},
+		{"a session id that begins with a dash", "dashid", "and not only"},
+		// Events that name another session do not show the turn to be this session's,
+		// whatever the run exited with.
+		{"events that carry two session ids", "mismatch", "and not only"},
+		{"events that carry two session ids, and the run fails", "mismatchfail", "bad turn"},
+		{"a step_finish that names no session, after others did", "mixednoid", "event(s) of type step_finish carry no sessionID"},
+		{"a step_start that names no session, before others did", "noidfirst", "event(s) of type step_start carry no sessionID"},
+		{"the run fails after the session exists", "failafter", "the model went away"},
+		{"exit 0 but an error event", "errorzero", "stream broke"},
 		// A step_finish(stop) followed by a step that began and never finished: the
 		// last step is not done.
-		{"a last step that never finished", "unfinished", "never finished", true, true},
-		{"a last step that is not a stop", "nostop", `reason "tool-calls"`, true, true},
-		{"no step_finish at all", "nostep", "no step_finish event", true, true},
-		{"stdout past the cap", "overflow", "cut off", true, true},
-		{"control characters in the error", "ctrlerror", "UnknownError: quota[31m exceeded", true, true},
+		{"a last step that never finished", "unfinished", "never finished"},
+		{"a last step that is not a stop", "nostop", `reason "tool-calls"`},
+		{"no step_finish at all", "nostep", "no step_finish event"},
+		{"stdout past the cap", "overflow", "cut off"},
+		{"control characters in the error", "ctrlerror", "UnknownError: quota[31m exceeded"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -713,214 +816,18 @@ func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 			if res.stdout != "" {
 				t.Errorf("a failed run printed on stdout: %q", res.stdout)
 			}
-			if c.deleted {
-				b.wantDeletes(t, 1, ocID(1))
-				if !strings.Contains(res.stderr, "OpenCode session "+ocID(1)+" (session build)") {
-					t.Errorf("the rollback does not name the session it deleted:\n%s", res.stderr)
-				}
-				if got := strings.TrimSpace(b.file(t, "cwd-2")); got != co {
-					t.Errorf("the delete ran in %q, want the checkout %q", got, co)
-				}
-			} else {
-				b.wantDeletes(t, 1)
+			id := idOfRun(t, b)
+			b.wantDeletes(t, 1, id)
+			if !strings.Contains(res.stderr, "OpenCode session "+id+" (session build)") {
+				t.Errorf("the rollback does not name the session it deleted:\n%s", res.stderr)
 			}
-			// A run that named no session is looked for in the list, in case it made one.
-			wantListed := 1
-			if c.named {
-				wantListed = 0
-			}
-			if n := b.listCalls(t); n != wantListed {
-				t.Errorf("sessions were listed %d times, want %d", n, wantListed)
-			}
-			// A list that ran and found nothing is logged, so the silence is not mistaken
-			// for a list that did not run.
-			if !c.named {
-				if want := "holds none titled"; !strings.Contains(res.stderr, want) || !strings.Contains(res.stderr, "so there is nothing to delete") {
-					t.Errorf("stderr does not say the list found nothing (%q):\n%s", want, res.stderr)
-				}
-				if got := strings.TrimSpace(b.file(t, "cwd-2")); got != co {
-					t.Errorf("the list ran in %q, want the checkout %q", got, co)
-				}
+			if got := strings.TrimSpace(b.file(t, "cwd-2")); got != co {
+				t.Errorf("the delete ran in %q, want the checkout %q", got, co)
 			}
 			if got := b.snap(t, co); got != before {
 				t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
 			}
 		})
-	}
-}
-
-// TestLineAddOpenCodeDeletesNothingOnConflictingIds: events that name two sessions
-// do not say which one the run made, and nothing is deleted on a guess. The error
-// names both ids and where to look.
-func TestLineAddOpenCodeDeletesNothingOnConflictingIds(t *testing.T) {
-	// The run exits 0 with the conflicting ids, and exits 1 with them: the error
-	// names the ids, the title and where to look either way, and the second says the
-	// run also failed.
-	for _, mode := range []string{"mismatch", "mismatchfail"} {
-		t.Run(mode, func(t *testing.T) {
-			b := newOCLineBench(t)
-			lineUp(t, b.lineBench, "demo")
-			co := b.gitCheckout(t, "co")
-			b.setMode(t, 1, mode)
-			res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
-			if res.code != 1 {
-				t.Fatalf("exit %d, want 1\n%s", res.code, res.stderr)
-			}
-			want := []string{ocID(1), ocID(99), "none is deleted", "opencode session list, run in " + co, `for the title "parley line demo build `}
-			if mode == "mismatchfail" {
-				want = append(want, "the run also failed: exit status 1: bad turn")
-			}
-			for _, w := range want {
-				if !strings.Contains(res.stderr, w) {
-					t.Errorf("stderr does not say %q:\n%s", w, res.stderr)
-				}
-			}
-			b.wantDeletes(t, 1)
-			if n := b.listCalls(t); n != 0 {
-				t.Errorf("sessions were listed %d times on output that named sessions", n)
-			}
-			if strings.Contains(res.stderr, "OpenCode session "+ocID(1)) {
-				t.Errorf("the rollback names a session it deleted:\n%s", res.stderr)
-			}
-		})
-	}
-}
-
-// TestLineAddOpenCodeDoesNotTakeAFullPageForAll: a list as long as the page asked
-// for may be only the newest part of the project's sessions, so a run that named no
-// session and finds none in it says an older one could exist and where to look; a
-// short page is all of them, and says there is nothing to delete.
-func TestLineAddOpenCodeDoesNotTakeAFullPageForAll(t *testing.T) {
-	entries := func(co string, n int) string {
-		var b strings.Builder
-		for i := 0; i < n; i++ {
-			fmt.Fprintf(&b, `{"id":"ses_%026d","title":"other work %d","directory":%q,"projectId":%q,"created":4102444800000}`+"\n", 2000+i, i, co, co)
-		}
-		return b.String()
-	}
-	for _, c := range []struct {
-		name     string
-		sessions int
-		full     bool
-	}{{"a page as long as the one asked for", 200, true}, {"a page one short of it", 199, false}, {"no sessions at all", 0, false}} {
-		t.Run(c.name, func(t *testing.T) {
-			b := newOCLineBench(t)
-			lineUp(t, b.lineBench, "demo")
-			co := b.gitCheckout(t, "co")
-			b.write(t, "newer", entries(co, c.sessions))
-			b.setMode(t, 1, "fail")
-			res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
-			if res.code != 1 {
-				t.Fatalf("exit %d, want 1\n%s", res.code, res.stderr)
-			}
-			b.wantDeletes(t, 1)
-			if c.full {
-				for _, want := range []string{"the newest 200 sessions of opencode session list in " + co + " hold none titled", "an older one could exist", "run in " + co} {
-					if !strings.Contains(res.stderr, want) {
-						t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
-					}
-				}
-				if strings.Contains(res.stderr, "nothing to delete") {
-					t.Errorf("a full page was taken for all the sessions:\n%s", res.stderr)
-				}
-			} else if !strings.Contains(res.stderr, "so there is nothing to delete") || strings.Contains(res.stderr, "an older one could exist") {
-				t.Errorf("a short page was not taken for all the sessions:\n%s", res.stderr)
-			}
-		})
-	}
-}
-
-// TestLineAddOpenCodeDeletesASessionAStoppedRunLeft: opencode makes the session
-// before its first event, so a run stopped before that has made one it never
-// named. It is found in the list by its exact title (which carries the run's
-// token), directory and creation time, the list is asked for from the checkout
-// (1.18.30 lists only the project of the directory it runs in) and wide enough
-// that the project's newer sessions do not push it off, and what is not that is
-// left alone.
-func TestLineAddOpenCodeDeletesASessionAStoppedRunLeft(t *testing.T) {
-	b := newOCLineBench(t)
-	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
-	entry := func(id, title string, created int64) string {
-		return fmt.Sprintf(`{"id":%q,"title":%q,"directory":%q,"projectId":%q,"created":%d}`+"\n", id, title, co, co, created)
-	}
-	// Sixty sessions newer than the run's, so that the page has to be wider than
-	// the twenty the fake would give by default; and look-alikes of its title
-	// that are other runs' (no token, and another token), in the same directory.
-	var newer strings.Builder
-	for i := 0; i < 60; i++ {
-		newer.WriteString(entry(fmt.Sprintf("ses_%026d", 1000+i), fmt.Sprintf("other work %d", i), 4102444800000))
-	}
-	b.write(t, "newer", newer.String())
-	b.write(t, "decoys", entry("ses_00000000000000000notoken", "parley line demo build", 4102444800000)+
-		entry("ses_00000000000000000othertk", "parley line demo build 1", 4102444800000))
-	b.setMode(t, 1, "stray")
-	before := b.snap(t, co)
-	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
-	if res.code != 1 {
-		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
-	}
-	b.wantDeletes(t, 1, "ses_00000000000000000000stray1")
-	if n := b.listCalls(t); n != 1 {
-		t.Errorf("sessions were listed %d times, want 1", n)
-	}
-	argv := b.call(t, 2)
-	if got, want := strings.Join(argv, " "), "session list --format json -n 200"; got != want {
-		t.Errorf("the list was asked for as %q, want %q", got, want)
-	}
-	// The list and the delete are run from the checkout.
-	for _, n := range []int{2, 3} {
-		if got := strings.TrimSpace(b.file(t, fmt.Sprintf("cwd-%d", n))); got != co {
-			t.Errorf("call %d (%v) ran in %q, want the checkout %q", n, b.call(t, n)[:2], got, co)
-		}
-	}
-	if !strings.Contains(res.stderr, "ses_00000000000000000000stray1 (session build, which the run made without announcing it)") {
-		t.Errorf("stderr does not say it deleted the stray:\n%s", res.stderr)
-	}
-	if got := b.snap(t, co); got != before {
-		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
-	}
-}
-
-// TestLineAddOpenCodeSaysWhenItCannotLookForAStray: a list that fails is told,
-// with the title to look for, and the rest of the rollback goes on.
-func TestLineAddOpenCodeSaysWhenItCannotLookForAStray(t *testing.T) {
-	b := newOCLineBench(t)
-	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
-	b.setMode(t, 1, "fail")
-	b.setMode(t, 2, "faillist")
-	before := b.snap(t, co)
-	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
-	if res.code != 1 || !strings.Contains(res.stderr, "boom: not logged in") {
-		t.Fatalf("exit %d, want 1 with the run's own failure\n%s", res.code, res.stderr)
-	}
-	for _, want := range []string{"could not look for a session the run may have left", "db locked", `look for the title "parley line demo build `, "in opencode session list, run in", "rolled back"} {
-		if !strings.Contains(res.stderr, want) {
-			t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
-		}
-	}
-	if got := b.snap(t, co); got != before {
-		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
-	}
-}
-
-// TestLineAddOpenCodeRollbackSaysWhenItCannotDelete: a delete that fails is told,
-// with the command to run by hand.
-func TestLineAddOpenCodeRollbackSaysWhenItCannotDelete(t *testing.T) {
-	b := newOCLineBench(t)
-	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
-	b.setMode(t, 1, "failafter")
-	b.setMode(t, 2, "faildelete")
-	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
-	if res.code != 1 {
-		t.Fatalf("exit %d, want 1\n%s", res.code, res.stderr)
-	}
-	for _, want := range []string{"could NOT roll back OpenCode session " + ocID(1), "cannot delete", "remove it yourself with: opencode session delete " + ocID(1)} {
-		if !strings.Contains(res.stderr, want) {
-			t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
-		}
 	}
 }
 
@@ -947,65 +854,7 @@ func TestLineAddOpenCodeRollsBackWhenTheRecordCannotBeWritten(t *testing.T) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	b.wantDeletes(t, 1, ocID(1))
-	if got := b.snap(t, co); got != before {
-		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
-	}
-}
-
-// TestLineAddOpenCodeInterruptedRollsEverythingBack: a signal while the turn runs
-// stops the run and everything it started, including a child of the opencode
-// that would otherwise go on, deletes the session the turn had announced and
-// leaves the machine as it was.
-func TestLineAddOpenCodeInterruptedRollsEverythingBack(t *testing.T) {
-	b := newOCLineBench(t)
-	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
-	b.setMode(t, 1, "hold")
-	before := b.snap(t, co)
-
-	cmd := exec.Command(binPath, b.ladd("demo", "build", "opencode", co)...)
-	cmd.Env = append(os.Environ(), b.env()...)
-	stderr := &syncBuffer{}
-	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := joinCmd(cmd)
-	announced := filepath.Join(b.oc, "announced")
-	for deadline := time.Now().Add(childDeadline); ; {
-		if _, err := os.Stat(announced); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			t.Fatalf("the fake opencode never announced its session:\n%s", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(b.file(t, "child-pid")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-done:
-	case <-time.After(childDeadline):
-		_ = cmd.Process.Kill()
-		t.Fatalf("the add did not end after SIGINT:\n%s", stderr.String())
-	}
-	if code := cmd.ProcessState.ExitCode(); code != 1 {
-		t.Errorf("exit %d, want 1\n%s", code, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "interrupted") || !strings.Contains(stderr.String(), "rolled back") {
-		t.Errorf("stderr does not say it was interrupted and rolled back:\n%s", stderr.String())
-	}
-	b.wantDeletes(t, 1, ocID(1))
-	// The child the opencode started is gone with it.
-	waitGone(t, pid, "the opencode's child")
+	b.wantDeletes(t, 1, idOfRun(t, b))
 	if got := b.snap(t, co); got != before {
 		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
 	}
@@ -1033,40 +882,25 @@ func waitGone(t *testing.T, pid int, what string) {
 	}
 }
 
-// TestOpenCodeDeleteAndListStopTheWholeProcessGroup: the delete and the list are
-// run as the turn is, each a process group of its own that a stop takes whole, so
-// a launcher's child does not outlive the command that is stopped at its bound.
-func TestOpenCodeDeleteAndListStopTheWholeProcessGroup(t *testing.T) {
+// TestOpenCodeDeleteStopsTheWholeProcessGroup: the delete is run as the turn is, a
+// process group of its own that a stop takes whole, so a launcher's child does not
+// outlive the command that is stopped at its bound.
+func TestOpenCodeDeleteStopsTheWholeProcessGroup(t *testing.T) {
 	old := openCodeDeleteTimeout
 	openCodeDeleteTimeout = time.Second
 	t.Cleanup(func() { openCodeDeleteTimeout = old })
-	for _, c := range []struct {
-		name string
-		run  func(b *ocLineBench, co string) error
-	}{
-		{"session delete", func(b *ocLineBench, co string) error {
-			return openCodeDelete(b.db.opencode, "opencode", ocID(1), co)
-		}},
-		{"session list", func(b *ocLineBench, co string) error {
-			_, _, err := openCodeStrays(b.db.opencode, "t", co, time.Now())
-			return err
-		}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			b := newOCLineBench(t)
-			b.setMode(t, 1, "holdcmd")
-			co := b.plainCheckout(t, "co")
-			if err := c.run(b, co); err == nil {
-				t.Fatal("a command that never ended was taken for a success")
-			}
-			pid, err := strconv.Atoi(strings.TrimSpace(b.file(t, "child-pid-1")))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-			waitGone(t, pid, "the child of the stopped "+c.name)
-		})
+	b := newOCLineBench(t)
+	b.setMode(t, 1, "holdcmd")
+	co := b.plainCheckout(t, "co")
+	if err := openCodeDelete(b.db.opencode, "opencode", "ses_000000000000000000000000AA", co); err == nil {
+		t.Fatal("a command that never ended was taken for a success")
 	}
+	pid, err := strconv.Atoi(strings.TrimSpace(b.file(t, "child-pid-1")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	waitGone(t, pid, "the child of the stopped session delete")
 }
 
 // TestLineAddOpenCodeKillsAChildTheLauncherLeft: a launcher that ends the turn and
@@ -1090,7 +924,7 @@ func TestLineAddOpenCodeKillsAChildTheLauncherLeft(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	waitGone(t, pid, "the child the launcher left")
-	b.wantDeletes(t, 1, ocID(1))
+	b.wantDeletes(t, 1, idOfRun(t, b))
 	if got := b.snap(t, co); got != before {
 		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
 	}
@@ -1107,18 +941,20 @@ type ocEnvRecorder struct {
 func (e *ocEnvRecorder) logf(format string, a ...any) {
 	e.logs = append(e.logs, fmt.Sprintf(format, a...))
 }
+
 func (e *ocEnvRecorder) push(what string, do func() error) {
 	e.undos = append(e.undos, what)
 	e.do = append(e.do, do)
 }
+
 func (e *ocEnvRecorder) mkdirAll(dir string) error {
 	e.dirs = append(e.dirs, dir)
 	return os.MkdirAll(dir, 0o700)
 }
 
 // TestStartOpenCodeSessionEndsAHungTurnAndRegistersItsSession: a turn that never
-// ends is stopped at the bound, the error says why, and the session it had
-// announced is registered for deletion, as is not the record, which was never
+// ends is stopped at the bound, the error says why, and the session it was
+// given is registered for deletion, as is not the record, which was never
 // written.
 func TestStartOpenCodeSessionEndsAHungTurnAndRegistersItsSession(t *testing.T) {
 	b := newOCLineBench(t)
@@ -1127,7 +963,7 @@ func TestStartOpenCodeSessionEndsAHungTurnAndRegistersItsSession(t *testing.T) {
 	env := &ocEnvRecorder{}
 	start := time.Now()
 	_, _, err := startOpenCodeSession(context.Background(), env, openCodeSession{
-		nick: "build", dir: co, bin: b.db.opencode, name: "opencode", title: "t", prompt: "hello\n",
+		nick: "build", dir: co, bin: b.db.opencode, name: "opencode", sid: "ses_000000000000000000000000AA", title: "t", prompt: "hello\n",
 		base: b.base, stream: b.stream("demo"), timeout: 2 * time.Second,
 	})
 	if err == nil {
@@ -1141,18 +977,18 @@ func TestStartOpenCodeSessionEndsAHungTurnAndRegistersItsSession(t *testing.T) {
 			t.Errorf("the error does not say %q: %v", want, err)
 		}
 	}
-	// 1.18.30's run refuses an ask by itself, so the wording says no more than that
-	// the turn did not end.
+	// The wording says no more than that the turn did not end.
 	if strings.Contains(err.Error(), "ask") || strings.Contains(err.Error(), "by itself") {
 		t.Errorf("the error says why the turn hung, which it does not know: %v", err)
 	}
-	if len(env.undos) != 1 || !strings.Contains(env.undos[0], ocID(1)) {
-		t.Fatalf("registered %v, want the one session %s", env.undos, ocID(1))
+	const sid = "ses_000000000000000000000000AA"
+	if len(env.undos) != 1 || !strings.Contains(env.undos[0], sid) {
+		t.Fatalf("registered %v, want the one session %s", env.undos, sid)
 	}
 	if err := env.do[0](); err != nil {
 		t.Fatalf("the registered delete failed: %v", err)
 	}
-	b.wantDeletes(t, 1, ocID(1))
+	b.wantDeletes(t, 1, sid)
 	pid, _ := strconv.Atoi(strings.TrimSpace(b.file(t, "child-pid")))
 	waitGone(t, pid, "the child of the stopped run")
 	if len(env.dirs) != 0 {
@@ -1230,6 +1066,9 @@ func TestParseOpenCodeTurn(t *testing.T) {
 	}
 }
 
+// ocSampleID is a session id of the shape OpenCode makes, for the records a test writes by hand.
+const ocSampleID = "ses_00000000000000000000000001"
+
 // TestLineSessionCheckForOpenCode: the record of an OpenCode session is held to
 // what line add writes: a session id as its thread, no launch file, a reply
 // directory of the line.
@@ -1239,7 +1078,7 @@ func TestLineSessionCheckForOpenCode(t *testing.T) {
 		rec := goodLineRecord(base)
 		rec.Sessions = append([]lineSession(nil), rec.Sessions...)
 		rec.Sessions = append(rec.Sessions, lineSession{Nick: "oc", Harness: "opencode", Model: "openai/gpt-5", Checkout: "/work/co",
-			Thread: ocID(1), ReplyDir: "/tmp/parley-line-demo-456", Files: []lineFile{}})
+			Thread: ocSampleID, ReplyDir: "/tmp/parley-line-demo-456", Files: []lineFile{}})
 		return rec
 	}
 	if err := good().check("demo", base); err != nil {
@@ -1259,8 +1098,8 @@ func TestLineSessionCheckForOpenCode(t *testing.T) {
 		{"no session id", func(r *lineRecord) { r.Sessions[2].Thread = "" }, "no session id"},
 		{"a Codex thread as the id", func(r *lineRecord) { r.Sessions[2].Thread = fakeThread(1) }, "OpenCode session's id"},
 		{"an id that is not one", func(r *lineRecord) { r.Sessions[2].Thread = "ses_abc" }, "OpenCode session's id"},
-		{"a session id on a Codex session", func(r *lineRecord) { r.Sessions[1].Thread = ocID(1) }, "UUID"},
-		{"a session id on a Claude session", func(r *lineRecord) { r.Sessions[0].Thread = ocID(1) }, "a Claude session holds no thread"},
+		{"a session id on a Codex session", func(r *lineRecord) { r.Sessions[1].Thread = ocSampleID }, "UUID"},
+		{"a session id on a Claude session", func(r *lineRecord) { r.Sessions[0].Thread = ocSampleID }, "a Claude session holds no thread"},
 		{"a launch file", func(r *lineRecord) {
 			r.Sessions[2].Files = []lineFile{{Path: "/work/co/.mcp.json", SHA256: "sha256:" + strings.Repeat("a", 64)}}
 		}, "has none"},
@@ -1312,7 +1151,7 @@ func TestLineDropOpenCodeSession(t *testing.T) {
 		"OpenCode session record for session build",
 		"reply directory " + s.ReplyDir,
 		"OpenCode still has each OpenCode session. Keep that history, or delete it:",
-		"opencode session delete '" + ocID(1) + "'    # session build",
+		"opencode session delete '" + s.Thread + "'    # session build",
 	})
 	for _, unwanted := range []string{"launch file", "Codex still has", ".mcp.json", ".codex"} {
 		if strings.Contains(res.stdout, unwanted) {
@@ -1348,7 +1187,7 @@ func TestLineDropOpenCodeJudgesItsRecordBeforeRemovingIt(t *testing.T) {
 		}
 	})
 	t.Run("a record that holds another session", func(t *testing.T) {
-		b, _, sr := setup(t)
+		b, s, sr := setup(t)
 		const other = "ses_AbCdEfGhIjKlMnOpQrStUvWxYz"
 		if err := sr.Write(other); err != nil {
 			t.Fatal(err)
@@ -1356,7 +1195,7 @@ func TestLineDropOpenCodeJudgesItsRecordBeforeRemovingIt(t *testing.T) {
 		res := mustLine(t, b.lineBench, b.ldrop("demo", "build")...)
 		wantInOrder(t, res.stdout, []string{
 			"Left in place:",
-			fmt.Sprintf("OpenCode session record %s: it holds session %s, not session build's %s, so it is another session's or no one's", sr.Path(), other, ocID(1)),
+			fmt.Sprintf("OpenCode session record %s: it holds session %s, not session build's %s, so it is another session's or no one's", sr.Path(), other, s.Thread),
 		})
 		if _, err := os.Stat(sr.Path()); err != nil {
 			t.Errorf("the record that is not the session's was removed: %v", err)
@@ -1462,39 +1301,37 @@ func TestLineEndTakesDownEverySession(t *testing.T) {
 
 // TestLineAddOpenCodePumpFindsTheRecordedSession: parley opencode --session auto,
 // as the runbook prints it, finds the session the add recorded and posts the
-// chair's message into it as one prompt, whose text is what parley wait prints.
-// The port is the one the runbook names for a TUI that is not there; the fake
-// server stands in for it on that line's port by the test pointing the pump at
-// the fake's.
+// chair's message into it as one prompt, whose text is what parley wait prints. The
+// runbook's pump line has no port: the pump finds the service from its file, which
+// the test writes for the fake server in the state home the runbook's environment
+// names.
 func TestLineAddOpenCodePumpFindsTheRecordedSession(t *testing.T) {
 	addr := startErgo(t)
 	b := newOCLineBench(t)
 	b.db.server = addr
 	lineUp(t, b.lineBench, "demo")
 	co := b.gitCheckout(t, "co")
-	b.write(t, "id", ocSession)
 	res := mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", co)...)
-	if got := sessionByNick(t, b.record(t, "demo"), "build").Thread; got != ocSession {
-		t.Fatalf("recorded session %q, want %q", got, ocSession)
+	recorded := sessionByNick(t, b.record(t, "demo"), "build").Thread
+	if !ocIDRE.MatchString(recorded) {
+		t.Fatalf("recorded session %q is not one OpenCode makes", recorded)
 	}
 
-	srv := newOCServer(t)
+	srv := newOCServiceServer(t)
+	srv.set(func() { srv.known = map[string]bool{recorded: true} })
+	stateHome := t.TempDir()
+	writeService(t, stateHome, srv.url(), ocPID, 0o600)
 	words := shellWords(t, lineWith(t, res.stdout, " opencode --stream "))
 	if words[0] != binPath || words[1] != "opencode" {
 		t.Fatalf("the pump line starts with %q, want this binary and opencode", words[:2])
 	}
-	args := append([]string(nil), words[2:]...)
-	swapped := false
-	for i, a := range args {
-		if a == "--port" {
-			args[i+1], swapped = strconv.Itoa(srv.port()), true
+	for _, w := range words {
+		if w == "--port" {
+			t.Fatalf("the pump line names a port: %q", words)
 		}
 	}
-	if !swapped {
-		t.Fatalf("no --port in %q", args)
-	}
-	_, _, stderr := startOpencode(t, append(ocEnv(), b.env()...), append(args, "--debounce", "100ms")...)
-	waitForStderr(t, stderr, "into OpenCode session "+ocSession)
+	_, _, stderr := startOpencode(t, append(append(ocEnv(), b.env()...), "XDG_STATE_HOME="+stateHome), append(append([]string(nil), words[2:]...), "--debounce", "100ms")...)
+	waitForStderr(t, stderr, "into OpenCode session "+recorded)
 
 	mustRun(t, "", "send", "--stream", b.stream("demo"), "--nick", "colin", "--state-dir", t.TempDir(), "--", "welcome to the line")
 	posts := srv.waitPosts(1, stderr)

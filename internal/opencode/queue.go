@@ -4,19 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"time"
 )
 
-// The delivery for OpenCode 2, under the loop opencode.go runs for OpenCode 1.
+// The delivery, under the loop opencode.go runs.
 //
-// OpenCode 2 has what OpenCode 1 lacks, a queue of its own. A prompt posted with
-// delivery "queue" waits in the session's inbox, and the server turns it into a
-// message of a turn of its own when the session is next free to take one: it is
-// never merged into a running turn, which is the one thing the delivery of
-// OpenCode 1 had to be built around. The pump still waits for an idle session
-// before it posts, so that what arrived while a turn ran goes over as one
-// delivery and not one turn each.
+// OpenCode has a queue of its own. A prompt posted with delivery "queue" waits in
+// the session's inbox, and the server turns it into a message of a turn of its own
+// when the session is next free to take one: it is never merged into a running
+// turn. The pump still waits for an idle session before it posts, so that what
+// arrived while a turn ran goes over as one delivery and not one turn each.
 //
 // The delivery is made in two phases. In the first the pump chooses the id of the
 // message, so it knows it before the server does, and posts; a post that got no
@@ -24,8 +21,7 @@ import (
 // first (see Client2.Prompt). That phase is bounded by the read-back deadline, and
 // ends when the server has admitted the prompt and said so, with the text that was
 // posted. In the second the pump waits, with no deadline, for the message with
-// that id to hold the posted bytes, which is the same proof the history read-back
-// gives for OpenCode 1, and only then is the delivery committed.
+// that id to hold the posted bytes, and only then is the delivery committed.
 //
 // While the message is not there yet the entry is in the inbox, and the pump
 // waits; it never changes it. Two things keep an entry there. The session is busy,
@@ -69,133 +65,11 @@ const parkedPolls = 2
 
 // notSentError is a delivery that provably did not reach the server: every
 // attempt to post it failed to connect. The loop goes back to waiting for the
-// server, as it does for OpenCode 1.
+// server.
 type notSentError struct{ err error }
 
 func (e *notSentError) Error() string { return e.err.Error() }
 func (e *notSentError) Unwrap() error { return e.err }
-
-// busy reads whether the session is in a turn, from whichever server it speaks to.
-func (p *Pump) busy(ctx context.Context) (bool, error) {
-	if p.client2 != nil {
-		return p.client2.Busy(ctx, p.session)
-	}
-	return p.client.Busy(ctx, p.session, p.directory)
-}
-
-// attach2 is attach for OpenCode 2: the server answers, is a version this front
-// speaks to, and knows the session. In discovery mode it first finds the service
-// again from its registration file, which the service rewrites when it starts
-// (another address, password and process id): a pump that reads the file once would
-// hold for a service that is not there any more. Asking the server who it is comes
-// before asking for the session (Discovery.Find), so a stale file reads as stale.
-//
-// A service that is not there (no file, or one that does not describe the server
-// that answers), or is starting (a 5xx), is a server that is away, and is returned
-// as a transport failure, which the loop holds for with its backoff. A 401 after the
-// file was read again is not: the password in the file is the service's own, and it
-// is refused. With a port nothing is found again, and the errors are the server's
-// own, as for OpenCode 1.
-func (p *Pump) attach2(ctx context.Context) error {
-	if p.discovery != nil {
-		_, c, _, err := p.discovery.Find(ctx)
-		if err != nil {
-			return holdForService(err)
-		}
-		p.client2 = c
-	} else {
-		info, err := p.client2.Info(ctx)
-		if err != nil {
-			return err
-		}
-		if err := CheckVersion2(info.Version); err != nil {
-			return err
-		}
-	}
-	s, err := p.client2.Session(ctx, p.session)
-	if err != nil {
-		if p.discovery != nil {
-			return holdForService(err)
-		}
-		return err
-	}
-	p.directory = s.Directory
-	return nil
-}
-
-// holdForService turns the failures that mean "the service is not up yet" into a
-// transport failure, which is what the loop holds for, and leaves every other
-// failure as it is.
-func holdForService(err error) error {
-	var stale *StaleServiceError
-	var se *StatusError
-	switch {
-	case IsTransport(err):
-		return err
-	case errors.Is(err, ErrNoService), errors.As(err, &stale):
-		return &TransportError{Op: "find the OpenCode 2 service", Err: err}
-	case errors.As(err, &se) && se.Code >= http.StatusInternalServerError:
-		return &TransportError{Op: "ask the OpenCode 2 service", Err: err}
-	}
-	return err
-}
-
-// awaitServer2 holds, after a request to the server failed to get an answer, until
-// the server answers again, with the backoff the idle wait uses, and says so once
-// when it goes and once when it is back. Whatever else fails is the end of the wait.
-// The entry the pump is waiting on is in the server's database and survives its
-// restart.
-func (p *Pump) awaitServer2(ctx context.Context, cause error) error {
-	p.logf("OpenCode is not answering (%v): the delivery is queued there, holding for the server", cause)
-	backoff := p.idlePoll
-	for {
-		if !p.sleep(ctx, backoff) {
-			return ctx.Err()
-		}
-		backoff = min(backoff*2, p.maxBackoff)
-		err := p.attach(ctx)
-		switch {
-		case err == nil:
-			p.logf("OpenCode is back")
-			return nil
-		case ctx.Err() != nil:
-			return ctx.Err()
-		case IsTransport(err):
-		default:
-			return err
-		}
-	}
-}
-
-// CheckVersion2 refuses a server this OpenCode 2 client cannot speak to: one whose
-// major version is not 2, or whose version cannot be read. 2.0.32 is the version
-// the client was checked against, in OpenCode's simulation mode.
-func CheckVersion2(version string) error {
-	major, ok := majorVersion(version)
-	if !ok {
-		return fmt.Errorf("cannot read an OpenCode version from %s: this client speaks OpenCode 2's HTTP API and is not run against anything it cannot recognise as OpenCode 2; %s", quoteBounded(version), Install2Hint)
-	}
-	if major != 2 {
-		return fmt.Errorf("the server reports OpenCode version %s, not OpenCode 2: this client speaks OpenCode 2's HTTP API; %s", quoteBounded(version), InstallHint)
-	}
-	return nil
-}
-
-// Probe2 is Probe for OpenCode 2: the server answers, speaks a version this front
-// supports, and knows the session. It returns what the server says of itself.
-func Probe2(ctx context.Context, c Client2, session string) (ServerInfo, error) {
-	info, err := c.Info(ctx)
-	if err != nil {
-		return ServerInfo{}, err
-	}
-	if err := CheckVersion2(info.Version); err != nil {
-		return ServerInfo{}, err
-	}
-	if _, err := c.Session(ctx, session); err != nil {
-		return ServerInfo{}, err
-	}
-	return info, nil
-}
 
 // deliverQueued hands text to the session and returns once the session holds it
 // as a message, or once the human is seen to have cancelled it. A *notSentError
@@ -219,14 +93,14 @@ func (p *Pump) deliverQueued(ctx context.Context, text string) error {
 // discovery mode the service is found again between the tries, since a service
 // that restarted is at another address.
 func (p *Pump) handOff(ctx context.Context, id, text string) error {
-	phase, cancel := context.WithTimeout(ctx, p.readBackTimeout)
+	phase, cancel := context.WithTimeout(ctx, p.postTimeout)
 	defer cancel()
 	// reached is whether any attempt may have reached the server. Until one has,
 	// a failure to connect sent nothing.
 	reached := false
 	var last error
 	for {
-		err := p.client2.Prompt(phase, p.session, id, text)
+		err := p.client.Prompt(phase, p.session, id, text)
 		switch {
 		case err == nil:
 			return nil
@@ -260,7 +134,7 @@ func (p *Pump) handOff(ctx context.Context, id, text string) error {
 			if last != nil {
 				detail = " (the last attempt failed: " + last.Error() + ")"
 			}
-			return fmt.Errorf("the server did not answer the delivery posted to session %s as message %s within %s%s; it may have landed, and nothing was committed, so it is delivered again at the next start", p.session, id, p.readBackTimeout, detail)
+			return fmt.Errorf("the server did not answer the delivery posted to session %s as message %s within %s%s; it may have landed, and nothing was committed, so it is delivered again at the next start", p.session, id, p.postTimeout, detail)
 		}
 	}
 }
@@ -313,14 +187,14 @@ func (p *Pump) landed(ctx context.Context, id, text string) error {
 // message (or was cancelled), and an error for anything that ends the wait; a look
 // that got no answer holds for the server and is neither.
 func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (bool, error) {
-	msg, found, err := p.client2.Message(ctx, p.session, id)
+	msg, found, err := p.client.Message(ctx, p.session, id)
 	if err != nil {
 		return false, p.readFailed(ctx, err)
 	}
 	if found {
 		return true, p.confirm(msg, text)
 	}
-	inbox, err := p.client2.Inbox(ctx, p.session)
+	inbox, err := p.client.Inbox(ctx, p.session)
 	if IsTooLong(err) {
 		// The inbox carries every queued entry's payload, attachments included, and the
 		// human's own queued prompts can pass the bound it is read under. With it
@@ -349,7 +223,7 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (boo
 		// Gone from the inbox since the read above: promoted in between, or
 		// cancelled. Promotion deletes the entry and creates the message in one
 		// step, so the message is there now if that is what it was.
-		msg, found, err = p.client2.Message(ctx, p.session, id)
+		msg, found, err = p.client.Message(ctx, p.session, id)
 		if err != nil {
 			return false, p.readFailed(ctx, err)
 		}
@@ -360,7 +234,7 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (boo
 		return true, nil
 	}
 
-	busy, err := p.client2.Busy(ctx, p.session)
+	busy, err := p.client.Busy(ctx, p.session)
 	if err != nil {
 		return false, p.readFailed(ctx, err)
 	}
@@ -397,7 +271,7 @@ func (p *Pump) readFailed(ctx context.Context, err error) error {
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case IsTransport(err):
-		return p.awaitServer2(ctx, err)
+		return p.awaitServer(ctx, err)
 	case errors.Is(err, ErrSessionNotFound):
 		return fmt.Errorf("the delivery was posted to session %s, which the server no longer knows, so it cannot be confirmed; nothing was committed: %w", p.session, err)
 	case IsTooLong(err):

@@ -2,11 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,52 +15,67 @@ import (
 	"time"
 )
 
-// ocSession is the id the fake server knows, shaped like the ones OpenCode 1.18
-// makes.
+// ocPID is the process id the fake OpenCode server reports for itself, and
+// the service file it is described by holds.
+const ocPID = 31337
+
+// ocPassword is the password of the fake's service. Tests look for it in what
+// the pump says, and it must not be there.
+const ocPassword = "oc2-service-password-do-not-print"
+
+// ocSession is the id the fake server knows, shaped like the ones OpenCode makes.
 const ocSession = "ses_ea8bbe5a9ffePFZ3AOhDdaNgbW"
 
-// ocDir is the directory the fake's sessions belong to. The fake, like OpenCode
-// 1.18.30, lists a session's status only under that directory, and the server
-// is taken to run in another.
+// ocDir is the directory the fake's session belongs to.
 const ocDir = "/work/checkout"
 
-// ocServer is a stand-in for the OpenCode 1 server a TUI serves, for the tests
-// that run the real binary against it. It answers the five calls the front makes
-// and models a session whose every prompt is answered at once: the user message
-// lands, an assistant message answering it follows, and the status is idle, so a
-// delivery completes without the pump waiting out its settle bound.
+// ocServer is a stand-in for the OpenCode server, for the tests that run the real
+// binary against it. It answers the calls the front makes and takes a prompt into
+// the history at once.
 type ocServer struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu      sync.Mutex
-	version string
-	// page makes the health path answer as OpenCode 2 does, with its web page.
-	page     bool
-	known    map[string]bool
-	user     string
+	mu       sync.Mutex
+	version  string
+	pid      int
 	password string
+	known    map[string]bool
 	msgs     []ocMsg
+	posts    [][]byte
+	refused  int
 	seq      int
-	// busy is a turn in progress on every session, listed under ocDir.
-	busy       bool
-	statusDirs []string
-	posts      [][]byte
-	// refused counts the requests turned away for their credentials.
-	refused int
+	// activeReads is how many times the pump asked which sessions are in a turn.
+	activeReads int
+	// busy is a turn in progress on every session.
+	busy bool
+	// down makes every request be answered with a 500, a service that is up and
+	// broken.
+	down bool
 }
 
-type ocMsg struct {
-	id, role, parent, text string
-}
+type ocMsg struct{ id, text string }
 
+// newOCServer is a server that wants no password, as a test of --port, or of a
+// recorded session, has no use for one.
 func newOCServer(t *testing.T) *ocServer {
 	t.Helper()
-	s := &ocServer{t: t, version: "1.18.30", known: map[string]bool{ocSession: true}, user: "opencode"}
+	s := newOCServiceServer(t)
+	s.set(func() { s.password = "" })
+	return s
+}
+
+// newOCServiceServer is a server with the password of a service, which is what the
+// service file the tests write holds.
+func newOCServiceServer(t *testing.T) *ocServer {
+	t.Helper()
+	s := &ocServer{t: t, version: "2.0.32", pid: ocPID, password: ocPassword, known: map[string]bool{ocSession: true}}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.srv.Close)
 	return s
 }
+
+func (s *ocServer) url() string { return s.srv.URL }
 
 func (s *ocServer) port() int {
 	_, p, err := net.SplitHostPort(s.srv.Listener.Addr().String())
@@ -79,19 +95,18 @@ func (s *ocServer) set(fn func()) {
 	fn()
 }
 
-func (s *ocServer) statusDirsSeen() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.statusDirs...)
-}
-
 func (s *ocServer) postBodies() [][]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([][]byte(nil), s.posts...)
 }
 
-// waitPosts blocks until n prompts have been accepted and returns them.
+func (s *ocServer) refusedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refused
+}
+
 func (s *ocServer) waitPosts(n int, stderr *syncBuffer) [][]byte {
 	s.t.Helper()
 	deadline := time.Now().Add(childDeadline)
@@ -106,45 +121,78 @@ func (s *ocServer) waitPosts(n int, stderr *syncBuffer) [][]byte {
 	}
 }
 
+// writeService writes the service file the fake is described by, as OpenCode 2
+// writes it: a file only its owner can read, in <stateHome>/opencode/service.json.
+// stateHome is what the pump gets as XDG_STATE_HOME. url and pid are the file's
+// to name, so a test can make them wrong.
+func writeService(t *testing.T, stateHome, url string, pid int, mode os.FileMode) string {
+	t.Helper()
+	dir := filepath.Join(stateHome, "opencode")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(map[string]any{"id": "1b0e1e96-26b8-470c-9aee-f6f58e02b495", "version": "2.0.32", "url": url, "pid": pid, "password": ocPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "service.json")
+	if err := os.WriteFile(p, b, mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, mode); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func (s *ocServer) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.down {
+		http.Error(w, "broken", http.StatusInternalServerError)
+		return
+	}
 	if s.password != "" {
 		u, p, ok := r.BasicAuth()
-		if !ok || u != s.user || p != s.password {
+		if !ok || u != "opencode" || p != s.password {
 			s.refused++
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			ocJSON(w, http.StatusUnauthorized, map[string]any{"_tag": "UnauthorizedError", "message": "Authentication required"})
 			return
 		}
 	}
 	path := r.URL.Path
 	switch {
-	case path == "/global/health" && r.Method == http.MethodGet && s.page:
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte("<!doctype html><html><body><div id=root></div></body></html>"))
-	case path == "/global/health" && r.Method == http.MethodGet:
-		ocJSON(w, http.StatusOK, map[string]any{"healthy": true, "version": s.version})
-	case path == "/session/status" && r.Method == http.MethodGet:
-		dir := r.URL.Query().Get("directory")
-		s.statusDirs = append(s.statusDirs, dir)
-		if s.busy && dir == ocDir {
-			ocJSON(w, http.StatusOK, map[string]any{ocSession: map[string]any{"type": "busy"}})
-			return
+	case path == "/api/info" && r.Method == http.MethodGet:
+		ocJSON(w, http.StatusOK, map[string]any{"version": s.version, "pid": s.pid})
+	case path == "/api/session/active" && r.Method == http.MethodGet:
+		s.activeReads++
+		data := map[string]any{}
+		if s.busy {
+			data[ocSession] = map[string]any{"type": "running"}
 		}
-		ocJSON(w, http.StatusOK, map[string]any{})
-	case strings.HasPrefix(path, "/session/"):
-		id, tail, _ := strings.Cut(strings.TrimPrefix(path, "/session/"), "/")
+		ocJSON(w, http.StatusOK, map[string]any{"data": data})
+	case strings.HasPrefix(path, "/api/session/"):
+		id, tail, _ := strings.Cut(strings.TrimPrefix(path, "/api/session/"), "/")
 		if !s.known[id] {
-			ocJSON(w, http.StatusNotFound, map[string]any{"name": "NotFoundError"})
+			ocJSON(w, http.StatusNotFound, map[string]any{"_tag": "SessionNotFoundError", "sessionID": id, "message": "Session not found: " + id})
 			return
 		}
 		switch {
 		case tail == "" && r.Method == http.MethodGet:
-			ocJSON(w, http.StatusOK, map[string]any{"id": id, "directory": ocDir})
-		case tail == "message" && r.Method == http.MethodGet:
-			s.listLocked(w, r)
-		case tail == "prompt_async" && r.Method == http.MethodPost:
-			s.promptLocked(w, r)
+			ocJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": id, "location": map[string]any{"directory": ocDir}}})
+		case tail == "prompt" && r.Method == http.MethodPost:
+			s.promptLocked(w, r, id)
+		case strings.HasPrefix(tail, "message/") && r.Method == http.MethodGet:
+			mid := strings.TrimPrefix(tail, "message/")
+			for _, m := range s.msgs {
+				if m.id == mid {
+					ocJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": m.id, "time": map[string]any{"created": 1}, "text": m.text, "type": "user"}})
+					return
+				}
+			}
+			ocJSON(w, http.StatusNotFound, map[string]any{"_tag": "MessageNotFoundError", "sessionID": id, "messageID": mid, "message": "not found"})
+		case tail == "inbox" && r.Method == http.MethodGet:
+			ocJSON(w, http.StatusOK, map[string]any{"data": []any{}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -153,60 +201,74 @@ func (s *ocServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *ocServer) listLocked(w http.ResponseWriter, r *http.Request) {
-	msgs := s.msgs
-	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n < len(msgs) {
-		msgs = msgs[len(msgs)-n:]
-	}
-	out := make([]map[string]any, 0, len(msgs))
-	for _, m := range msgs {
-		info := map[string]any{"id": m.id, "role": m.role}
-		if m.parent != "" {
-			info["parentID"] = m.parent
-		}
-		out = append(out, map[string]any{"info": info, "parts": []map[string]any{{"type": "text", "text": m.text}}})
-	}
-	ocJSON(w, http.StatusOK, out)
-}
-
-func (s *ocServer) promptLocked(w http.ResponseWriter, r *http.Request) {
+func (s *ocServer) promptLocked(w http.ResponseWriter, r *http.Request, session string) {
 	body, _ := io.ReadAll(r.Body)
 	s.posts = append(s.posts, body)
 	var req struct {
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"parts"`
+		ID       string `json:"id"`
+		Text     string `json:"text"`
+		Delivery string `json:"delivery"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil || len(req.Parts) != 1 {
-		ocJSON(w, http.StatusBadRequest, map[string]any{"name": "BadRequest"})
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || !strings.HasPrefix(req.ID, "msg_") || req.Delivery != "queue" {
+		ocJSON(w, http.StatusBadRequest, map[string]any{"_tag": "InvalidRequestError", "message": "bad prompt"})
 		return
 	}
 	s.seq++
-	user := ocMsg{id: fmt.Sprintf("msg_%012d", s.seq), role: "user", text: req.Parts[0].Text}
-	s.seq++
-	answer := ocMsg{id: fmt.Sprintf("msg_%012d", s.seq), role: "assistant", parent: user.id, text: "ok"}
-	s.msgs = append(s.msgs, user, answer)
-	w.WriteHeader(http.StatusNoContent)
+	s.msgs = append(s.msgs, ocMsg{id: req.ID, text: req.Text})
+	ocJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"id": req.ID, "sessionID": session, "time": map[string]any{"created": s.seq}, "type": "user",
+		"payload": map[string]any{"text": req.Text}, "delivery": req.Delivery,
+	}})
+}
+
+// ocPosted parses a recorded request body as the one shape the front is allowed
+// to send, and returns its id and its text.
+func ocPosted(t *testing.T, body []byte) (id, text string) {
+	t.Helper()
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil || len(top) != 3 || top["id"] == nil || top["text"] == nil || top["delivery"] == nil {
+		t.Fatalf("the request body is not exactly {id, text, delivery}: %s", body)
+	}
+	var delivery string
+	if err := json.Unmarshal(top["id"], &id); err != nil || json.Unmarshal(top["text"], &text) != nil || json.Unmarshal(top["delivery"], &delivery) != nil || delivery != "queue" {
+		t.Fatalf("the request is not a queued text: %s", body)
+	}
+	return id, text
+}
+
+// ocStateEnv is ocEnv with the places the pump looks for OpenCode 2 pointed at the
+// test's own: XDG_STATE_HOME at stateHome, HOME at a directory of its own, and no
+// OpenCode credentials of the developer's shell, whichever version they are for.
+func ocStateEnv(t *testing.T, stateHome string, extra ...string) []string {
+	t.Helper()
+	var env []string
+	for _, kv := range ocEnv() {
+		if strings.HasPrefix(kv, "XDG_STATE_HOME=") || strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, opencodePasswordEnv+"=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "XDG_STATE_HOME="+stateHome, "HOME="+t.TempDir())
+	return append(env, extra...)
+}
+
+// ocServiceArgs is ocArgs without a port: the pump finds the service.
+func ocServiceArgs(spec, nick, session, stateDir string, extra ...string) []string {
+	return append([]string{"--stream", spec, "--nick", nick, "--session", session,
+		"--state-dir", stateDir, "--debounce", "100ms"}, extra...)
+}
+
+// ocPostedText is the text of a recorded request body, parsed as ocPosted does.
+func ocPostedText(t *testing.T, body []byte) string {
+	t.Helper()
+	_, text := ocPosted(t, body)
+	return text
 }
 
 func ocJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// ocPostedText parses a recorded request body as the one shape the front is
-// allowed to send, and returns its text.
-func ocPostedText(t *testing.T, body []byte) string {
-	t.Helper()
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(body, &top); err != nil || len(top) != 1 || top["parts"] == nil {
-		t.Fatalf("the request body is not exactly {\"parts\":[...]}: %s", body)
-	}
-	var parts []map[string]string
-	if err := json.Unmarshal(top["parts"], &parts); err != nil || len(parts) != 1 || len(parts[0]) != 2 || parts[0]["type"] != "text" {
-		t.Fatalf("the request is not exactly one text part: %s", body)
-	}
-	return parts[0]["text"]
 }

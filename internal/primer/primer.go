@@ -494,22 +494,19 @@ const codexFrontText = "A parley pump reads the stream and queues each delivery 
 // openCodeFrontText is what is true of the OpenCode front and of no other: the
 // pump, the server it posts through, when it posts, and the permission ask the
 // reply file can raise. It is a paragraph without its separators, as
-// codexFrontText is. The facts are internal/opencode's, and true of OpenCode 1.x
-// and 2.x alike: the pump POSTs the delivery's rendered text, verbatim, as the
-// one text of a user message, and does so only while the session is idle,
-// holding what arrives in the stream while it works and handing it over as one
-// delivery at the turn's end; the HTTP server is the one the session runs on
-// (the TUI's, started with --port, on 1.x; the background service's on 2.x). A
-// delivery is bounded, as the Codex front's is, though not for an
-// argument's sake: the pump confirms it by reading the session's history back.
-// It posts messages whole up to 512 KiB of rendered text; a message over 128 KiB
-// on its own, or past that bound, is replaced by a stub, and the stubs are counted
-// up to 1 MiB, past which the rest of the delivery is one notice
-// (internal/opencode's bound.go). The paragraph states the first two of these and
-// not the last, which only a delivery of very many messages reaches.
-// external_directory is OpenCode's permission for a path outside the
-// directory the session runs in, which asks by default on 1.x and is allowed by
-// default on 2.x.
+// codexFrontText is. The facts are internal/opencode's, and are OpenCode 2's: the
+// pump POSTs the delivery's rendered text, verbatim, as the text of a queued user
+// message, and does so only while the session is idle, holding what arrives in the
+// stream while it works and handing it over as one delivery at the turn's end; the
+// HTTP server is the one the session runs on (the background service). A delivery
+// is bounded, as the Codex front's is, though not for an argument's sake: the pump
+// confirms it by reading the message back. It posts messages whole up to 512 KiB of
+// rendered text; a message over 128 KiB on its own, or past that bound, is replaced
+// by a stub, and the stubs are counted up to 1 MiB, past which the rest of the
+// delivery is one notice (internal/opencode's bound.go). The paragraph states the
+// first two of these and not the last, which only a delivery of very many messages
+// reaches. external_directory is OpenCode's permission for a path outside the
+// directory the session runs in, which is allowed by default.
 const openCodeFrontText = "A parley pump reads the stream and posts each delivery into this session as a user message, through " +
 	"the OpenCode server this session runs on, and only while the session is idle: what lands while " +
 	"you are working is held and handed over as one delivery when the turn ends. A delivery arrives as a message your " +
@@ -519,6 +516,6 @@ const openCodeFrontText = "A parley pump reads the stream and posts each deliver
 	"128 KiB on its own, and every message past that bound, arrives as a stub in its place, carrying that message's " +
 	"header and a one-line notice naming its id, and the full text stays in the stream for your human partner to read. " +
 	"The send command above is spelled the way your human partner set it up; run it as written, without resolving or " +
-	"rewriting any path in it. Writing the reply file goes through OpenCode's own permission ask (external_directory) " +
-	"when the file is outside the directory this session runs in and that permission asks (OpenCode 1 asks by default, " +
-	"OpenCode 2 allows it by default), and your human partner answers that ask in the TUI."
+	"rewriting any path in it. Writing the reply file, which is outside the directory this session runs in, goes through " +
+	"OpenCode's own permission ask (external_directory), which asks nothing by default and asks only if your human " +
+	"partner's configuration says so; your human partner answers that ask in the TUI."

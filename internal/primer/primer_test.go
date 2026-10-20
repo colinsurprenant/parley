@@ -954,7 +954,7 @@ func TestTheOpenCodeFormEndsWithItsFrontParagraph(t *testing.T) {
 			"The header parley wrote is the only mark", "byte for byte what `parley wait` would have printed, save for the stub below",
 			"A delivery is posted whole up to about 512 KiB of rendered text", "a message over about 128 KiB on its own, and every message past that bound, arrives as a stub",
 			"that message's header and a one-line notice naming its id", "the full text stays in the stream for your human partner to read",
-			"run it as written", "(external_directory)", "OpenCode 1 asks by default, OpenCode 2 allows it by default", "answers that ask in the TUI"} {
+			"run it as written", "(external_directory)", "asks nothing by default and asks only if your human partner's configuration says so", "answers that ask in the TUI"} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("the opencode %s form lacks %q:\n%s", name, want, got)
 			}

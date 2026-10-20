@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colinsurprenant/parley/internal/doctor"
 	"github.com/colinsurprenant/parley/internal/state"
 )
 
@@ -24,7 +25,7 @@ const otherOCSession = "ses_ea8a722dcffeB5AVROj9ovn5Uq"
 func ocEnv(extra ...string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, opencodePasswordEnv+"=") && !strings.HasPrefix(kv, opencodeUserEnv+"=") && !strings.HasPrefix(kv, opencodePassword2Env+"=") {
+		if !strings.HasPrefix(kv, opencodeLegacyPasswordEnv+"=") && !strings.HasPrefix(kv, opencodePasswordEnv+"=") {
 			env = append(env, kv)
 		}
 	}
@@ -83,104 +84,6 @@ func noLockTaken(t *testing.T, stateDir, nick string) {
 	}
 }
 
-// TestOpencodePostsTheDeliveryIntoTheSession drives the real binary the way the
-// human runs it beside a live OpenCode TUI: a foreground pump and one prompt
-// carrying exactly what `parley wait` would have printed — the peer header
-// included, since on this front the header is the only thing that says the text
-// is not the human's.
-func TestOpencodePostsTheDeliveryIntoTheSession(t *testing.T) {
-	dir := resolvedTempDir(t)
-	spec := "file:" + filepath.Join(dir, "chat.ndjson")
-	stateDir := t.TempDir()
-	srv := newOCServer(t)
-
-	cmd, stdout, stderr := startOpencode(t, ocEnv(), ocArgs(spec, "oc-a", srv.port(), ocSession, stateDir)...)
-
-	// A second process for this nick is refused while the pump holds the lock.
-	// Sequenced behind the pump's startup line, which is printed only once the
-	// lock is held.
-	waitForStderr(t, stderr, "into OpenCode session "+ocSession)
-	second := runParleyEnv(t, ocEnv(), "", append([]string{"opencode"}, ocArgs(spec, "oc-a", srv.port(), ocSession, stateDir)...)...)
-	if second.code != 2 {
-		t.Fatalf("a second opencode pump for the nick exited %d, want 2\nstderr: %s", second.code, second.stderr)
-	}
-	if !strings.Contains(second.stderr, `"oc-a"`) {
-		t.Fatalf("the lock error does not name the nick: %s", second.stderr)
-	}
-	if !strings.Contains(stderr.String(), fmt.Sprintf("on 127.0.0.1:%d (OpenCode 1.18.30)", srv.port())) {
-		t.Fatalf("the start line does not name the server:\n%s", stderr.String())
-	}
-
-	mustRun(t, "", "send", "--stream", spec, "--nick", "claude-b", "--", "hello from the peer")
-	posts := srv.waitPosts(1, stderr)
-	got := ocPostedText(t, posts[0])
-
-	// What a third participant is handed for the same message is what the
-	// session got: a different nick and a state directory of its own, so its
-	// cursor starts where the pump's did.
-	want := mustRun(t, "", "wait", "--stream", spec, "--nick", "watcher-c",
-		"--state-dir", t.TempDir(), "--timeout", "10s", "--debounce", "100ms").stdout
-	if want == "" {
-		t.Fatal("the reference wait printed nothing")
-	}
-	if got != want {
-		t.Fatalf("the posted text is\n%q\nwant what parley wait prints\n%q", got, want)
-	}
-	if !strings.HasPrefix(got, "[parley] from=claude-b id=") {
-		t.Fatalf("the posted text does not begin with the peer header:\n%q", got)
-	}
-
-	// A signal is how the human ends the pump, and it is not a failure.
-	if err := stopOpencode(t, cmd, stderr); err != nil {
-		t.Fatalf("opencode exited %v on SIGTERM, want 0\nstderr: %s", err, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "shutting down") {
-		t.Fatalf("the shutdown was not logged:\n%s", stderr.String())
-	}
-	if stdout.String() != "" {
-		t.Fatalf("the pump printed on stdout: %q", stdout.String())
-	}
-	if n := len(srv.postBodies()); n != 1 {
-		t.Fatalf("%d prompts, want 1", n)
-	}
-}
-
-// TestOpencodeWaitsOutATurnItReadsUnderTheSessionsDirectory: the server lists a
-// turn only under the directory the session belongs to, and the pump runs against
-// one that is not where it is run from. A pump that read the status without the
-// session's directory would see an idle session and post into the turn.
-func TestOpencodeWaitsOutATurnItReadsUnderTheSessionsDirectory(t *testing.T) {
-	dir := resolvedTempDir(t)
-	spec := "file:" + filepath.Join(dir, "chat.ndjson")
-	srv := newOCServer(t)
-	srv.set(func() { srv.busy = true })
-
-	cmd, _, stderr := startOpencode(t, ocEnv(), ocArgs(spec, "oc-a", srv.port(), ocSession, t.TempDir())...)
-	waitForStderr(t, stderr, "into OpenCode session")
-	mustRun(t, "", "send", "--stream", spec, "--nick", "claude-b", "--", "wait for it")
-	// The pump polls a busy session every half second; give it several.
-	deadline := time.Now().Add(childDeadline)
-	for len(srv.statusDirsSeen()) < 3 {
-		if !time.Now().Before(deadline) {
-			t.Fatalf("the pump never polled the status:\n%s", stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if n := len(srv.postBodies()); n != 0 {
-		t.Fatalf("%d prompt(s) posted into a session in the middle of a turn", n)
-	}
-	srv.set(func() { srv.busy = false })
-	srv.waitPosts(1, stderr)
-	for _, d := range srv.statusDirsSeen() {
-		if d != ocDir {
-			t.Fatalf("a status read named directory %q, want the session's %q", d, ocDir)
-		}
-	}
-	if err := stopOpencode(t, cmd, stderr); err != nil {
-		t.Fatalf("opencode exited %v", err)
-	}
-}
-
 // TestOpencodeRestartDoesNotDeliverAgain: the cursor saved once the history
 // showed a delivery carries a restart past it, and a message after it is a
 // delivery of its own.
@@ -221,87 +124,6 @@ func TestOpencodeRestartDoesNotDeliverAgain(t *testing.T) {
 	}
 	if err := stopOpencode(t, cmd2, stderr2); err != nil {
 		t.Fatalf("second pump exited %v", err)
-	}
-}
-
-// TestOpencodeStartupProbeFailuresAreConfigurationErrors: each way the server can
-// be wrong at startup is exit 2 with the reason, the TUI command where that is
-// what fixes it, and nothing taken — no lock and no state directory for the nick.
-// The adapters open lazily, so that is all that can be seen of the order; the
-// stream is an irc: one that nothing listens on to show that it is never dialed
-// first either.
-func TestOpencodeStartupProbeFailuresAreConfigurationErrors(t *testing.T) {
-	closed := func() int {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer l.Close()
-		return l.Addr().(*net.TCPAddr).Port
-	}
-
-	for name, tc := range map[string]struct {
-		setup func(*ocServer) int // returns the port to use
-		env   []string
-		want  []string
-	}{
-		"nothing listens": {
-			setup: func(*ocServer) int { return closed() },
-			want:  []string{"cannot reach OpenCode on 127.0.0.1:", "opencode --port ", "--session " + ocSession, "opencode -s " + ocSession, "without --port"},
-		},
-		"OpenCode 2": {
-			setup: func(s *ocServer) int { s.set(func() { s.version = "2.0.32" }); return s.port() },
-			want:  []string{"not OpenCode 1", "2.0.32"},
-		},
-		"OpenCode 2 serving its web page": {
-			setup: func(s *ocServer) int { s.set(func() { s.page = true }); return s.port() },
-			want:  []string{"As OpenCode 1", "GET /global/health", "text/html", "As OpenCode 2", "GET /api/info", "404", "opencode -s " + ocSession},
-		},
-		"a version that cannot be read": {
-			setup: func(s *ocServer) int { s.set(func() { s.version = "dev" }); return s.port() },
-			want:  []string{"cannot read an OpenCode version"},
-		},
-		"an unknown session": {
-			setup: func(s *ocServer) int { s.set(func() { s.known = map[string]bool{} }); return s.port() },
-			want:  []string{"does not know session " + ocSession, "opencode --port ", "--session " + ocSession},
-		},
-		"a password the pump was not given": {
-			setup: func(s *ocServer) int { s.set(func() { s.password = "hunter2-test" }); return s.port() },
-			want:  []string{"401", opencodePasswordEnv},
-		},
-		"the wrong password": {
-			setup: func(s *ocServer) int { s.set(func() { s.password = "hunter2-test" }); return s.port() },
-			env:   []string{opencodePasswordEnv + "=not-it"},
-			want:  []string{"401", opencodePasswordEnv},
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			srv := newOCServer(t)
-			port := tc.setup(srv)
-			stateDir := t.TempDir()
-			// An irc: stream nothing listens on: opened first, it would be the
-			// error.
-			spec := fmt.Sprintf("irc://127.0.0.1:%d/probe", closed())
-			res := runParleyEnv(t, ocEnv(tc.env...), "", append([]string{"opencode"}, ocArgs(spec, "oc-a", port, ocSession, stateDir)...)...)
-			if res.code != 2 {
-				t.Fatalf("exited %d, want 2\nstderr: %s", res.code, res.stderr)
-			}
-			for _, want := range tc.want {
-				if !strings.Contains(res.stderr, want) {
-					t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
-				}
-			}
-			if strings.Contains(res.stderr, "hunter2-test") || strings.Contains(res.stderr, "not-it") {
-				t.Errorf("stderr quotes a password:\n%s", res.stderr)
-			}
-			if res.stdout != "" {
-				t.Errorf("stdout is %q, want nothing", res.stdout)
-			}
-			noLockTaken(t, stateDir, "oc-a")
-			if _, err := os.Stat(filepath.Join(stateDir, "oc-a")); !errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("a refused invocation left state behind (stat err %v)", err)
-			}
-		})
 	}
 }
 
@@ -468,43 +290,6 @@ func TestOpencodeRefusesABadInvocation(t *testing.T) {
 	}
 }
 
-// TestOpencodeSendsBasicCredentialsFromTheEnvironment: the password and the user
-// the server was started with are the two variables OpenCode's own CLI reads, and
-// the pump presents them to the server it probes and posts to.
-func TestOpencodeSendsBasicCredentialsFromTheEnvironment(t *testing.T) {
-	for name, tc := range map[string]struct {
-		user string
-		env  []string
-	}{
-		"the default user": {"opencode", []string{opencodePasswordEnv + "=pw-one-xyz"}},
-		"a named user":     {"alice", []string{opencodePasswordEnv + "=pw-one-xyz", opencodeUserEnv + "=alice"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			dir := resolvedTempDir(t)
-			spec := "file:" + filepath.Join(dir, "chat.ndjson")
-			srv := newOCServer(t)
-			srv.set(func() { srv.user, srv.password = tc.user, "pw-one-xyz" })
-
-			cmd, _, stderr := startOpencode(t, ocEnv(tc.env...), ocArgs(spec, "oc-a", srv.port(), ocSession, t.TempDir())...)
-			waitForStderr(t, stderr, "into OpenCode session")
-			mustRun(t, "", "send", "--stream", spec, "--nick", "claude-b", "--", "hello")
-			srv.waitPosts(1, stderr)
-			if err := stopOpencode(t, cmd, stderr); err != nil {
-				t.Fatalf("opencode exited %v", err)
-			}
-			if strings.Contains(stderr.String(), "pw-one-xyz") {
-				t.Fatalf("the log quotes the password:\n%s", stderr.String())
-			}
-			srv.mu.Lock()
-			refused := srv.refused
-			srv.mu.Unlock()
-			if refused != 0 {
-				t.Fatalf("%d requests were turned away for their credentials", refused)
-			}
-		})
-	}
-}
-
 // TestOpencodeHoldsTheOtherSeatsUntilItHasPosted drives the table flags through
 // the whole of round one: a seat's post is held, the chair's passes. It is what
 // proves the flags reach the Deliverer on this front.
@@ -536,9 +321,10 @@ func TestUsageDocumentsTheOpencodeFront(t *testing.T) {
 	for _, want := range []string{
 		"parley opencode --stream <spec> --nick <nick> --session <ses_id>|auto [--port <n>] [--debounce 250ms] [--state-dir <dir>]",
 		"opencode run in the foreground and deliver into a live OpenCode session",
-		"opencode --port <n> --session <id>", "opencode -s <id>", "service.json",
-		"OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_USERNAME", "OPENCODE_PASSWORD",
-		"2.0.32 is the 2.x it was verified against, in OpenCode's simulation mode and not yet on a live model",
+		"opencode serve --port <n>", "opencode -s <id>", "service.json",
+		"OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD",
+		"parley was " + doctor.OpenCodeVerifiedNote,
+		"the legacy line, is a FAIL",
 		"a message that renders to over 128 KiB, and every message once the delivery has 512 KiB, is replaced by a stub",
 		"is made again before every delivery",
 		"opencode-session",
@@ -562,4 +348,340 @@ func TestUsageDocumentsTheOpencodeFront(t *testing.T) {
 			t.Errorf("parley opencode -h mentions %q", unwanted)
 		}
 	}
+}
+
+// closedPort is a loopback port nothing listens on.
+func closedPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// TestOpencodeFindsTheServiceAndDeliversIntoTheSession drives the real binary the
+// way the human runs it beside an OpenCode 2 TUI: no port, the service found from
+// its file, one queued prompt carrying exactly what `parley wait` would have
+// printed, peer header included, and the service's password nowhere in sight.
+func TestOpencodeFindsTheServiceAndDeliversIntoTheSession(t *testing.T) {
+	dir := resolvedTempDir(t)
+	spec := "file:" + filepath.Join(dir, "chat.ndjson")
+	stateDir := t.TempDir()
+	stateHome := t.TempDir()
+	srv := newOCServiceServer(t)
+	writeService(t, stateHome, srv.url(), ocPID, 0o600)
+
+	cmd, stdout, stderr := startOpencode(t, ocStateEnv(t, stateHome), ocServiceArgs(spec, "oc-a", ocSession, stateDir)...)
+	waitForStderr(t, stderr, "into OpenCode session "+ocSession)
+	if want := "on the OpenCode service at " + srv.url() + " (OpenCode 2.0.32)"; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("the start line does not name the service (%s):\n%s", want, stderr.String())
+	}
+
+	mustRun(t, "", "send", "--stream", spec, "--nick", "claude-b", "--", "hello from the peer")
+	posts := srv.waitPosts(1, stderr)
+	id, got := ocPosted(t, posts[0])
+	if !strings.HasPrefix(id, "msg_") || len(id) != 30 {
+		t.Fatalf("the message id %q is not one OpenCode makes", id)
+	}
+	want := mustRun(t, "", "wait", "--stream", spec, "--nick", "watcher-c",
+		"--state-dir", t.TempDir(), "--timeout", "10s", "--debounce", "100ms").stdout
+	if want == "" || got != want {
+		t.Fatalf("the posted text is\n%q\nwant what parley wait prints\n%q", got, want)
+	}
+	if !strings.HasPrefix(got, "[parley] from=claude-b id=") {
+		t.Fatalf("the posted text does not begin with the peer header:\n%q", got)
+	}
+	cursor := cursorPath(t, stateDir, "oc-a", spec)
+	deadline := time.Now().Add(childDeadline)
+	for {
+		if b, err := os.ReadFile(cursor); err == nil && len(b) > 0 {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("no cursor saved:\n%s", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := stopOpencode(t, cmd, stderr); err != nil {
+		t.Fatalf("opencode exited %v on SIGTERM, want 0\nstderr: %s", err, stderr.String())
+	}
+	if stdout.String() != "" {
+		t.Fatalf("the pump printed on stdout: %q", stdout.String())
+	}
+	if strings.Contains(stderr.String(), ocPassword) || strings.Contains(stdout.String(), ocPassword) {
+		t.Fatalf("the service's password is in the output:\n%s", stderr.String())
+	}
+	if n := srv.refusedCount(); n != 0 {
+		t.Fatalf("%d requests were turned away for their credentials", n)
+	}
+}
+
+// TestOpencodeServiceDiscoveryFailuresAreConfigurationErrors: each way the
+// service file or the service can be wrong is exit 2 with the reason and the
+// command that makes it right, nothing taken, and the password nowhere.
+func TestOpencodeServiceDiscoveryFailuresAreConfigurationErrors(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup func(t *testing.T, stateHome string, srv *ocServer)
+		want  []string
+	}{
+		"no service file": {
+			setup: func(*testing.T, string, *ocServer) {},
+			want:  []string{"no OpenCode 2 service is registered", "service.json", "opencode -s " + ocSession, "--port"},
+		},
+		"a file the group can read": {
+			setup: func(t *testing.T, h string, s *ocServer) { writeService(t, h, s.url(), ocPID, 0o640) },
+			want:  []string{"readable by you alone", "chmod 600"},
+		},
+		"a file anyone can read": {
+			setup: func(t *testing.T, h string, s *ocServer) { writeService(t, h, s.url(), ocPID, 0o644) },
+			want:  []string{"readable by you alone"},
+		},
+		"a file that is a link": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				real := writeService(t, t.TempDir(), s.url(), ocPID, 0o600)
+				if err := os.MkdirAll(filepath.Join(h, "opencode"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(real, filepath.Join(h, "opencode", "service.json")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{"service file", "service.json"},
+		},
+		"a file that is not JSON": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				p := writeService(t, h, s.url(), ocPID, 0o600)
+				if err := os.WriteFile(p, []byte("url="+s.url()), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{"not the JSON object OpenCode 2 writes"},
+		},
+		"an address that is not loopback": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, "http://192.0.2.7:51868", ocPID, 0o600)
+			},
+			want: []string{"will not send its password to", "not a loopback IP address"},
+		},
+		"an address by name": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, "http://localhost:51868", ocPID, 0o600)
+			},
+			want: []string{"will not send its password to", "not a loopback IP address"},
+		},
+		"an address that is not http": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, "https://127.0.0.1:51868", ocPID, 0o600)
+			},
+			want: []string{"will not send its password to"},
+		},
+		"an address with credentials": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, strings.Replace(s.url(), "http://", "http://user:hunter2@", 1), ocPID, 0o600)
+			},
+			want: []string{"will not send its password to", "http://127.0.0.1:"},
+		},
+		"an address with a path": {
+			setup: func(t *testing.T, h string, s *ocServer) { writeService(t, h, s.url()+"/x", ocPID, 0o600) },
+			want:  []string{"will not send its password to"},
+		},
+		"a service that is gone": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, fmt.Sprintf("http://127.0.0.1:%d", closedPort(t)), ocPID, 0o600)
+			},
+			want: []string{"does not answer", "may have stopped and left the file behind", "opencode -s " + ocSession},
+		},
+		"a file left by another service": {
+			setup: func(t *testing.T, h string, s *ocServer) { writeService(t, h, s.url(), ocPID+1, 0o600) },
+			want:  []string{"describes pid", "stale or the address belongs to another server"},
+		},
+		"a version other than 2": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, s.url(), ocPID, 0o600)
+				s.set(func() { s.version = "1.18.30" })
+			},
+			want: []string{"the legacy OpenCode 1", "brew install opencode"},
+		},
+		"an unknown session": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, s.url(), ocPID, 0o600)
+				s.set(func() { s.known = map[string]bool{} })
+			},
+			want: []string{"does not know session " + ocSession, "opencode -s " + ocSession},
+		},
+		"the wrong password in the file": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, s.url(), ocPID, 0o600)
+				s.set(func() { s.password = "rotated" })
+			},
+			want: []string{"401", "OPENCODE_PASSWORD"},
+		},
+		"a service that is up and broken": {
+			setup: func(t *testing.T, h string, s *ocServer) {
+				writeService(t, h, s.url(), ocPID, 0o600)
+				s.set(func() { s.down = true })
+			},
+			want: []string{"500"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := newOCServiceServer(t)
+			stateHome := t.TempDir()
+			tc.setup(t, stateHome, srv)
+			stateDir := t.TempDir()
+			// An irc: stream nothing listens on: opened first, it would be the error.
+			spec := fmt.Sprintf("irc://127.0.0.1:%d/probe", closedPort(t))
+			res := runParleyEnv(t, ocStateEnv(t, stateHome), "", append([]string{"opencode"}, ocServiceArgs(spec, "oc-a", ocSession, stateDir)...)...)
+			if res.code != 2 {
+				t.Fatalf("exited %d, want 2\nstderr: %s", res.code, res.stderr)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(res.stderr, want) {
+					t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+				}
+			}
+			for _, secret := range []string{ocPassword, "rotated", "hunter2"} {
+				if strings.Contains(res.stderr, secret) || strings.Contains(res.stdout, secret) {
+					t.Errorf("the output quotes a password:\n%s", res.stderr)
+				}
+			}
+			if res.stdout != "" {
+				t.Errorf("stdout is %q, want nothing", res.stdout)
+			}
+			noLockTaken(t, stateDir, "oc-a")
+			if _, err := os.Stat(filepath.Join(stateDir, "oc-a")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("a refused invocation left state behind (stat err %v)", err)
+			}
+		})
+	}
+}
+
+// TestOpencodeStateHomeThatIsNotAbsoluteIsRefused: a relative XDG_STATE_HOME does
+// not say where the service file is, and is not guessed at.
+func TestOpencodeStateHomeThatIsNotAbsoluteIsRefused(t *testing.T) {
+	spec := "file:" + filepath.Join(resolvedTempDir(t), "chat.ndjson")
+	res := runParleyEnv(t, ocStateEnv(t, "state"), "", append([]string{"opencode"}, ocServiceArgs(spec, "oc-a", ocSession, t.TempDir())...)...)
+	if res.code != 2 || !strings.Contains(res.stderr, "not an absolute path") || !strings.Contains(res.stderr, "--port") {
+		t.Fatalf("exit %d, stderr: %s", res.code, res.stderr)
+	}
+}
+
+// TestOpencodeWithAPortTakesThePasswordFromTheEnvironment: --port is probed with
+// the password the server was started with, from OPENCODE_PASSWORD, else from the
+// older OPENCODE_SERVER_PASSWORD, and a server that wants one the pump has not
+// been given is exit 2 saying so.
+func TestOpencodeWithAPortTakesThePasswordFromTheEnvironment(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env      []string
+		password string
+		wantRun  bool
+		want     []string
+	}{
+		"a server with no password": {password: "", wantRun: true},
+		"OPENCODE_PASSWORD":         {env: []string{opencodePasswordEnv + "=" + ocPassword}, password: ocPassword, wantRun: true},
+		"the older variable":        {env: []string{opencodeLegacyPasswordEnv + "=" + ocPassword}, password: ocPassword, wantRun: true},
+		"the newer one wins": {
+			env:      []string{opencodePasswordEnv + "=" + ocPassword, opencodeLegacyPasswordEnv + "=old-and-wrong"},
+			password: ocPassword, wantRun: true,
+		},
+		"no password given": {password: ocPassword, want: []string{"401", opencodePasswordEnv}},
+		"the wrong password": {
+			env:      []string{opencodePasswordEnv + "=not-it"},
+			password: ocPassword, want: []string{"401", opencodePasswordEnv},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := resolvedTempDir(t)
+			spec := "file:" + filepath.Join(dir, "chat.ndjson")
+			srv := newOCServiceServer(t)
+			srv.set(func() { srv.password = tc.password })
+			env := ocStateEnv(t, t.TempDir(), tc.env...)
+			if tc.wantRun {
+				cmd, _, stderr := startOpencode(t, env, ocArgs(spec, "oc-a", srv.port(), ocSession, t.TempDir())...)
+				waitForStderr(t, stderr, "into OpenCode session "+ocSession)
+				if want := fmt.Sprintf("on 127.0.0.1:%d (OpenCode 2.0.32)", srv.port()); !strings.Contains(stderr.String(), want) {
+					t.Fatalf("the start line does not name the server (%s):\n%s", want, stderr.String())
+				}
+				mustRun(t, "", "send", "--stream", spec, "--nick", "claude-b", "--", "to a 2.x server")
+				posts := srv.waitPosts(1, stderr)
+				if _, text := ocPosted(t, posts[0]); !strings.Contains(text, "to a 2.x server") {
+					t.Fatalf("the delivery is\n%s", text)
+				}
+				if err := stopOpencode(t, cmd, stderr); err != nil {
+					t.Fatalf("opencode exited %v", err)
+				}
+				if tc.password != "" && strings.Contains(stderr.String(), tc.password) {
+					t.Fatalf("the password is in the output:\n%s", stderr.String())
+				}
+				return
+			}
+			res := runParleyEnv(t, env, "", append([]string{"opencode"}, ocArgs(spec, "oc-a", srv.port(), ocSession, t.TempDir())...)...)
+			if res.code != 2 {
+				t.Fatalf("exited %d, want 2\nstderr: %s", res.code, res.stderr)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(res.stderr, want) {
+					t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+				}
+			}
+			for _, secret := range []string{ocPassword, "not-it", "old-and-wrong"} {
+				if strings.Contains(res.stderr, secret) {
+					t.Errorf("stderr quotes a password:\n%s", res.stderr)
+				}
+			}
+		})
+	}
+}
+
+// TestOpencodeWithAPortThatNothingListensOnSaysWhatToRun: the error names how to
+// start a server on the port, and the background service, which needs no port.
+func TestOpencodeWithAPortThatNothingListensOnSaysWhatToRun(t *testing.T) {
+	spec := "file:" + filepath.Join(resolvedTempDir(t), "chat.ndjson")
+	stateDir := t.TempDir()
+	res := runParleyEnv(t, ocStateEnv(t, t.TempDir()), "", append([]string{"opencode"}, ocArgs(spec, "oc-a", closedPort(t), ocSession, stateDir)...)...)
+	if res.code != 2 {
+		t.Fatalf("exited %d, want 2\nstderr: %s", res.code, res.stderr)
+	}
+	for _, want := range []string{"cannot reach OpenCode on 127.0.0.1:", "opencode serve --port ", "opencode -s " + ocSession, "without --port"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+		}
+	}
+	noLockTaken(t, stateDir, "oc-a")
+}
+
+// TestOpencodeWithAPortOfAServerThatDoesNotKnowTheSession: a server that answers,
+// and does not have the session, is told as that.
+func TestOpencodeWithAPortOfAServerThatDoesNotKnowTheSession(t *testing.T) {
+	srv := newOCServiceServer(t)
+	srv.set(func() { srv.password, srv.known = "", map[string]bool{} })
+	spec := "file:" + filepath.Join(resolvedTempDir(t), "chat.ndjson")
+	res := runParleyEnv(t, ocStateEnv(t, t.TempDir()), "", append([]string{"opencode"}, ocArgs(spec, "oc-a", srv.port(), ocSession, t.TempDir())...)...)
+	if res.code != 2 || !strings.Contains(res.stderr, "OpenCode on 127.0.0.1:") || !strings.Contains(res.stderr, "does not know session "+ocSession) || !strings.Contains(res.stderr, "opencode -s "+ocSession) {
+		t.Fatalf("exit %d, stderr: %s", res.code, res.stderr)
+	}
+}
+
+// TestOpencodeWithNoPortAndNoServiceSaysWhatStartsOne: with no --port the pump
+// looks for OpenCode's service, and the error for finding none says what starts it,
+// and that a server started with opencode serve is reached with --port. The environment names the state
+// directory, so the developer's own is never looked in.
+func TestOpencodeWithNoPortAndNoServiceSaysWhatStartsOne(t *testing.T) {
+	spec := "file:" + filepath.Join(resolvedTempDir(t), "chat.ndjson")
+	stateDir, stateHome := t.TempDir(), t.TempDir()
+	res := runParleyEnv(t, ocStateEnv(t, stateHome), "", append([]string{"opencode"}, ocServiceArgs(spec, "oc-a", ocSession, stateDir)...)...)
+	if res.code != 2 {
+		t.Fatalf("exited %d, want 2\nstderr: %s", res.code, res.stderr)
+	}
+	for _, want := range []string{"no OpenCode 2 service is registered", filepath.Join(stateHome, "opencode", "service.json"), "opencode -s " + ocSession, "pass --port <n>", "opencode serve --port <n>"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+		}
+	}
+	if strings.Count(res.stderr, "no OpenCode 2 service is registered") != 1 {
+		t.Errorf("the refusal says it twice:\n%s", res.stderr)
+	}
+	noLockTaken(t, stateDir, "oc-a")
 }

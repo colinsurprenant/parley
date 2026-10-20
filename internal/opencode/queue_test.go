@@ -13,47 +13,7 @@ import (
 	"time"
 
 	"github.com/colinsurprenant/parley/internal/state"
-	"github.com/colinsurprenant/parley/internal/stream"
-	"github.com/colinsurprenant/parley/internal/stream/file"
 )
-
-// newHarness2 is newHarness for a pump that speaks to the fake OpenCode 2 server.
-func newHarness2(t *testing.T, f *fakeOC2, tune func(*Config)) *harness {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "chat.ndjson")
-	dir, err := state.Open(t.TempDir(), selfNick, "file:"+path)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	return newHarness2On(t, f.client(), path, dir, tune)
-}
-
-func newHarness2On(t *testing.T, c Client2, path string, dir *state.Dir, tune func(*Config)) *harness {
-	t.Helper()
-	s, err := file.Open(path, selfNick, file.WithPollInterval(pollInterval))
-	if err != nil {
-		t.Fatalf("file.Open: %v", err)
-	}
-	h := &harness{t: t, path: path, dir: dir, logs: &syncBuffer{}}
-	cfg := Config{
-		Deliverer: stream.NewDeliverer(s, selfNick),
-		Cursors:   dir,
-		Session:   testSession,
-		Client2:   c,
-		Timeout:   time.Minute,
-		Log:       h.logs,
-	}
-	tuned(&cfg)
-	if tune != nil {
-		tune(&cfg)
-	}
-	p, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	h.pump = p
-	return h
-}
 
 var msgIDRE = regexp.MustCompile(`^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
 
@@ -75,8 +35,8 @@ func post(t *testing.T, body []byte) (id, text, delivery string) {
 }
 
 func TestAQueuedDeliveryLandsAndIsCommitted(t *testing.T) {
-	f := newFake2(t)
-	h := newHarness2(t, f, nil)
+	f := newFake(t)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "hello over OpenCode 2")
@@ -112,9 +72,9 @@ func TestAQueuedDeliveryLandsAndIsCommitted(t *testing.T) {
 // into an idle session, though OpenCode 2 would queue the post behind the turn,
 // so that what arrives while a turn runs is one delivery and not one turn each.
 func TestADeliveryWaitsForAnIdleSessionAndTheBacklogGoesOverAsOne(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.manualBusy = true })
-	h := newHarness2(t, f, nil)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "first")
@@ -143,9 +103,9 @@ func TestADeliveryWaitsForAnIdleSessionAndTheBacklogGoesOverAsOne(t *testing.T) 
 // entry and the answer was lost. The id is what makes the repeat safe: the session
 // ends up with the delivery once.
 func TestAPostThatGotNoAnswerIsPostedAgainUnderTheSameID(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.loseResponses = 2 })
-	h := newHarness2(t, f, nil)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "sent through a bad connection")
@@ -169,9 +129,9 @@ func TestAPostThatGotNoAnswerIsPostedAgainUnderTheSameID(t *testing.T) {
 // TestAPostThatNeverGetsAnAnswerStopsThePumpUncommitted: the bound of the read-back
 // applies to the post, and what stops the pump says the delivery may have landed.
 func TestAPostThatNeverGetsAnAnswerStopsThePumpUncommitted(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.loseResponses = 1 << 20 })
-	h := newHarness2(t, f, func(c *Config) { c.ReadBackTimeout = 150 * time.Millisecond })
+	h := newHarness(t, f, func(c *Config) { c.PostTimeout = 150 * time.Millisecond })
 	h.start()
 
 	h.peerSend(peerNick, "never answered")
@@ -199,9 +159,9 @@ func TestAPostThatNeverGetsAnAnswerStopsThePumpUncommitted(t *testing.T) {
 // which no longer lists it. An entry that is gone is a message or a cancel, and the
 // message is read once more to tell which: here it is there.
 func TestTheMessageIsReadAgainWhenTheEntryLeftTheInboxBetweenTheReads(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.lagReads = 1 })
-	h := newHarness2(t, f, nil)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "taken up between the reads")
@@ -225,9 +185,9 @@ func TestTheMessageIsReadAgainWhenTheEntryLeftTheInboxBetweenTheReads(t *testing
 // of an idle session, spaced by the idle poll, to call an entry parked, and an entry
 // the session takes up before the second is not called so.
 func TestAnEntryTheSessionTakesUpWithinTheParkedPollsIsNotCalledParked(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.lagReads = 2 })
-	h := newHarness2(t, f, func(c *Config) { c.IdlePoll = 300 * time.Millisecond })
+	h := newHarness(t, f, func(c *Config) { c.IdlePoll = 300 * time.Millisecond })
 	h.start()
 
 	h.peerSend(peerNick, "a session that is slow to start")
@@ -248,9 +208,9 @@ func TestAnEntryTheSessionTakesUpWithinTheParkedPollsIsNotCalledParked(t *testin
 // whatever turn runs next, and would wake what the human parked. The entry goes over
 // when the human resumes the session.
 func TestAParkedDeliveryWaitsForTheHumanToResumeAndIsNeverSteered(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.parked = true })
-	h := newHarness2(t, f, func(c *Config) { c.ReadBackTimeout = 150 * time.Millisecond })
+	h := newHarness(t, f, func(c *Config) { c.PostTimeout = 150 * time.Millisecond })
 	h.start()
 
 	h.peerSend(peerNick, "into a parked session")
@@ -290,9 +250,9 @@ func TestAParkedDeliveryWaitsForTheHumanToResumeAndIsNeverSteered(t *testing.T) 
 // inbox behind it, which is not a failure and has no bound: the read-back bound is
 // the bound of the post, and this wait has none.
 func TestADeliveryBehindAnotherTurnWaitsPastTheBoundOfTheReadBack(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.busyOnPost = true })
-	h := newHarness2(t, f, func(c *Config) { c.ReadBackTimeout = 150 * time.Millisecond })
+	h := newHarness(t, f, func(c *Config) { c.PostTimeout = 150 * time.Millisecond })
 	h.start()
 
 	h.peerSend(peerNick, "behind the human's own turn")
@@ -322,9 +282,9 @@ func TestADeliveryBehindAnotherTurnWaitsPastTheBoundOfTheReadBack(t *testing.T) 
 // from the inbox and is not a message. Only the human does that, on purpose, and
 // the pump counts the delivery as made.
 func TestADeliveryTheHumanCancelledIsHandedOverAndNotSentAgain(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.cancelOnPost = true })
-	h := newHarness2(t, f, nil)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "taken back by the human")
@@ -350,9 +310,9 @@ func TestADeliveryTheHumanCancelledIsHandedOverAndNotSentAgain(t *testing.T) {
 
 // TestAMessageHoldingOtherTextIsNotADelivery: the proof of a delivery is the bytes.
 func TestAMessageHoldingOtherTextIsNotADelivery(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.corrupt = true })
-	h := newHarness2(t, f, nil)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "altered on the way")
@@ -368,9 +328,9 @@ func TestAMessageHoldingOtherTextIsNotADelivery(t *testing.T) {
 // TestADeliveryIntoASessionThatWasDeletedStopsThePump: it cannot be confirmed, and
 // is not committed.
 func TestADeliveryIntoASessionThatWasDeletedStopsThePump(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.deleteOnPost, f.cancelOnPost = true, true })
-	h := newHarness2(t, f, nil)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "into a session about to go")
@@ -383,29 +343,14 @@ func TestADeliveryIntoASessionThatWasDeletedStopsThePump(t *testing.T) {
 	}
 }
 
-func TestTheSessionBeingAnotherVersionStopsThePump(t *testing.T) {
-	f := newFake2(t)
-	f.set(func() { f.version = "1.18.30" })
-	h := newHarness2(t, f, nil)
-	h.start()
-	h.peerSend(peerNick, "to the wrong server")
-	err := h.join()
-	if err == nil || !strings.Contains(err.Error(), "not OpenCode 2") {
-		t.Fatalf("Run returned %v", err)
-	}
-	if n := len(f.postBodies()); n != 0 {
-		t.Fatalf("%d prompt(s) reached a server that is not OpenCode 2", n)
-	}
-}
-
 // TestAServerThatAsksForAPasswordStopsThePumpWithoutLeakingIt: a 401 is the
 // pump's own configuration to put right, so it stops with the advice, and the
 // password that was sent is nowhere in what it says.
 func TestAServerThatAsksForAPasswordStopsThePumpWithoutLeakingIt(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	const secret = "s3cr3t-pa55-word"
 	f.set(func() { f.password = secret })
-	c, err := NewHTTPClient2(f.url(), Auth{User: ServiceUser, Password: "wrong-" + secret}, WithRequestTimeout(2*time.Second))
+	c, err := NewHTTPClient(f.url(), Auth{Password: "wrong-" + secret}, WithRequestTimeout(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +359,7 @@ func TestAServerThatAsksForAPasswordStopsThePumpWithoutLeakingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness2On(t, c, path, dir, nil)
+	h := newHarnessOn(t, c, path, dir, nil)
 	h.start()
 	h.peerSend(peerNick, "to a server that wants a password")
 	err = h.join()
@@ -431,10 +376,10 @@ func TestAServerThatAsksForAPasswordStopsThePumpWithoutLeakingIt(t *testing.T) {
 	}
 }
 
-// spy2 wraps a Client2 to make a post fail the way a real one can, which a fake
+// spy wraps a Client to make a post fail the way a real one can, which a fake
 // over a real listener cannot be made to do on demand.
-type spy2 struct {
-	Client2
+type spy struct {
+	Client
 
 	mu      sync.Mutex
 	prompts int
@@ -443,7 +388,7 @@ type spy2 struct {
 	promptErr func(call int) error
 }
 
-func (s *spy2) Prompt(ctx context.Context, session, id, text string) error {
+func (s *spy) Prompt(ctx context.Context, session, id, text string) error {
 	s.mu.Lock()
 	s.prompts++
 	n, hook := s.prompts, s.promptErr
@@ -453,16 +398,16 @@ func (s *spy2) Prompt(ctx context.Context, session, id, text string) error {
 			return err
 		}
 	}
-	return s.Client2.Prompt(ctx, session, id, text)
+	return s.Client.Prompt(ctx, session, id, text)
 }
 
 // TestADeliveryThatNeverConnectedIsStartedOver: every attempt failed to connect, so
 // nothing was sent; the pump goes back to waiting for the server, and the delivery
 // goes over, under an id of its own, once.
 func TestADeliveryThatNeverConnectedIsStartedOver(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	dial := &TransportError{Op: "POST /api/session/x/prompt", Err: errors.New("connection refused"), Dial: true}
-	s := &spy2{Client2: f.client(), promptErr: func(call int) error {
+	s := &spy{Client: f.client(), promptErr: func(call int) error {
 		if call == 1 {
 			return dial
 		}
@@ -473,7 +418,7 @@ func TestADeliveryThatNeverConnectedIsStartedOver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness2On(t, s, path, dir, nil)
+	h := newHarnessOn(t, s, path, dir, nil)
 	h.start()
 
 	h.peerSend(peerNick, "sent while the server was away")
@@ -491,10 +436,10 @@ func TestADeliveryThatNeverConnectedIsStartedOver(t *testing.T) {
 // follows an attempt that may have reached the server does not make the delivery
 // unsent; it is posted again under the same id.
 func TestAPostThatConnectedOnceIsNotStartedOverAfterADial(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	reset := &TransportError{Op: "POST", Err: errors.New("connection reset")}
 	dial := &TransportError{Op: "POST", Err: errors.New("connection refused"), Dial: true}
-	s := &spy2{Client2: f.client(), promptErr: func(call int) error {
+	s := &spy{Client: f.client(), promptErr: func(call int) error {
 		switch call {
 		case 1:
 			return reset
@@ -508,7 +453,7 @@ func TestAPostThatConnectedOnceIsNotStartedOverAfterADial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness2On(t, s, path, dir, nil)
+	h := newHarnessOn(t, s, path, dir, nil)
 	h.start()
 
 	h.peerSend(peerNick, "sent through a flapping server")
@@ -526,8 +471,8 @@ func TestAPostThatConnectedOnceIsNotStartedOverAfterADial(t *testing.T) {
 // delivery applies to OpenCode 2 as to OpenCode 1, and what is posted is the
 // rendering of the bounded delivery.
 func TestADeliveryOverTheBoundGoesOverAsAStubTheReadBackConfirms(t *testing.T) {
-	f := newFake2(t)
-	h := newHarness2(t, f, nil)
+	f := newFake(t)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, strings.Repeat("y", 200<<10))
@@ -550,8 +495,8 @@ func TestADeliveryOverTheBoundGoesOverAsAStubTheReadBackConfirms(t *testing.T) {
 // TestTheServerIsCheckedBeforeEveryDelivery: the version and the session are asked
 // for again for each delivery, whatever the pump did in between.
 func TestTheServerIsCheckedBeforeEveryDelivery(t *testing.T) {
-	f := newFake2(t)
-	h := newHarness2(t, f, nil)
+	f := newFake(t)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "one")
@@ -567,9 +512,9 @@ func TestTheServerIsCheckedBeforeEveryDelivery(t *testing.T) {
 }
 
 func TestAShutdownDuringTheWaitForTheMessageCommitsNothing(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.busyOnPost = true })
-	h := newHarness2(t, f, nil)
+	h := newHarness(t, f, nil)
 	cancel := h.start()
 
 	h.peerSend(peerNick, "interrupted in the inbox")
@@ -583,44 +528,16 @@ func TestAShutdownDuringTheWaitForTheMessageCommitsNothing(t *testing.T) {
 	}
 }
 
-func TestNewTakesOneClient(t *testing.T) {
-	f := newFake2(t)
-	g := newFake(t)
-	path := filepath.Join(t.TempDir(), "chat.ndjson")
-	dir, err := state.Open(t.TempDir(), selfNick, "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := file.Open(path, selfNick)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := Config{Deliverer: stream.NewDeliverer(s, selfNick), Cursors: dir, Session: testSession}
-	both := base
-	both.Client, both.Client2 = g.client(), f.client()
-	if _, err := New(both); err == nil {
-		t.Error("New accepted a client for each version")
-	}
-	if _, err := New(base); err == nil {
-		t.Error("New accepted no client")
-	}
-	only2 := base
-	only2.Client2 = f.client()
-	if _, err := New(only2); err != nil {
-		t.Errorf("New refused a client for OpenCode 2: %v", err)
-	}
-}
-
 // TestAnInboxTooLargeToReadIsWaitedOutAndNeverCommitted: the inbox carries every
 // queued entry's payload, attachments included, and the human's large queued prompt
 // can pass the bound it is read under. Unread, it cannot say whether the delivery's
 // entry is still there, so the pump does not call it cancelled and does not give up:
 // it says so once and goes on asking for the message.
 func TestAnInboxTooLargeToReadIsWaitedOutAndNeverCommitted(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	// The entry is gone from the inbox, as a cancelled one is; the inbox cannot say.
 	f.set(func() { f.inboxTooLong, f.cancelOnPost = true, true })
-	h := newHarness2(t, f, func(c *Config) { c.ReadBackTimeout = 150 * time.Millisecond })
+	h := newHarness(t, f, func(c *Config) { c.PostTimeout = 150 * time.Millisecond })
 	h.start()
 
 	h.peerSend(peerNick, "behind an inbox that cannot be read")
@@ -648,7 +565,7 @@ func TestAnInboxTooLargeToReadIsWaitedOutAndNeverCommitted(t *testing.T) {
 	}
 	// The message shows, as the session takes it up: the delivery lands.
 	id, text, _ := post(t, posts[0].Body)
-	f.set(func() { f.msgs = append(f.msgs, fake2Msg{id: id, text: text}) })
+	f.set(func() { f.msgs = append(f.msgs, fakeMsg{id: id, text: text}) })
 	h.cursorPast("")
 }
 
@@ -657,9 +574,9 @@ func TestAnInboxTooLargeToReadIsWaitedOutAndNeverCommitted(t *testing.T) {
 // stops, commits nothing, and says the entry is there and that a restart sends the
 // delivery again under a new id.
 func TestAPromptTheServerEchoesAsOtherTextIsSaidToBeAdmitted(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.echoOther = true })
-	h := newHarness2(t, f, nil)
+	h := newHarness(t, f, nil)
 	h.start()
 
 	h.peerSend(peerNick, "rewritten by a plugin")
@@ -676,7 +593,7 @@ func TestAPromptTheServerEchoesAsOtherTextIsSaidToBeAdmitted(t *testing.T) {
 
 // writeFakeService writes the registration file the way the service does: a
 // temporary file in the directory, mode 0600, renamed into place.
-func writeFakeService(t *testing.T, path string, f *fakeOC2, password string) {
+func writeFakeService(t *testing.T, path string, f *fakeOpenCode, password string) {
 	t.Helper()
 	f.mu.Lock()
 	pid, version, addr := f.pid, f.version, f.addr
@@ -721,17 +638,17 @@ func newDiscoveryHarness(t *testing.T, path string) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newHarness2On(t, c, chat, dir, func(cfg *Config) { cfg.Discovery = d })
+	return newHarnessOn(t, c, chat, dir, func(cfg *Config) { cfg.Discovery = d })
 }
 
-func (f *fakeOC2) setPassword(pw string) { f.set(func() { f.password = pw }) }
+func (f *fakeOpenCode) setPassword(pw string) { f.set(func() { f.password = pw }) }
 
 // TestTheServiceIsFoundAgainAfterItRestartsElsewhere: a restarted service has a new
 // address, password and process id. The pump read the file once, at the start, and
 // reads it again each time it attaches, so the next delivery goes to the new one.
 func TestTheServiceIsFoundAgainAfterItRestartsElsewhere(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode", "service.json")
-	a := newFake2(t)
+	a := newFake(t)
 	a.setPassword("password-of-a")
 	writeFakeService(t, path, a, "password-of-a")
 	h := newDiscoveryHarness(t, path)
@@ -742,7 +659,7 @@ func TestTheServiceIsFoundAgainAfterItRestartsElsewhere(t *testing.T) {
 	first := h.cursorPast("")
 
 	a.stop()
-	b := newFake2(t)
+	b := newFake(t)
 	b.set(func() { b.pid, b.password = 777, "password-of-b" })
 	writeFakeService(t, path, b, "password-of-b")
 	h.peerSend(peerNick, "to the restarted service")
@@ -761,7 +678,7 @@ func TestTheServiceIsFoundAgainAfterItRestartsElsewhere(t *testing.T) {
 // with its backoff, says so once, and delivers when the service is up.
 func TestADeliveryIsHeldForAServiceThatIsNotThereOrIsStarting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode", "service.json")
-	a := newFake2(t)
+	a := newFake(t)
 	writeFakeService(t, path, a, "")
 	h := newDiscoveryHarness(t, path)
 	h.start()
@@ -793,7 +710,7 @@ func TestADeliveryIsHeldForAServiceThatIsNotThereOrIsStarting(t *testing.T) {
 		t.Fatalf("a delivery was committed to a server the file does not describe: %q", c)
 	}
 	// The file now describes a service that answers 503 for a while (starting).
-	b := newFake2(t)
+	b := newFake(t)
 	b.set(func() { b.pid, b.info503 = 555, 3 })
 	writeFakeService(t, path, b, "")
 	b.waitPosts(1)
@@ -814,7 +731,7 @@ func TestADeliveryIsHeldForAServiceThatIsNotThereOrIsStarting(t *testing.T) {
 // for.
 func TestA401AfterTheFileIsReadAgainStopsThePump(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode", "service.json")
-	a := newFake2(t)
+	a := newFake(t)
 	a.setPassword("right")
 	writeFakeService(t, path, a, "right")
 	h := newDiscoveryHarness(t, path)
@@ -839,7 +756,7 @@ func TestA401AfterTheFileIsReadAgainStopsThePump(t *testing.T) {
 // know.
 func TestAStaleServiceFileReadsAsStaleBeforeTheSessionIsAsked(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode", "service.json")
-	a := newFake2(t)
+	a := newFake(t)
 	a.set(func() { a.exists = false })
 	a.set(func() { a.pid = 1 })
 	writeFakeService(t, path, a, "")
@@ -863,9 +780,9 @@ func TestAStaleServiceFileReadsAsStaleBeforeTheSessionIsAsked(t *testing.T) {
 // goes on asking for the message when the server is back. It has no deadline to
 // give up at, and sends nothing twice.
 func TestAServerThatGoesAwayDuringTheWaitIsWaitedFor(t *testing.T) {
-	f := newFake2(t)
+	f := newFake(t)
 	f.set(func() { f.busyOnPost = true })
-	h := newHarness2(t, f, func(c *Config) { c.ReadBackTimeout = 100 * time.Millisecond })
+	h := newHarness(t, f, func(c *Config) { c.PostTimeout = 100 * time.Millisecond })
 	h.start()
 
 	h.peerSend(peerNick, "behind a turn, across a restart")

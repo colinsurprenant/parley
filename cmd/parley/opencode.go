@@ -14,17 +14,14 @@ import (
 	"github.com/colinsurprenant/parley/internal/stream"
 )
 
-// The variables OpenCode's own CLI reads for the credentials of a server started
-// with a password. The front reads the same, so a human who has them set for
-// `opencode` has set them for the pump: OpenCode 1's two, and OpenCode 2's, which
-// is OPENCODE_PASSWORD with OPENCODE_SERVER_PASSWORD as its older name and a user
-// name that is always opencode. OpenCode 2's own service needs none: its password
-// is in the file the pump finds it by.
+// The variables OpenCode's own CLI reads for the password of a server started
+// with `opencode serve`: OPENCODE_PASSWORD, with OPENCODE_SERVER_PASSWORD as its
+// older name. The front reads the same, so a human who has them set for
+// `opencode` has set them for the pump; the user name is always opencode. The
+// background service needs none: its password is in the file the pump finds it by.
 const (
-	opencodePasswordEnv  = "OPENCODE_SERVER_PASSWORD"
-	opencodeUserEnv      = "OPENCODE_SERVER_USERNAME"
-	opencodeDefaultUser  = "opencode"
-	opencodePassword2Env = "OPENCODE_PASSWORD"
+	opencodePasswordEnv       = "OPENCODE_PASSWORD"
+	opencodeLegacyPasswordEnv = "OPENCODE_SERVER_PASSWORD"
 )
 
 // sessionAuto is the --session value that asks for the recorded session instead
@@ -34,13 +31,13 @@ const sessionAuto = "auto"
 
 // cmdOpencode runs the OpenCode front: a foreground pump that blocks on the
 // stream and hands every delivery to a live OpenCode session over the HTTP API
-// the OpenCode server serves: the TUI's, started with --port, on OpenCode 1, and
-// the background service's, found without a port, on OpenCode 2. It opens the
-// stream, the state directory, the lock and the cursor exactly as cmdCodex does,
-// and differs in where the delivery goes and in what is checked before anything
-// is opened: the server has to be there, be one this front speaks to, and know
-// the session, and a pump pointed at nothing is a bad invocation that must cost
-// the nick no IRC account, no connection and no lock to say so. Nothing is printed on stdout:
+// of the OpenCode 2 server it runs on: the background service, found without a
+// port from the file it writes, or a server started with `opencode serve --port`.
+// It opens the stream, the state directory, the lock and the cursor exactly as
+// cmdCodex does, and differs in where the delivery goes and in what is checked
+// before anything is opened: the server has to be there, be one this front speaks
+// to, and know the session, and a pump pointed at nothing is a bad invocation that
+// must cost the nick no IRC account, no connection and no lock to say so. Nothing is printed on stdout:
 // the deliveries go into the OpenCode session, and everything this process has
 // to say goes to stderr, so the terminal running it stays a log and nothing else.
 func cmdOpencode(args []string) error {
@@ -52,7 +49,7 @@ func cmdOpencode(args []string) error {
 	spec := fs.String("stream", "", "stream to read, e.g. file:/path/to/chat.ndjson")
 	nick := fs.String("nick", "", "this participant's nick")
 	session := fs.String("session", "", "the live OpenCode session to deliver into, an id such as ses_ea8bbe5a9ffePFZ3AOhDdaNgbW, or auto for the session id recorded for this nick and stream, in the opencode-session file beside the cursor")
-	port := fs.Int("port", 0, "the port of an OpenCode server on 127.0.0.1, which the pump probes to tell OpenCode 1 from OpenCode 2: the port the OpenCode 1 TUI serves its HTTP API on, the one it was started with in `opencode --port <n>`, or an OpenCode 2 `opencode serve --port <n>`; the pump connects to 127.0.0.1 and nowhere else. Without it the pump finds OpenCode 2's background service from its service file, in $XDG_STATE_HOME/opencode (default ~/.local/state/opencode), whose password it reads from there. A server started with OPENCODE_SERVER_PASSWORD (OpenCode 1) or OPENCODE_PASSWORD (OpenCode 2) needs the same set here (and OPENCODE_SERVER_USERNAME for OpenCode 1, opencode by default)")
+	port := fs.Int("port", 0, "the port of an OpenCode server on 127.0.0.1 that was started with `opencode serve --port <n>`; the pump connects to 127.0.0.1 and nowhere else, with the password in OPENCODE_PASSWORD (else OPENCODE_SERVER_PASSWORD) that the server was started with. Without it the pump finds OpenCode's background service, the one `opencode -s <session>` starts, from its service file, in $XDG_STATE_HOME/opencode (default ~/.local/state/opencode), whose password it reads from there")
 	debounce := fs.Duration("debounce", 250*time.Millisecond, "quiet window that joins a burst into one delivery")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ (default $XDG_STATE_HOME/parley)")
 	skillFlag := fs.String("skill", string(primer.SkillBuild), "the skill the session was started with: build (two peers, nothing held back), table (a seat at a table, which needs --chair and --cap) or line (a session on a line, which needs --chair and --cap)")
@@ -162,7 +159,6 @@ func cmdOpencode(args []string) error {
 		Cursors:   dir,
 		Session:   sessionID,
 		Client:    target.client,
-		Client2:   target.client2,
 		Discovery: target.discovery,
 		Debounce:  *debounce,
 		Log:       os.Stderr,

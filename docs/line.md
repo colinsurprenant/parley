@@ -40,12 +40,12 @@ on, and an IRC client for you. `sh skills/install.sh` links all three skills,
 `~/.agents/skills`; the line skill is then `/parley-line` in Claude Code and
 `$parley-line` in Codex, and OpenCode, which reads both roots, loads it with its
 skill tool. `parley doctor` checks the links with the rest. A line takes OpenCode
-1.x and 2.x sessions, and `line add` tells which by `opencode --version`. For 1.x
-install `npm i -g opencode-ai@1` or use the installer at `opencode.ai/install`
-(`curl -fsSL https://opencode.ai/install | bash`); Homebrew core now ships OpenCode
-2, and its installer is `opencode.ai/v2/install`. Support for 2.x is verified
-against 2.0.32 in OpenCode's simulation mode, which blocks all model traffic, and
-**not yet on a live model**: run one 2.x line live before relying on it.
+2.x sessions: install it with `brew install opencode` (Homebrew core) or `npm i -g
+@opencode/cli`. The legacy 1.x (npm's `opencode-ai`, the installer at
+`opencode.ai/install`) has no API parley can speak to, and `parley doctor` fails
+it. Parley was last verified against OpenCode 2.0.32 in OpenCode's simulation mode,
+which blocks all model traffic, and **not yet on a live model**: run one line live
+before relying on it; a newer 2.x is expected to work.
 
 ## Per line
 
@@ -238,165 +238,111 @@ against 2.0.32 in OpenCode's simulation mode, which blocks all model traffic, an
    ask for escalation for each, and each is an approval prompt here. Check that
    `/status` shows `workspace-write` and network on, then type `$parley-line`.
 
-   **An OpenCode session** (1.x or 2.x) takes two terminals and has no
-   connect-time channel either, so its text is the primer, its first message, and
-   `line add` starts the session on it. It writes nothing in `<checkout>`: no launch
-   file and no exclude line. The two versions differ in how the session is started
-   and reached; where the text below says 1.x or 2.x it is that version's, and
-   where it does not, both.
+   **An OpenCode session** takes two terminals and has no connect-time channel
+   either, so its text is the primer, its first message, and `line add` starts the
+   session on it. It writes nothing in `<checkout>`: no launch file and no exclude
+   line.
 
    - It makes the same private reply directory `parley-line-<channel>-*` under
      `$TMPDIR` as for a Codex session (mode 0700, a marker with the line and the
      nick), and the primer carries the path of the session's reply file in it.
-   - It starts the session with `opencode run --format json --title "parley line
-     <channel> <nick> <token>"` in the checkout, `-m <model>` when you gave one (an
-     OpenCode model is `provider/model`, as `opencode models` lists them), and a
-     five-minute limit. The token is the random part of the reply directory's name,
-     which no other add shares, so a session found by its title is this run's. The
-     primer goes in on stdin, because `opencode run` wraps a message argument that
-     holds spaces in double quotes and escapes the quotes in it, and the session's
-     first message should be the primer as it is. Your environment is passed on as
-     it is. The turn must have completed: every event of the run must carry the
-     same session id, of the shape OpenCode makes (an event with none fails the
-     turn), and the last step must end with `stop`. A session that did not
-     complete, or did not end within the limit, is deleted (`opencode session
-     delete`, run from the checkout), and the add fails and undoes itself. Events
-     that name two sessions do not say which one the run made, so nothing is
-     deleted then: the error names both ids, and you look with `opencode session
-     list` in the checkout. A run stopped before its first event has made a session
-     it never named: `opencode session list --format json -n 200` is asked for,
-     from the checkout (OpenCode lists the sessions of the project of the directory
-     it runs in), and the session with exactly this title and directory, made after
-     the run began, is deleted too; the log says when that list ran and found
-     nothing. `opencode run` has no terminal to ask in, so a permission ask in that
-     turn is refused (OpenCode 1.18.30 refuses it), not answered. The session id is
-     recorded for `--session auto`, and printed with the session's answer to the
-     primer.
-   - **On 2.x the session id is parley's own.** `opencode run --session <id>`
-     "continues the session, or creates it if it does not exist" (2.0.32), so
-     `line add` makes the id the way OpenCode does (`ses_` and 26 letters or digits,
-     newest first) and passes it, with the title, `-m` and the primer on stdin as
-     above. Nothing has to be read back from the run to know which session it made,
-     so nothing is searched for: every event must carry that id, and if the add
-     fails or you interrupt it, `opencode session delete <id>` is run from the
-     checkout (an answer of "Session not found", for a run that failed before it made
-     the session, is not a failure). A 2.x run starts the user's one background
-     service if none runs, and the session lives in it. The service detaches
-     itself (checked on 2.0.32: its own process group and session, stdin and stdout
-     on `/dev/null`, stderr not on parley's pipes), so a run that parley stops by
-     taking its process group, on a timeout or an interrupt, leaves the service and
-     the TUIs on it alone, and a run that succeeds is not held up by it.
-   - **A limit of creating the session through `opencode run`, on 1.x:** it carries
-     OpenCode's own session-level denies for the `question` tool and for plan mode
-     (1.18.30 sets them when the run is not interactive). The session cannot ask
-     you a structured question or enter plan mode, and asks in plain text; nothing
-     parley does changes that. **On 2.x it adds no rule to the session** (the
-     session has no `permissions`, 2.0.32 read from its source and from a session it
-     made): the run answers the asks of its own turn by rejecting each one, with a
+   - **The session id is parley's own.** `opencode run --session <id>` "continues
+     the session, or creates it if it does not exist", so `line add` makes the id
+     the way OpenCode does (`ses_` and 26 letters or digits, newest first) and
+     starts the session with `opencode run --format json --title "parley line
+     <channel> <nick>" --session <id>` in the checkout, `-m <model>` when you gave
+     one (an OpenCode model is `provider/model`, as `opencode models` lists them),
+     and a five-minute limit. The primer goes in on stdin, because `opencode run`
+     wraps a message argument that holds spaces in double quotes and escapes the
+     quotes in it, and the session's first message should be the primer as it is.
+     Your environment is passed on as it is. The turn must have completed: every
+     event of the run must carry that id (an event with none fails the turn), and
+     the last step must end with `stop`. If the turn did not complete, or did not end
+     within the limit, or you interrupt the add, `opencode session delete <id>` is run
+     from the checkout and the add fails and undoes itself. The id is known before
+     the run, so that delete is made whatever the run did and nothing is searched
+     for; an answer of "Session not found", for a run that failed before it made the
+     session, is not a failure. The id is recorded for `--session auto`, and printed
+     with the session's answer to the primer.
+   - The run starts the user's one background service if none runs, and the session
+     lives in it. The service detaches itself (checked on 2.0.32: its own process
+     group and session, stdin and stdout on `/dev/null`, stderr not on parley's
+     pipes), so a run that parley stops by taking its process group, on a timeout or
+     an interrupt, leaves the service and the TUIs on it alone, and a run that
+     succeeds is not held up by it.
+   - **The run adds no rule to the session** (the session has no `permissions`,
+     read from the source and from a session it made). `opencode run` has no terminal
+     to ask in, so it answers the asks of its own turn by rejecting each one, with a
      message that tells the model to carry on without the action, and cancels each
-     question the same way, and from the first message you send it the session's
-     agent and your OpenCode configuration decide.
+     question the same way. From the first message you send it, the session's agent
+     and your OpenCode configuration decide.
 
    Then it prints the commands that remain, in this order, because the pump checks
-   as it starts that the server answers and knows the session. **On 1.x**, in the
-   session's checkout, the TUI, which serves its HTTP API only while it runs with
-   `--port`:
-
-   ```
-   cd <checkout>
-   opencode --port <port> --session <session>
-   ```
-
-   and the pump, in another terminal:
-
-   ```
-   parley opencode --stream 'irc://127.0.0.1:6667/#<channel>' --nick <nick> --session auto \
-     --port <port> --skill line --chair <chair> --cap <cap> --window <window> --state-dir <base>
-   ```
-
-   `<port>` is a port on `127.0.0.1` that was free when `line add` ran, the same in
-   both; give both another if the TUI says it is taken. **On 2.x** there is no
-   `--port`: the TUI, run in the checkout, reaches the one background service
-   (and starts it if none runs), and the pump finds that service itself:
+   as it starts that the server answers and knows the session. In the session's
+   checkout, the TUI, which reaches the one background service (and starts it if none
+   runs):
 
    ```
    cd <checkout>
    opencode -s <session>
    ```
 
+   and the pump, in another terminal:
+
    ```
    parley opencode --stream 'irc://127.0.0.1:6667/#<channel>' --nick <nick> --session auto \
      --skill line --chair <chair> --cap <cap> --window <window> --state-dir <base>
    ```
 
-   Without `--port` the pump reads `service.json` in `$XDG_STATE_HOME/opencode`
-   (`~/.local/state/opencode` if that is not set), which the service writes with
-   its address and its password, so both commands need the same `HOME` and
-   `XDG_STATE_HOME`. The pump refuses the file unless it is a regular file you
-   own that nobody else can read or write, names an `http` address on a loopback
-   IP, and the server there answers as the service the file describes (same
+   There is no port to choose: the pump reads `service.json` in
+   `$XDG_STATE_HOME/opencode` (`~/.local/state/opencode` if that is not set), which
+   the service writes with its address and its password, so both commands need the
+   same `HOME` and `XDG_STATE_HOME`. The pump refuses the file unless it is a regular
+   file you own that nobody else can read or write, names an `http` address on a
+   loopback IP, and the server there answers as the service the file describes (same
    process id and version). It reads the file again every time it attaches, so a
    service that restarts at another address with another password is followed: the
-   pump holds while the file is absent or the service is starting, and stops on a
-   401 after reading the file again. **Authentication on 2.x:** the service's password is
-   the file's, sent to that address as HTTP basic credentials under the user
-   `opencode` and never printed, so there is nothing to set; for an `opencode
-   serve` you started yourself, give `--port` and set `OPENCODE_PASSWORD` (or the
-   older `OPENCODE_SERVER_PASSWORD`) to the password it was started with. **On 1.x**
-   `OPENCODE_SERVER_PASSWORD` is optional, as below. With `--port` the pump probes
-   the address and tells the version by the answer: OpenCode 1's health JSON, else
-   OpenCode 2's `/api/info`.
+   pump holds while the file is absent or the service is starting, and stops on a 401
+   after reading the file again. The service's password is the file's, sent to that
+   address as HTTP basic credentials under the user `opencode` and never printed, so
+   there is nothing to set. For an `opencode serve` you started yourself, give
+   `--port` and set `OPENCODE_PASSWORD` (or the older `OPENCODE_SERVER_PASSWORD`) to
+   the password it was started with.
 
-   The pump takes the same
-   breaker as the other fronts and registers the nick. It posts each delivery into
-   the session as one user message, the peer header included, **only while the
-   session is idle**: on 1.x OpenCode has no queue, and a message sent during a turn
-   may be folded into that turn; 2.x queues the post and starts a turn of its own
-   for it, and the pump waits for an idle session there too, so that what arrives
-   while the session works is held in the stream and goes over as one delivery when
-   the turn ends. A delivery counts as
-   made once the session shows it (1.x: its history holds a user message with those
-   bytes; 2.x: the message the pump posted under its own id holds them), and a crash
-   delivers again rather than drop (`docs/reference.md`, "opencode: the OpenCode
-   front"). On 1.x a line you submit in the TUI at the instant of a post is merged
-   into your own turn, and the server's API cannot prevent that. On 2.x the delivery
-   is queued and is never merged into a turn that runs; the other way round, a prompt
-   you submit as a steer while a delivery's turn runs is folded into that turn, as any
-   steer is. If you interrupt the session while a delivery waits in its inbox, the
-   delivery stays parked there and the pump says so once and waits: it goes over when
-   you resume the session, and the pump never steers it, which would put it into
-   whatever turn runs next. If you delete a queued delivery in the TUI, the pump
-   counts it as handed over and does not send it again. A delivery is posted whole, with one bound: a
-   message whose rendering is over 128 KiB, and a message that would take one
-   delivery past 512 KiB, is not posted, and a stub takes its place, its own
+   The pump takes the same breaker as the other fronts and registers the nick. It
+   posts each delivery into the session as one user message, the peer header
+   included, **only while the session is idle**: OpenCode queues the post and starts
+   a turn of its own for it, but the pump waits for an idle session first, so that
+   what arrives while the session works is held in the stream and goes over as one
+   delivery when the turn ends. A delivery counts as made once the message the pump
+   posted under its own id holds exactly those bytes, and a crash delivers again
+   rather than drop (`docs/reference.md`, "opencode: the OpenCode front"). The
+   delivery is queued and is never merged into a turn that runs; the other way round,
+   a prompt you submit as a steer while a delivery's turn runs is folded into that
+   turn, as any steer is. If you interrupt the session while a delivery waits in its
+   inbox, the delivery stays parked there and the pump says so once and waits: it goes
+   over when you resume the session, and the pump never steers it, which would put it
+   into whatever turn runs next. If you delete a queued delivery in the TUI, the pump
+   counts it as handed over and does not send it again. A delivery is posted whole,
+   with one bound: a message whose rendering is over 128 KiB, and a message that would
+   take one delivery past 512 KiB, is not posted, and a stub takes its place, its own
    header over a one-line notice naming it, while the full text stays in the stream
    for you to read.
 
-   Three things the pump does not do for you. **On 1.x every write of the reply
-   file raises OpenCode's `external_directory` ask**, since the reply directory is
-   under `$TMPDIR`, outside the checkout, and "Allow once" asks again on the next
-   reply (all 11 writes of a live run asked): answer **"Allow always"** for the
-   reply directory in the TUI, where the ask appears, so that later replies do not
-   stop on one. On 1.18.30 "always" lasts as long as the TUI's server runs: after a
-   restart of the TUI, the next write asks once more (seen live).
-   **On 2.x it asks nothing**: `external_directory` is allowed by default there
-   (`GET /api/agent/build` on a 2.0.32 server shows the base policy, and the
-   OpenCode permissions docs say "the default policy allows `external_directory`"),
-   so the reply file is written without a prompt. To be asked, as 1.x asks, add
-   this rule to your `opencode.jsonc` (rules are ordered and the last match wins, so
-   a narrower `allow` after it can exempt the reply directory):
+   Two things the pump does not do for you. **Writing the reply file asks nothing**:
+   `external_directory` is allowed by default in OpenCode (`GET /api/agent/build`
+   shows the base policy, and the OpenCode permissions docs say "the default policy
+   allows `external_directory`"), so the reply directory, which is under `$TMPDIR`,
+   outside the checkout, is written without a prompt. To be asked, add this rule to
+   your `opencode.jsonc` (rules are ordered and the last match wins, so a narrower
+   `allow` after it can exempt the reply directory):
 
    ```
    { "permissions": [ { "action": "external_directory", "resource": "*", "effect": "ask" } ] }
    ```
 
-   **On 1.x, `OPENCODE_SERVER_PASSWORD`**: the server `--port` opens answers any
-   process on this machine unless you set a password, so set it (and
-   `OPENCODE_SERVER_USERNAME` if you want a name other than `opencode`) in the
-   environment of both commands; the pump reads the variables the TUI does. (2.x:
-   above.) And
-   there is no `/parley-line`: OpenCode loads a skill with its skill tool, which the
-   primer tells the session to use, so check that the session's answer to the
+   And there is no `/parley-line`: OpenCode loads a skill with its skill tool, which
+   the primer tells the session to use, so check that the session's answer to the
    primer, printed by `line add`, shows it did, and ask it to if not.
 
    **In the Claude Code and Codex cases**, when the checkout is the root of a git
@@ -482,9 +428,8 @@ take it down by hand too ("Taking it down", below).
   of step 5's pump line; the resume line is step 5's.
 
 - **An OpenCode session.** Nothing is written in the checkout. Start the TUI there
-  with `opencode --port <port>` (1.x) or `opencode` (2.x, which has no `--port`),
-  make the reply directory as for Codex, and paste the primer in as the session's
-  first message:
+  with `opencode` (it starts the background service if none runs), make the reply
+  directory as for Codex, and paste the primer in as the session's first message:
 
   ```
   dir=$(mktemp -d); echo "$dir"
@@ -494,7 +439,7 @@ take it down by hand too ("Taking it down", below).
 
   `opencode session list` shows the session's id. The pump takes it with
   `--session <session>` in place of `--session auto`, with the rest of step 5's
-  pump line (1.x: with `--port <port>`; 2.x: without it).
+  pump line.
 
 ## In the room
 
@@ -534,10 +479,8 @@ before it has read the others', run a table instead: a line has no seal.
   over as one delivery when the turn ends. A turn that waits on an
   `external_directory` ask, or on any other question to you in the TUI, holds
   every delivery behind it until you answer. A TUI that is closed or restarted
-  stops the deliveries the same way on 1.x, whose server is the TUI: the pump holds
-  them, tries the server again and delivers once it answers; restart the TUI with
-  the same `--port` and `--session`. On 2.x the service outlives the TUI, so closing
-  the TUI stops nothing; a service that is stopped is waited for the same way, and
+  stops nothing: the service outlives the TUI. A service that is stopped is waited
+  for: the pump holds the deliveries, tries again and delivers once it answers, and
   when it comes back, at another address or not, the pump finds it again from its
   file.
 - **A front restart loses what it held.** Held posts live in the front's memory
@@ -643,9 +586,8 @@ inputs a line has.
   `--nick`, `--checkout`, `--stream` and the files under `<base>`, `line.json`
   among them, are yours, in directories only you can write. The chair is trusted
   only as a registered nick on IRC, which is why step 2 registers it. For an
-  OpenCode session, the server at `127.0.0.1:<port>` (1.x) is your own TUI, and on
-  2.x the service whose registration file is in your own state directory, the
-  file the user's own `opencode` trusts to find it: the pump checks the file is
+  OpenCode session, the server is the service whose registration file is in your own
+  state directory, the file the user's own `opencode` trusts to find it: the pump checks the file is
   yours and private and names a loopback address before it sends the password in
   it anywhere, bounds what it reads from the server and checks its shapes, and
   does not treat it as hostile.
@@ -661,13 +603,11 @@ inputs a line has.
   harness's permissions is not parley's to police: parley is not a sandbox, and the
   rest of this paragraph is each harness's own doing. Claude Code asks you before
   it writes outside its working directory, and Codex's workspace-write sandbox
-  keeps a session to its roots. OpenCode 1.x asks before a file tool writes
-  outside the checkout (`external_directory` is `ask`), OpenCode 2.x does not (it
-  allows `external_directory` by default; see step 5 for the rule that restores the
-  ask), and the bash tool of both runs without approval by default, so a session's
-  bash can write anywhere you can.
+  keeps a session to its roots. OpenCode does not ask before a file tool writes
+  outside the checkout (it allows `external_directory` by default; see step 5 for
+  the rule that restores the ask), and its bash tool runs without approval by
+  default, so a session's bash can write anywhere you can.
   If a session should not, tighten its OpenCode permissions yourself. Also out of
-  scope for an OpenCode session: another process on this machine that talks to the
-  `--port` server, which OpenCode 1 opens when you pass `--port`, and which
-  `OPENCODE_SERVER_PASSWORD` closes (an OpenCode 2 server always wants its
-  password).
+  scope for an OpenCode session: another process on this machine that talks to a
+  server you started with `opencode serve --port` and a password of its own, or
+  that reads your state directory, which is your own account's exposure.

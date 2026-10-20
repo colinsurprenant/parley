@@ -1,15 +1,12 @@
 package opencode
 
 import (
-	"encoding/base64"
+	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,107 +17,94 @@ const (
 	testSession = "ses_ea8bbe5a9ffePFZ3AOhDdaNgbW"
 	// testDir is the directory the fake's session belongs to.
 	testDir = "/work/checkout"
+
+	fakePID = 4242
 )
 
-// fakeMsg is one message in the fake's history, in the shape OpenCode 1.18.30
-// lists it: info with the id, role and, for an assistant message, the parent,
-// and the parts.
+// fakeMsg is a user message the fake's session holds, in the order it was
+// promoted.
 type fakeMsg struct {
-	ID       string
-	Role     string
-	ParentID string
-	Parts    []map[string]any
+	id, text string
 }
 
-// plantedMsg is a message the fake adds when a prompt is accepted. partType, if
-// set, replaces the type of its text part.
-type plantedMsg struct {
-	role, partType, text string
+// fakeItem is an entry of the fake's inbox.
+type fakeItem struct {
+	id, text, delivery string
+	// lag is how many reads of the message by this id answer 404 before the session
+	// takes the entry up.
+	lag int
 }
 
 type fakePost struct {
 	Body []byte
-	// TurnRunning is whether a turn the fake itself started was still running
-	// when the post arrived, which is what a delivery into a busy session is.
+	// TurnRunning is whether the session was in a turn when the post arrived.
 	TurnRunning bool
 }
 
-// fakeOpenCode is a stand-in for the OpenCode 1 server a TUI serves, over a
-// real listener, with the knobs the pump's tests turn: whether a session is busy
-// and for how long, what the status reads right after a prompt, whether a prompt
-// is accepted and then lost, and whether the server answers at all.
+// fakeOpenCode is a stand-in for an OpenCode 2 server, over a real listener, with the
+// behaviour of 2.0.32 that the pump depends on (read from its source and checked
+// against a live server in simulation mode): a prompt with an id is admitted into
+// the inbox, a repeat of an id is answered with the first, an idle session takes a
+// queued entry up at once and a busy one after its turn, steer entries go first, a
+// parked session takes nothing until the human resumes it, and an entry
+// leaves the inbox and becomes a message in one step.
 //
-// A turn the fake starts is counted in polls of the status endpoint and not in
-// time, so a test of the status race is the same on a loaded machine as on an
-// idle one: after a prompt the status reads idle raceIdle times, busy busyPolls
-// times, and the assistant message that ends the turn appears with the last busy
-// read.
+// A turn is counted in reads of the active list and not in time, as the OpenCode 1
+// fake's are, so a test is the same on a loaded machine as on an idle one: after
+// an entry is taken up the list reads busy turnReads times.
 type fakeOpenCode struct {
 	t *testing.T
 
 	mu       sync.Mutex
 	version  string
-	exists   bool
+	pid      int
 	password string
-	msgs     []fakeMsg
-	seq      int
+	exists   bool
+	dir      string
 
-	// dir is the directory the session belongs to. The server itself is taken
-	// to run somewhere else, as a TUI started in another checkout does: like
-	// OpenCode 1.18.30, the fake lists a session's status only under the
-	// session's own directory, and answers {} for a request with none or another.
-	dir         string
-	noDirectory bool
-	statusDirs  []string
-	// nextUserID, if set, is the id the next accepted prompt's message is given
-	// instead of the next in sequence: the server assigns ids when it creates a
-	// message, which is not the order prompts were posted in.
-	nextUserID string
-	// stallMessages and stallStatus make those reads hang, once a prompt has been
-	// accepted, until the client gives up on the request: a server that has
-	// stopped answering without closing anything.
-	stallMessages bool
-	stallStatus   bool
-	// burst is how many assistant messages the turn has written by the time the
-	// first read after an accepted prompt is answered, each answering burstParent
-	// (the prompt's own message when that is empty).
-	burst       int
-	burstParent string
-	// plant is put in the history when a prompt is accepted, after the prompt's own
-	// message if there is one: what a read-back must not take for the delivery.
-	plant []plantedMsg
+	msgs  []fakeMsg
+	inbox []fakeItem
 
 	// manualBusy is a turn the test holds open, as a human's own prompt would.
 	manualBusy bool
+	// turnReads is how many reads of the active list a turn the fake starts is
+	// busy for; busyLeft is what is left of the one in progress.
+	turnReads int
+	busyLeft  int
+	// parked makes the session take nothing up from the queue until resume: the
+	// state after an interrupt.
+	parked bool
 
-	// The turn each accepted prompt starts: the status reads idle turnRace
-	// times, as it can right after a 204, then busy turnPolls times, and the
-	// last busy read is the one that ends the turn. turnPolls of zero is a prompt
-	// that starts no turn at all.
-	turnRace  int
-	turnPolls int
-	// raceIdle and busyPolls are what is left of the turn in progress.
-	raceIdle  int
-	busyPolls int
-	// hold makes the server accept a prompt, 204 and all, and lose it.
-	hold bool
-	// userLag is how many reads of the history pass before an accepted prompt's
-	// message shows in it.
-	userLag int
-	// promptCode, if set, is the status the prompt endpoint answers with.
-	promptCode int
-	// page makes the health path answer as OpenCode 2 does, with its web page.
-	page bool
+	// lagReads is the lag given to an entry on admission.
+	lagReads int
+	// loseResponses is how many prompt answers are swallowed, the connection
+	// closed after the entry was admitted.
+	loseResponses int
+	// cancelOnPost removes an entry from the inbox as it is admitted: the human
+	// cancelled it.
+	cancelOnPost bool
+	// busyOnPost starts a turn of the human's own as the entry is admitted, so the
+	// entry waits behind it until the test ends it.
+	busyOnPost bool
+	// corrupt makes the message that an entry becomes hold other text.
+	corrupt bool
+	// deleteOnPost makes the session unknown once an entry has been admitted.
+	deleteOnPost bool
 
-	running   bool
-	lagLeft   int
-	pending   []fakeMsg
-	pendingID string
-
-	posts        []fakePost
-	statusReads  int
-	messageReads int
-	limits       []string
+	posts []fakePost
+	// patches are the requests to change an inbox entry. The pump makes none: it
+	// never steers, and the fake answers 405, so one is a failure of the test.
+	patches []string
+	// echoOther makes the answer to a prompt carry other text than was posted, as a
+	// plugin that rewrites prompts would leave it; the entry is admitted as posted.
+	echoOther bool
+	// info503 is how many reads of /api/info are answered 503, a service that is
+	// starting.
+	info503 int
+	// inboxTooLong makes the inbox read answer a body past the bound the front
+	// reads it under, as an inbox full of attachments does.
+	inboxTooLong bool
+	reads        map[string]int
 
 	srv  *httptest.Server
 	addr string
@@ -128,19 +112,16 @@ type fakeOpenCode struct {
 
 func newFake(t *testing.T) *fakeOpenCode {
 	t.Helper()
-	f := &fakeOpenCode{t: t, version: "1.18.30", exists: true, turnPolls: 1, dir: testDir}
+	f := &fakeOpenCode{t: t, version: "2.0.32", pid: fakePID, exists: true, dir: testDir, turnReads: 1, reads: map[string]int{}}
 	f.start("127.0.0.1:0")
 	t.Cleanup(f.stop)
 	return f
 }
 
-// start serves on addr, which is "127.0.0.1:0" for a new port or the address of
-// an earlier run to come back on it.
 func (f *fakeOpenCode) start(addr string) {
 	f.t.Helper()
 	var l net.Listener
 	var err error
-	// A port just released can take a moment to be bindable again.
 	for i := 0; i < 50; i++ {
 		if l, err = net.Listen("tcp", addr); err == nil {
 			break
@@ -159,7 +140,6 @@ func (f *fakeOpenCode) start(addr string) {
 	f.mu.Unlock()
 }
 
-// stop closes the listener and every connection; it is safe to call twice.
 func (f *fakeOpenCode) stop() {
 	f.mu.Lock()
 	srv := f.srv
@@ -171,7 +151,6 @@ func (f *fakeOpenCode) stop() {
 	}
 }
 
-// url is the base URL of the server as the front is given it.
 func (f *fakeOpenCode) url() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -186,17 +165,14 @@ func (f *fakeOpenCode) address() string {
 
 func (f *fakeOpenCode) client() *HTTPClient {
 	f.t.Helper()
-	c, err := NewHTTPClient(f.url(), f.auth(), WithRequestTimeout(2*time.Second))
+	f.mu.Lock()
+	pw := f.password
+	f.mu.Unlock()
+	c, err := NewHTTPClient(f.url(), Auth{Password: pw}, WithRequestTimeout(2*time.Second))
 	if err != nil {
 		f.t.Fatalf("NewHTTPClient: %v", err)
 	}
 	return c
-}
-
-func (f *fakeOpenCode) auth() Auth {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return Auth{User: "opencode", Password: f.password}
 }
 
 func (f *fakeOpenCode) set(fn func()) {
@@ -205,54 +181,22 @@ func (f *fakeOpenCode) set(fn func()) {
 	fn()
 }
 
-// seed puts a message in the history as if it had been there all along.
-func (f *fakeOpenCode) seed(role, text string) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	m := f.newMsgLocked(role, "", text)
-	f.msgs = append(f.msgs, m)
-	return m.ID
+// release ends a turn the test held open, and lets the session take up what
+// waited for it.
+func (f *fakeOpenCode) release() {
+	f.set(func() {
+		f.manualBusy = false
+		f.promoteLocked()
+	})
 }
 
-// seedID is seed with an id of the test's choosing.
-func (f *fakeOpenCode) seedID(id, role, text string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	m := f.newMsgLocked(role, "", text)
-	m.ID = id
-	f.msgs = append(f.msgs, m)
-}
-
-func (f *fakeOpenCode) newMsgLocked(role, parent, text string) fakeMsg {
-	f.seq++
-	id := fmt.Sprintf("msg_%012d", f.seq)
-	parts := []map[string]any{{"type": "text", "text": text, "id": "prt_" + strconv.Itoa(f.seq), "messageID": id}}
-	if role == "assistant" {
-		parts = append([]map[string]any{{"type": "step-start"}}, parts...)
-	}
-	return fakeMsg{ID: id, Role: role, ParentID: parent, Parts: parts}
-}
-
-// userTexts is the text of every user message in the history, in id order.
-func (f *fakeOpenCode) userTexts() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []string
-	msgs := append([]fakeMsg(nil), f.msgs...)
-	sort.SliceStable(msgs, func(i, j int) bool { return msgs[i].ID < msgs[j].ID })
-	for _, m := range msgs {
-		if m.Role == "user" {
-			out = append(out, m.Parts[0]["text"].(string))
-		}
-	}
-	return out
-}
-
-// statusDirsSeen is the directory parameter of every status request so far.
-func (f *fakeOpenCode) statusDirsSeen() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.statusDirs...)
+// resume is the human resuming a session an interrupt parked: it takes up what
+// waited.
+func (f *fakeOpenCode) resume() {
+	f.set(func() {
+		f.parked = false
+		f.promoteLocked()
+	})
 }
 
 func (f *fakeOpenCode) postBodies() []fakePost {
@@ -261,7 +205,38 @@ func (f *fakeOpenCode) postBodies() []fakePost {
 	return append([]fakePost(nil), f.posts...)
 }
 
-// waitPosts blocks until n prompts have been accepted and returns them.
+func (f *fakeOpenCode) patched() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.patches...)
+}
+
+func (f *fakeOpenCode) read(route string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads[route]
+}
+
+func (f *fakeOpenCode) userTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, m := range f.msgs {
+		out = append(out, m.text)
+	}
+	return out
+}
+
+func (f *fakeOpenCode) inboxIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, it := range f.inbox {
+		out = append(out, it.id)
+	}
+	return out
+}
+
 func (f *fakeOpenCode) waitPosts(n int) []fakePost {
 	f.t.Helper()
 	deadline := time.Now().Add(testDeadline)
@@ -276,198 +251,218 @@ func (f *fakeOpenCode) waitPosts(n int) []fakePost {
 	}
 }
 
-func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
-	// A stall waits outside the lock, so that the other requests are answered
-	// while it hangs.
-	f.mu.Lock()
-	stall := len(f.posts) > 0 && ((f.stallMessages && strings.HasSuffix(r.URL.Path, "/message")) || (f.stallStatus && r.URL.Path == "/session/status"))
-	f.mu.Unlock()
-	if stall {
-		select {
-		case <-r.Context().Done():
-		case <-time.After(30 * time.Second):
+func (f *fakeOpenCode) waitReads(route string, n int) {
+	f.t.Helper()
+	deadline := time.Now().Add(testDeadline)
+	for f.read(route) < n {
+		if !time.Now().Before(deadline) {
+			f.t.Fatalf("%d read(s) of %s within %s, want %d", f.read(route), route, testDeadline, n)
 		}
+		time.Sleep(pollInterval)
+	}
+}
+
+func (f *fakeOpenCode) busyLocked() bool { return f.manualBusy || f.busyLeft > 0 }
+
+// promoteLocked is the session taking up input: nothing while it is in a turn;
+// when it is free, the oldest steer entry, else, unless it is parked, the oldest
+// queued one. The entry leaves the inbox and becomes a message together, and a
+// turn begins.
+func (f *fakeOpenCode) promoteLocked() {
+	if f.busyLocked() {
 		return
 	}
+	pick := -1
+	for i, it := range f.inbox {
+		if it.delivery == "steer" && it.lag == 0 {
+			pick = i
+			break
+		}
+	}
+	if pick < 0 && !f.parked {
+		for i, it := range f.inbox {
+			if it.delivery == "queue" && it.lag == 0 {
+				pick = i
+				break
+			}
+		}
+	}
+	if pick < 0 {
+		return
+	}
+	it := f.inbox[pick]
+	f.inbox = append(f.inbox[:pick:pick], f.inbox[pick+1:]...)
+	text := it.text
+	if f.corrupt {
+		text += "!"
+	}
+	f.msgs = append(f.msgs, fakeMsg{id: it.id, text: text})
+	f.busyLeft = f.turnReads
+}
+
+func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.password != "" {
 		u, p, ok := r.BasicAuth()
-		if !ok || u != "opencode" || p != f.password {
-			w.Header().Set("WWW-Authenticate", `Basic realm="Secure Area"`)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		if !ok || u != ServiceUser || p != f.password {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"_tag": "UnauthorizedError", "message": "Authentication required"})
 			return
 		}
 	}
 	path := r.URL.Path
 	switch {
-	case path == "/global/health" && r.Method == http.MethodGet && f.page:
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte("<!doctype html><html><body><div id=root></div></body></html>"))
-	case path == "/global/health" && r.Method == http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"healthy": true, "version": f.version})
-	case path == "/session/status" && r.Method == http.MethodGet:
-		f.statusReads++
-		dir := r.URL.Query().Get("directory")
-		f.statusDirs = append(f.statusDirs, dir)
-		if dir != f.dir {
-			writeJSON(w, http.StatusOK, map[string]any{})
+	case path == "/api/info" && r.Method == http.MethodGet:
+		f.reads["info"]++
+		if f.info503 > 0 {
+			f.info503--
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"_tag": "ServiceUnavailable", "message": "starting"})
 			return
 		}
-		if f.statusBusyLocked() {
-			writeJSON(w, http.StatusOK, map[string]any{testSession: map[string]any{"type": "busy"}})
-			return
+		writeJSON(w, http.StatusOK, map[string]any{"version": f.version, "pid": f.pid, "urls": []string{"http://" + f.addr}})
+	case path == "/api/session/active" && r.Method == http.MethodGet:
+		f.reads["active"]++
+		busy := f.busyLocked()
+		if f.busyLeft > 0 {
+			// The turn ends with this read: the session is free after it, and takes
+			// up the next entry the way it does at the end of a turn that succeeded.
+			f.busyLeft--
+			if f.busyLeft == 0 {
+				f.promoteLocked()
+			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{})
-	case strings.HasPrefix(path, "/session/"):
-		rest := strings.TrimPrefix(path, "/session/")
+		data := map[string]any{}
+		if busy {
+			data[testSession] = map[string]any{"type": "running"}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": data})
+	case strings.HasPrefix(path, "/api/session/"):
+		rest := strings.TrimPrefix(path, "/api/session/")
 		id, tail, _ := strings.Cut(rest, "/")
 		if id != testSession || !f.exists {
-			writeJSON(w, http.StatusNotFound, map[string]any{"name": "NotFoundError", "data": map[string]any{"message": "Session not found: " + id}})
+			writeJSON(w, http.StatusNotFound, map[string]any{"_tag": "SessionNotFoundError", "sessionID": id, "message": "Session not found: " + id})
 			return
 		}
-		switch {
-		case tail == "" && r.Method == http.MethodGet:
-			info := map[string]any{"id": id, "title": "t", "directory": f.dir}
-			if f.noDirectory {
-				delete(info, "directory")
-			}
-			writeJSON(w, http.StatusOK, info)
-		case tail == "message" && r.Method == http.MethodGet:
-			f.messagesLocked(w, r)
-		case tail == "prompt_async" && r.Method == http.MethodPost:
-			f.promptLocked(w, r)
-		default:
-			http.NotFound(w, r)
-		}
+		f.sessionLocked(w, r, tail)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-// statusBusyLocked is one read of the status endpoint, advancing the turn a
-// prompt started.
-func (f *fakeOpenCode) statusBusyLocked() bool {
-	if f.manualBusy {
-		return true
-	}
-	if f.raceIdle > 0 {
-		f.raceIdle--
-		return false
-	}
-	if f.busyPolls > 0 {
-		f.busyPolls--
-		if f.busyPolls == 0 {
-			// The turn ends with this read: the answer is in the history, and
-			// the next read of the status is idle.
-			f.running = false
-			f.msgs = append(f.msgs, f.newMsgLocked("assistant", f.pendingID, "done"))
+func (f *fakeOpenCode) sessionLocked(w http.ResponseWriter, r *http.Request, tail string) {
+	switch {
+	case tail == "" && r.Method == http.MethodGet:
+		f.reads["session"]++
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": testSession, "title": "t", "location": map[string]any{"directory": f.dir}}})
+	case tail == "inbox" && r.Method == http.MethodGet:
+		f.reads["inbox"]++
+		if f.inboxTooLong {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"msg_x","delivery":"queue","pad":"` + strings.Repeat("x", maxMessageBody) + `"}]}`))
+			return
 		}
-		return true
+		out := make([]map[string]any, 0, len(f.inbox))
+		for _, it := range f.inbox {
+			out = append(out, inboxJSON(it))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": out})
+	case strings.HasPrefix(tail, "message/") && r.Method == http.MethodGet:
+		f.reads["message"]++
+		f.messageLocked(w, strings.TrimPrefix(tail, "message/"))
+	case tail == "prompt" && r.Method == http.MethodPost:
+		f.promptLocked(w, r)
+	case strings.HasPrefix(tail, "inbox/") && r.Method == http.MethodPatch:
+		f.steerLocked(w, r, strings.TrimPrefix(tail, "inbox/"))
+	default:
+		http.NotFound(w, r)
 	}
-	return false
 }
 
-func (f *fakeOpenCode) messagesLocked(w http.ResponseWriter, r *http.Request) {
-	f.messageReads++
-	f.limits = append(f.limits, r.URL.Query().Get("limit"))
-	if f.lagLeft > 0 {
-		f.lagLeft--
-		if f.lagLeft == 0 {
-			f.msgs = append(f.msgs, f.pending...)
-			f.pending = nil
-		}
-	}
-	// The server lists by id, whatever order the messages were created in.
-	msgs := append([]fakeMsg(nil), f.msgs...)
-	sort.SliceStable(msgs, func(i, j int) bool { return msgs[i].ID < msgs[j].ID })
-	q := r.URL.Query()
-	if c := q.Get("before"); c != "" {
-		raw, err := base64.RawURLEncoding.DecodeString(c)
-		var cur struct {
-			ID string `json:"id"`
-		}
-		if err != nil || json.Unmarshal(raw, &cur) != nil || cur.ID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"_tag": "BadRequest"})
+func inboxJSON(it fakeItem) map[string]any {
+	return map[string]any{"id": it.id, "sessionID": testSession, "time": map[string]any{"created": 1}, "type": "user", "payload": map[string]any{"text": it.text}, "delivery": it.delivery}
+}
+
+func (f *fakeOpenCode) messageLocked(w http.ResponseWriter, id string) {
+	for _, m := range f.msgs {
+		if m.id == id {
+			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": m.id, "time": map[string]any{"created": 1}, "text": m.text, "type": "user"}})
 			return
 		}
-		i := sort.Search(len(msgs), func(i int) bool { return msgs[i].ID >= cur.ID })
-		msgs = msgs[:i]
 	}
-	if s := q.Get("limit"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"name": "BadRequest"})
-			return
-		}
-		if n > 0 && n < len(msgs) {
-			// The cursor of the page before this one, which exists while anything
-			// older is left.
-			oldest := msgs[len(msgs)-n]
-			cur, _ := json.Marshal(map[string]any{"id": oldest.ID, "time": 1})
-			w.Header().Set("X-Next-Cursor", base64.RawURLEncoding.EncodeToString(cur))
-			msgs = msgs[len(msgs)-n:]
+	for i := range f.inbox {
+		if f.inbox[i].id == id && f.inbox[i].lag > 0 {
+			f.inbox[i].lag--
+			if f.inbox[i].lag == 0 {
+				f.promoteLocked()
+			}
 		}
 	}
-	out := make([]map[string]any, 0, len(msgs))
-	for _, m := range msgs {
-		info := map[string]any{"id": m.ID, "sessionID": testSession, "role": m.Role, "time": map[string]any{"created": 1}}
-		if m.ParentID != "" {
-			info["parentID"] = m.ParentID
-		}
-		out = append(out, map[string]any{"info": info, "parts": m.Parts})
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusNotFound, map[string]any{"_tag": "MessageNotFoundError", "sessionID": testSession, "messageID": id, "message": "Message not found: " + id})
 }
 
 func (f *fakeOpenCode) promptLocked(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
-	if f.promptCode != 0 {
-		writeJSON(w, f.promptCode, map[string]any{"name": "Nope"})
-		return
-	}
-	f.posts = append(f.posts, fakePost{Body: body, TurnRunning: f.running})
+	f.posts = append(f.posts, fakePost{Body: body, TurnRunning: f.busyLocked()})
+	// The body is held to the three fields this front sends: anything else is a
+	// request the front is not allowed to make.
 	var req struct {
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"parts"`
+		ID       string `json:"id"`
+		Text     string `json:"text"`
+		Delivery string `json:"delivery"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil || len(req.Parts) != 1 || req.Parts[0].Type != "text" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"name": "BadRequest"})
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || !strings.HasPrefix(req.ID, "msg_") || req.Delivery != "queue" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"_tag": "InvalidRequestError", "message": "bad prompt"})
 		return
 	}
-	user := ""
-	if !f.hold {
-		m := f.newMsgLocked("user", "", req.Parts[0].Text)
-		user = m.ID
-		if f.nextUserID != "" {
-			m.ID, f.nextUserID = f.nextUserID, ""
+	item := fakeItem{id: req.ID, text: req.Text, delivery: req.Delivery}
+	known := false
+	for _, it := range f.inbox {
+		if it.id == req.ID {
+			item, known = it, true
 		}
-		f.pendingID = m.ID
-		if f.userLag > 0 {
-			f.pending, f.lagLeft = append(f.pending, m), f.userLag
-		} else {
-			f.msgs = append(f.msgs, m)
+	}
+	for _, m := range f.msgs {
+		if m.id == req.ID {
+			item, known = fakeItem{id: m.id, text: m.text, delivery: "queue"}, true
 		}
-		f.raceIdle, f.busyPolls = f.turnRace, f.turnPolls
-		f.running = f.busyPolls > 0
 	}
-	for _, pl := range f.plant {
-		m := f.newMsgLocked(pl.role, "", pl.text)
-		if pl.partType != "" {
-			m.Parts[len(m.Parts)-1]["type"] = pl.partType
+	if !known {
+		item.lag = f.lagReads
+		f.inbox = append(f.inbox, item)
+		switch {
+		case f.cancelOnPost:
+			f.inbox = f.inbox[:len(f.inbox)-1]
+		case f.busyOnPost:
+			f.manualBusy = true
+		default:
+			f.promoteLocked()
 		}
-		f.msgs = append(f.msgs, m)
+		if f.deleteOnPost {
+			f.exists = false
+		}
 	}
-	parent := user
-	if f.burstParent != "" {
-		parent = f.burstParent
+	if f.loseResponses > 0 {
+		f.loseResponses--
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				conn.Close()
+				return
+			}
+		}
 	}
-	for i := 0; i < f.burst; i++ {
-		f.msgs = append(f.msgs, f.newMsgLocked("assistant", parent, fmt.Sprintf("step %d", i)))
+	echo := inboxJSON(item)
+	if f.echoOther {
+		echo["payload"] = map[string]any{"text": item.text + " (rewritten)"}
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]any{"data": echo})
+}
+
+func (f *fakeOpenCode) steerLocked(w http.ResponseWriter, r *http.Request, id string) {
+	body, _ := io.ReadAll(r.Body)
+	f.patches = append(f.patches, id+" "+string(body))
+	w.WriteHeader(http.StatusMethodNotAllowed)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

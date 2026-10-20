@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,13 +12,18 @@ import (
 	"time"
 )
 
-// serving starts a server with the given handler, for the answers the fake does
-// not give: malformed, oversized, slow, redirecting.
+const (
+	testMsgID = "msg_157612985001ZP97n73ncfxOnr"
+	// secret2 is a password that must not show up in anything the client says.
+	secret2 = "p4ssw0rd-that-must-stay-secret"
+)
+
+// serving starts a server with the given handler and returns a client for it.
 func serving(t *testing.T, h http.HandlerFunc) *HTTPClient {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	c, err := NewHTTPClient(srv.URL, Auth{}, WithRequestTimeout(2*time.Second))
+	c, err := NewHTTPClient(srv.URL, Auth{Password: secret2}, WithRequestTimeout(2*time.Second))
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
@@ -32,565 +38,294 @@ func answering(code int, body string) http.HandlerFunc {
 	}
 }
 
-func TestHealth(t *testing.T) {
+func TestInfo(t *testing.T) {
 	f := newFake(t)
-	v, err := f.client().Health(context.Background())
-	if err != nil || v != "1.18.30" {
-		t.Fatalf("Health = %q, %v; want 1.18.30", v, err)
+	info, err := f.client().Info(context.Background())
+	if err != nil || info.Version != "2.0.32" || info.PID != fakePID {
+		t.Fatalf("Info = %+v, %v; want 2.0.32 and the pid", info, err)
 	}
-	// A 200 that is not the {healthy, version} object is the answer of a server
-	// that is not OpenCode 1's, and says so.
+	// A 200 that is not what an OpenCode 2 server says of itself is not one.
 	for name, body := range map[string]string{
-		"not json":         `ok`,
-		"not an object":    `["healthy"]`,
-		"no version":       `{"healthy":true}`,
-		"no healthy":       `{"version":"1.18.30"}`,
-		"version a number": `{"healthy":true,"version":1}`,
-		"two values":       `{"healthy":true,"version":"1.18.30"} {}`,
-		"null":             `null`,
+		"not json":      `ok`,
+		"a list":        `[]`,
+		"no version":    `{"pid":4}`,
+		"no pid":        `{"version":"2.0.32"}`,
+		"a zero pid":    `{"version":"2.0.32","pid":0}`,
+		"empty version": `{"version":"","pid":4}`,
+		"two values":    `{"version":"2.0.32","pid":4} {}`,
+		"1.x health":    `{"healthy":true,"version":"1.18.30"}`,
 	} {
-		v, err := serving(t, answering(200, body)).Health(context.Background())
-		var us *UnsupportedServerError
-		if !errors.As(err, &us) {
-			t.Errorf("Health of %s (%s) = %q, %v; want an UnsupportedServerError", name, body, v, err)
+		if info, err := serving(t, answering(200, body)).Info(context.Background()); err == nil {
+			t.Errorf("Info of %s (%s) = %+v, want an error", name, body, info)
 		}
 	}
-	if _, err := serving(t, answering(200, `{"healthy":false,"version":"1.18.30"}`)).Health(context.Background()); err == nil || !strings.Contains(err.Error(), "unhealthy") {
-		t.Errorf("Health of an unhealthy server = %v", err)
-	}
-	if _, err := serving(t, answering(500, `{"name":"boom"}`)).Health(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
-		t.Errorf("Health of a 500 = %v", err)
-	}
-}
-
-// TestHealthOfOpenCode2IsARefusalNotADecodeError: on OpenCode 2 the health path
-// serves the web page with a 200 (checked live on 2.0.32), a page larger than the
-// bound among them, and the client says what that means instead of a JSON error.
-func TestHealthOfOpenCode2IsARefusalNotADecodeError(t *testing.T) {
-	page := `<!doctype html><html><head><title>OpenCode</title></head><body><div id="root"></div></body></html>`
-	for name, h := range map[string]http.HandlerFunc{
-		"a page": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write([]byte(page))
-		},
-		"a page, JSON claimed": answering(200, page),
-		"a big page": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/html")
-			_, _ = w.Write([]byte(strings.Repeat("<p>x</p>", 2000)))
-		},
-		"plain text": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/plain")
-			_, _ = w.Write([]byte(`{"healthy":true,"version":"1.0.0"}`))
-		},
-		"no content type": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header()["Content-Type"] = nil
-			_, _ = w.Write([]byte(`x`))
-		},
-		"a big JSON body": answering(200, `{"healthy":true,"version":"`+strings.Repeat("x", 5<<10)+`"}`),
-	} {
-		_, err := serving(t, h).Health(context.Background())
-		var us *UnsupportedServerError
-		if !errors.As(err, &us) {
-			t.Errorf("%s: Health = %v, want an UnsupportedServerError", name, err)
-			continue
-		}
-		for _, want := range []string{"GET /global/health", "not the OpenCode 1 server", "start it again"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("%s: the refusal does not say %q: %v", name, want, err)
-			}
-		}
-		if len(err.Error()) > 600 {
-			t.Errorf("%s: the refusal is %d bytes", name, len(err.Error()))
-		}
-	}
-	// Other statuses are not the page: a 404 or a 500 is what it says, and the
-	// 401 of a protected server names the variable to set.
-	for _, code := range []int{401, 404, 405, 500} {
-		_, err := serving(t, answering(code, `x`)).Health(context.Background())
-		var us *UnsupportedServerError
-		var se *StatusError
-		if errors.As(err, &us) || !errors.As(err, &se) || se.Code != code {
-			t.Errorf("Health answered %d returned %v, want a StatusError", code, err)
-		}
+	if _, err := serving(t, answering(404, `{}`)).Info(context.Background()); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("Info of a 404 = %v", err)
 	}
 }
 
 func TestSession(t *testing.T) {
 	f := newFake(t)
-	c := f.client()
 	ctx := context.Background()
-	info, err := c.Session(ctx, testSession)
-	if err != nil || info.ID != testSession || info.Directory != testDir {
-		t.Fatalf("Session of a known session = %+v, %v; want its id and directory %s", info, err, testDir)
+	s, err := f.client().Session(ctx, testSession)
+	if err != nil || s.ID != testSession || s.Directory != testDir {
+		t.Fatalf("Session = %+v, %v", s, err)
 	}
-	if _, err := c.Session(ctx, "ses_000000000000000000000000AA"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("Session of an unknown one = %v, want ErrSessionNotFound", err)
+	if _, err := f.client().Session(ctx, "ses_000000000000000000000000AA"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Session of an unknown id = %v, want ErrSessionNotFound", err)
 	}
-	// An answer for another session is not an answer for this one.
-	other := serving(t, answering(200, `{"id":"ses_000000000000000000000000AA","directory":"/x"}`))
-	if _, err := other.Session(ctx, testSession); err == nil {
-		t.Fatal("Session accepted the answer for another session")
-	}
-	// The directory is what the status is read under: a session without one is
-	// one this front cannot watch.
 	for name, body := range map[string]string{
-		"nothing":          `{}`,
-		"a list":           `[]`,
-		"id a number":      `{"id":7,"directory":"/x"}`,
-		"no directory":     `{"id":"` + testSession + `"}`,
-		"empty directory":  `{"id":"` + testSession + `","directory":""}`,
-		"directory a list": `{"id":"` + testSession + `","directory":["/x"]}`,
-		"not json":         `x`,
+		"another session": `{"data":{"id":"ses_000000000000000000000000AA","location":{"directory":"/x"}}}`,
+		"no directory":    `{"data":{"id":"` + testSession + `","location":{}}}`,
+		"no location":     `{"data":{"id":"` + testSession + `"}}`,
+		"no data":         `{}`,
+		"1.x shape":       `{"id":"` + testSession + `","directory":"/x"}`,
 	} {
-		if info, err := serving(t, answering(200, body)).Session(ctx, testSession); err == nil {
-			t.Errorf("Session accepted %s (%s): %+v", name, body, info)
+		if s, err := serving(t, answering(200, body)).Session(ctx, testSession); err == nil {
+			t.Errorf("Session of %s = %+v, want an error", name, s)
 		}
 	}
-	f.set(func() { f.noDirectory = true })
-	if _, err := f.client().Session(ctx, testSession); err == nil || !strings.Contains(err.Error(), "no directory") {
-		t.Errorf("Session of one with no directory = %v", err)
-	}
-}
-
-// TestBusyIsReadUnderTheSessionsDirectory is the scoping OpenCode 1.18.30 has:
-// the fake, like the server, lists a turn under the session's directory and
-// answers {} to any other, so a client that left the directory out, or asked for
-// the server's own, would read a session in the middle of a turn as idle.
-func TestBusyIsReadUnderTheSessionsDirectory(t *testing.T) {
-	f := newFake(t)
-	ctx := context.Background()
-	f.set(func() { f.manualBusy = true })
-	c := f.client()
-	if busy, err := c.Busy(ctx, testSession, testDir); err != nil || !busy {
-		t.Fatalf("Busy under the session's directory = %v, %v; want busy", busy, err)
-	}
-	for _, other := range []string{"/srv/where-the-server-runs", testDir + "/sub"} {
-		if busy, err := c.Busy(ctx, testSession, other); err != nil || busy {
-			t.Fatalf("the fake listed the turn under %s: %v, %v", other, busy, err)
-		}
-	}
-	reads := len(f.statusDirsSeen())
-	if _, err := c.Busy(ctx, testSession, ""); err == nil {
-		t.Fatal("Busy with no directory was accepted")
-	}
-	if n := len(f.statusDirsSeen()); n != reads {
-		t.Fatalf("Busy with no directory made a request anyway")
-	}
-	// A directory with characters a query string treats as its own arrives whole.
-	odd := "/work/my checkout&x=1/é"
-	seen := ""
-	srv := serving(t, func(w http.ResponseWriter, r *http.Request) {
-		seen = r.URL.Query().Get("directory")
-		answering(200, `{}`)(w, r)
-	})
-	if _, err := srv.Busy(ctx, testSession, odd); err != nil || seen != odd {
-		t.Fatalf("the server saw directory %q (err %v), want %q", seen, err, odd)
+	// A 404 that is not the session's is not "no such session".
+	if _, err := serving(t, answering(404, `{"_tag":"LocationNotFoundError"}`)).Session(ctx, testSession); err == nil || errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Session of another 404 = %v", err)
 	}
 }
 
 func TestBusy(t *testing.T) {
+	f := newFake(t)
 	ctx := context.Background()
-	for name, tc := range map[string]struct {
-		body string
-		busy bool
-	}{
-		"nobody is busy":         {`{}`, false},
-		"another session busy":   {`{"ses_000000000000000000000000AA":{"type":"busy"}}`, false},
-		"listed idle":            {`{"` + testSession + `":{"type":"idle"}}`, false},
-		"busy":                   {`{"` + testSession + `":{"type":"busy"}}`, true},
-		"retry":                  {`{"` + testSession + `":{"type":"retry","attempt":2,"message":"x","next":9}}`, true},
-		"a type from the future": {`{"` + testSession + `":{"type":"compacting"}}`, true},
-	} {
-		got, err := serving(t, answering(200, tc.body)).Busy(ctx, testSession, testDir)
-		if err != nil || got != tc.busy {
-			t.Errorf("%s: Busy = %v, %v; want %v", name, got, err, tc.busy)
-		}
+	if busy, err := f.client().Busy(ctx, testSession); err != nil || busy {
+		t.Fatalf("Busy of an idle server = %v, %v", busy, err)
+	}
+	f.set(func() { f.manualBusy = true })
+	if busy, err := f.client().Busy(ctx, testSession); err != nil || !busy {
+		t.Fatalf("Busy of a session in a turn = %v, %v", busy, err)
+	}
+	// Another session's turn is not this session's.
+	other := `{"data":{"ses_000000000000000000000000AA":{"type":"running"}}}`
+	if busy, err := serving(t, answering(200, other)).Busy(ctx, testSession); err != nil || busy {
+		t.Fatalf("Busy with another session running = %v, %v", busy, err)
+	}
+	// A type this front has never seen is still a turn in progress.
+	if busy, err := serving(t, answering(200, `{"data":{"`+testSession+`":{"type":"compacting"}}}`)).Busy(ctx, testSession); err != nil || !busy {
+		t.Fatalf("Busy of an unknown type = %v, %v", busy, err)
 	}
 	for name, body := range map[string]string{
-		"a list":        `[]`,
-		"null":          `null`,
-		"null status":   `{"` + testSession + `":null}`,
-		"no type":       `{"` + testSession + `":{}}`,
-		"empty type":    `{"` + testSession + `":{"type":""}}`,
-		"type a number": `{"` + testSession + `":{"type":1}}`,
-		"not json":      `busy`,
+		"no data":          `{}`,
+		"a list":           `{"data":[]}`,
+		"an entry no type": `{"data":{"` + testSession + `":{}}}`,
+		"a null entry":     `{"data":{"` + testSession + `":null}}`,
+		"not json":         `x`,
 	} {
-		if got, err := serving(t, answering(200, body)).Busy(ctx, testSession, testDir); err == nil {
-			t.Errorf("Busy accepted %s (%s): %v", name, body, got)
+		if busy, err := serving(t, answering(200, body)).Busy(ctx, testSession); err == nil {
+			t.Errorf("Busy of %s = %v, want an error", name, busy)
 		}
 	}
 }
 
-func TestMessages(t *testing.T) {
+func TestPromptSendsTheThreeFieldsAndChecksTheAnswer(t *testing.T) {
 	f := newFake(t)
+	f.set(func() { f.parked = true })
 	ctx := context.Background()
-	f.seed("user", "one")
-	f.seed("user", "two")
-	f.seed("assistant", "three")
-	c := f.client()
-
-	page, err := c.Messages(ctx, testSession, 2, "")
-	if err != nil {
-		t.Fatalf("Messages: %v", err)
-	}
-	got := page.Messages
-	// The newest two, oldest first.
-	if len(got) != 2 || got[0].Role != "user" || got[1].Role != "assistant" || got[0].ID >= got[1].ID {
-		t.Fatalf("Messages(2) = %+v, want the newest two in order", got)
-	}
-	if got[0].Parts[0].Type != "text" || got[0].Parts[0].Text != "two" || got[1].Parts[0].Type != "step-start" || got[1].Parts[1].Text != "three" {
-		t.Fatalf("parts = %+v", got)
-	}
-	f.mu.Lock()
-	lastLimit := f.limits[len(f.limits)-1]
-	f.mu.Unlock()
-	if lastLimit != "2" {
-		t.Fatalf("the request carried limit=%q, want 2", lastLimit)
-	}
-
-	for _, n := range []int{0, -1} {
-		if _, err := c.Messages(ctx, testSession, n, ""); err == nil {
-			t.Errorf("Messages accepted limit %d, which OpenCode reads as no limit", n)
-		}
-	}
-	if _, err := c.Messages(ctx, "ses_000000000000000000000000AA", 1, ""); !errors.Is(err, ErrSessionNotFound) {
-		t.Errorf("Messages of an unknown session = %v", err)
-	}
-
-	empty := serving(t, answering(200, `[]`))
-	if page, err := empty.Messages(ctx, testSession, 1, ""); err != nil || len(page.Messages) != 0 || page.Next != "" {
-		t.Errorf("Messages of an empty history = %v, %v", page, err)
-	}
-	for name, body := range map[string]string{
-		"an object":         `{}`,
-		"null":              `null`,
-		"a null entry":      `[null]`,
-		"no info":           `[{"parts":[]}]`,
-		"no id":             `[{"info":{"role":"user"},"parts":[]}]`,
-		"id a number":       `[{"info":{"id":3,"role":"user"},"parts":[]}]`,
-		"empty id":          `[{"info":{"id":"","role":"user"},"parts":[]}]`,
-		"no role":           `[{"info":{"id":"m"},"parts":[]}]`,
-		"parts an object":   `[{"info":{"id":"m","role":"user"},"parts":{}}]`,
-		"part without type": `[{"info":{"id":"m","role":"user"},"parts":[{"text":"x"}]}]`,
-		"text a number":     `[{"info":{"id":"m","role":"user"},"parts":[{"type":"text","text":5}]}]`,
-		"trailing garbage":  `[] x`,
-	} {
-		if msgs, err := serving(t, answering(200, body)).Messages(ctx, testSession, 1, ""); err == nil {
-			t.Errorf("Messages accepted %s (%s): %+v", name, body, msgs)
-		}
-	}
-	// A message with no parts at all, and a part with no text, are well formed.
-	ok := serving(t, answering(200, `[{"info":{"id":"m","role":"assistant","parentID":"p","extra":{"a":1}}},{"info":{"id":"n","role":"user"},"parts":[{"type":"file","url":"x"}]}]`))
-	page2, err := ok.Messages(ctx, testSession, 2, "")
-	msgs := page2.Messages
-	if err != nil || len(msgs) != 2 || msgs[0].ParentID != "p" || msgs[1].Parts[0].Type != "file" || msgs[1].Parts[0].Text != "" {
-		t.Errorf("Messages of unusual but well formed entries = %+v, %v", msgs, err)
-	}
-}
-
-// TestMessagesPageBackwardsByTheCursorTheServerGave: the reply names the page
-// before it, the cursor is passed back as it came, and the pages together are the
-// history, newest page first, with no cursor on the last. Checked live on
-// 1.18.30: before takes that cursor and not a message id.
-func TestMessagesPageBackwardsByTheCursorTheServerGave(t *testing.T) {
-	f := newFake(t)
-	ctx := context.Background()
-	for i := 0; i < 7; i++ {
-		f.seed("user", fmt.Sprintf("m%d", i))
-	}
-	c := f.client()
-
-	var texts []string
-	before, pages := "", 0
-	for {
-		page, err := c.Messages(ctx, testSession, 3, before)
-		if err != nil {
-			t.Fatalf("page %d: %v", pages, err)
-		}
-		pages++
-		var these []string
-		for _, m := range page.Messages {
-			these = append(these, m.Parts[0].Text)
-		}
-		texts = append(these, texts...)
-		if page.Next == "" {
-			break
-		}
-		before = page.Next
-		if pages > 5 {
-			t.Fatal("the pages never ended")
-		}
-	}
-	if pages != 3 || strings.Join(texts, " ") != "m0 m1 m2 m3 m4 m5 m6" {
-		t.Fatalf("%d pages gave %v, want 3 pages that are the history in order", pages, texts)
-	}
-}
-
-func TestACursorIsPassedBackAsItCameAndOnlyIfItLooksLikeOne(t *testing.T) {
-	ctx := context.Background()
-	var seen []string
-	c := serving(t, func(w http.ResponseWriter, r *http.Request) {
-		seen = append(seen, r.URL.Query().Get("before"))
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Next-Cursor", "eyJpZCI6Im1zZ18xIn0_-=")
-		_, _ = w.Write([]byte(`[]`))
-	})
-	page, err := c.Messages(ctx, testSession, 3, "")
-	if err != nil || page.Next != "eyJpZCI6Im1zZ18xIn0_-=" {
-		t.Fatalf("Messages = %+v, %v", page, err)
-	}
-	if _, err := c.Messages(ctx, testSession, 3, page.Next); err != nil || seen[1] != page.Next {
-		t.Fatalf("the cursor went back as %q (err %v), want %q", seen, err, page.Next)
-	}
-	for _, bad := range []string{"a&limit=0", "a b", "a/b", "é", "a\nb", strings.Repeat("a", maxCursor+1)} {
-		before := len(seen)
-		if _, err := c.Messages(ctx, testSession, 3, bad); err == nil || len(seen) != before {
-			t.Errorf("Messages accepted the cursor %q (err %v, requests made: %d)", bad, err, len(seen)-before)
-		}
-	}
-	// A cursor from the server that is not one is an error, not something passed on.
-	hostile := serving(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Next-Cursor", "a&limit=0")
-		_, _ = w.Write([]byte(`[]`))
-	})
-	if _, err := hostile.Messages(ctx, testSession, 3, ""); err == nil || !strings.Contains(err.Error(), "X-Next-Cursor") {
-		t.Fatalf("Messages of a reply with a hostile cursor = %v", err)
-	}
-}
-
-func TestPromptSendsExactlyOneTextPart(t *testing.T) {
-	f := newFake(t)
-	c := f.client()
-	text := "[parley] from=claude-b id=0 ts=t — x\n  <b>&amp;</b> \"q\"   😀\n\n"
-	if err := c.Prompt(context.Background(), testSession, text); err != nil {
-		t.Fatalf("Prompt: %v", err)
+	text := "[parley] from=claude-b id=1\n  héllo\n"
+	if err := f.client().Prompt(ctx, testSession, testMsgID, text); err != nil {
+		t.Fatalf("Prompt = %v", err)
 	}
 	posts := f.postBodies()
 	if len(posts) != 1 {
-		t.Fatalf("%d posts, want 1", len(posts))
+		t.Fatalf("%d posts", len(posts))
 	}
-	if got := postedText(t, posts[0].Body); got != text {
-		t.Fatalf("the server decoded\n%q\nwant\n%q", got, text)
+	id, got, delivery := post(t, posts[0].Body)
+	if id != testMsgID || got != text || delivery != "queue" {
+		t.Fatalf("posted %q %q %q", id, got, delivery)
 	}
-	if users := f.userTexts(); len(users) != 1 || users[0] != text {
-		t.Fatalf("the session holds %q, want the text byte for byte", users)
+	// A repeat is answered with the first, and the entry is there once.
+	if err := f.client().Prompt(ctx, testSession, testMsgID, text); err != nil {
+		t.Fatalf("Prompt again = %v", err)
 	}
-}
-
-func TestPromptAnswers(t *testing.T) {
-	ctx := context.Background()
-	f := newFake(t)
-	if err := f.client().Prompt(ctx, "ses_000000000000000000000000AA", "x"); !errors.Is(err, ErrSessionNotFound) {
-		t.Errorf("Prompt into an unknown session = %v, want ErrSessionNotFound", err)
+	if ids := f.inboxIDs(); len(ids) != 1 || ids[0] != testMsgID {
+		t.Fatalf("inbox %v", ids)
 	}
-	// Only 204 is acceptance: a 200 is a server that did something else.
-	for _, code := range []int{200, 202, 400, 401, 403, 500, 302} {
-		err := serving(t, answering(code, `{"name":"x"}`)).Prompt(ctx, testSession, "x")
-		var se *StatusError
-		if !errors.As(err, &se) || se.Code != code {
-			t.Errorf("Prompt answered %d returned %v, want a StatusError", code, err)
+	// The same id with other text is answered with the first, which is not the text
+	// that was asked to be posted: the client says so and does not take it for a
+	// delivery.
+	err := f.client().Prompt(ctx, testSession, testMsgID, text+"more")
+	for _, want := range []string{"admitted the prompt under message id " + testMsgID + " with other text", "a plugin may have rewritten it", "will probably be taken up as it is", "nothing was committed", "a restart sends the delivery again under a new id"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Prompt of another text under the same id = %v, want it to say %q", err, want)
 		}
 	}
-	// Invalid UTF-8 would be silently replaced on its way into JSON, and what
-	// landed would not be what was sent.
-	called := false
-	c := serving(t, func(http.ResponseWriter, *http.Request) { called = true })
-	if err := c.Prompt(ctx, testSession, "bad \xff byte"); err == nil || called {
-		t.Errorf("Prompt of invalid UTF-8 = %v (request made: %v)", err, called)
+	// Text JSON cannot carry is refused before anything is sent.
+	if err := f.client().Prompt(ctx, testSession, "msg_x", "bad \xff text"); err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Fatalf("Prompt of invalid UTF-8 = %v", err)
+	}
+	if n := len(f.postBodies()); n != 3 {
+		t.Fatalf("%d posts reached the server, want only the three valid ones", n)
+	}
+	// Errors by status.
+	if err := f.client().Prompt(ctx, "ses_000000000000000000000000AA", testMsgID, "x"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Prompt into an unknown session = %v", err)
+	}
+	if err := serving(t, answering(409, `{"_tag":"ConflictError"}`)).Prompt(ctx, testSession, testMsgID, "x"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Prompt answered 409 = %v", err)
+	}
+	if err := serving(t, answering(400, `{"_tag":"InvalidRequestError"}`)).Prompt(ctx, testSession, testMsgID, "x"); err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("Prompt answered 400 = %v", err)
+	}
+	for name, body := range map[string]string{
+		"another id":      `{"data":{"id":"msg_other","sessionID":"` + testSession + `","type":"user","payload":{"text":"x"},"delivery":"queue"}}`,
+		"another session": `{"data":{"id":"` + testMsgID + `","sessionID":"ses_other","type":"user","payload":{"text":"x"},"delivery":"queue"}}`,
+		"not a user":      `{"data":{"id":"` + testMsgID + `","sessionID":"` + testSession + `","type":"synthetic","payload":{"text":"x"},"delivery":"queue"}}`,
+		"no payload":      `{"data":{"id":"` + testMsgID + `","sessionID":"` + testSession + `","type":"user"}}`,
+		"no data":         `{}`,
+	} {
+		if err := serving(t, answering(200, body)).Prompt(ctx, testSession, testMsgID, "x"); err == nil {
+			t.Errorf("Prompt answered with %s was accepted", name)
+		}
 	}
 }
 
-func TestBasicAuth(t *testing.T) {
-	ctx := context.Background()
+func TestMessage(t *testing.T) {
 	f := newFake(t)
-	f.set(func() { f.password = "s3cret-pw" })
-
-	good, err := NewHTTPClient(f.url(), Auth{User: "opencode", Password: "s3cret-pw"})
-	if err != nil {
+	ctx := context.Background()
+	if _, found, err := f.client().Message(ctx, testSession, testMsgID); err != nil || found {
+		t.Fatalf("Message of an id nobody posted = %v, %v", found, err)
+	}
+	if err := f.client().Prompt(ctx, testSession, testMsgID, "text"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := good.Health(ctx); err != nil {
-		t.Fatalf("Health with the right credentials: %v", err)
+	m, found, err := f.client().Message(ctx, testSession, testMsgID)
+	if err != nil || !found || m.ID != testMsgID || m.Text != "text" {
+		t.Fatalf("Message = %+v, %v, %v", m, found, err)
 	}
-	if err := good.Prompt(ctx, testSession, "x"); err != nil {
-		t.Fatalf("Prompt with the right credentials: %v", err)
+	if _, _, err := f.client().Message(ctx, "ses_000000000000000000000000AA", testMsgID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Message of an unknown session = %v", err)
 	}
-
-	for name, a := range map[string]Auth{
-		"no credentials": {},
-		"wrong password": {User: "opencode", Password: "nope"},
-		"wrong user":     {User: "bob", Password: "s3cret-pw"},
+	for name, body := range map[string]string{
+		"another id":  `{"data":{"id":"msg_other","type":"user","text":"x"}}`,
+		"not a user":  `{"data":{"id":"` + testMsgID + `","type":"assistant","text":"x"}}`,
+		"no text":     `{"data":{"id":"` + testMsgID + `","type":"user"}}`,
+		"no data":     `{}`,
+		"not json":    `x`,
+		"text number": `{"data":{"id":"` + testMsgID + `","type":"user","text":1}}`,
 	} {
-		c, err := NewHTTPClient(f.url(), a)
-		if err != nil {
+		if m, _, err := serving(t, answering(200, body)).Message(ctx, testSession, testMsgID); err == nil {
+			t.Errorf("Message of %s = %+v, want an error", name, m)
+		}
+	}
+	// A 404 that names no message is not "not there yet".
+	if _, found, err := serving(t, answering(404, `{}`)).Message(ctx, testSession, testMsgID); err == nil || found {
+		t.Errorf("Message of an untagged 404 = %v, %v", found, err)
+	}
+	// An answer over the bound is an error, not a buffer of the whole.
+	big := `{"data":{"id":"` + testMsgID + `","type":"user","text":"` + strings.Repeat("x", maxMessageBody) + `"}}`
+	if _, _, err := serving(t, answering(200, big)).Message(ctx, testSession, testMsgID); !IsTooLong(err) {
+		t.Errorf("Message over the bound = %v, want a TooLongError", err)
+	}
+}
+
+func TestInbox(t *testing.T) {
+	f := newFake(t)
+	f.set(func() { f.parked = true })
+	ctx := context.Background()
+	if items, err := f.client().Inbox(ctx, testSession); err != nil || len(items) != 0 {
+		t.Fatalf("Inbox of a quiet session = %v, %v", items, err)
+	}
+	for _, id := range []string{testMsgID, "msg_157612985002ZP97n73ncfxOnr"} {
+		if err := f.client().Prompt(ctx, testSession, id, "t"); err != nil {
 			t.Fatal(err)
 		}
-		_, err = c.Health(ctx)
-		var se *StatusError
-		if !errors.As(err, &se) || se.Code != http.StatusUnauthorized {
-			t.Errorf("%s: Health = %v, want a 401", name, err)
-			continue
-		}
-		if !strings.Contains(err.Error(), "OPENCODE_SERVER_PASSWORD") || strings.Contains(err.Error(), "s3cret-pw") {
-			t.Errorf("%s: the 401 should say which variable to set and never quote a password: %v", name, err)
+	}
+	items, err := f.client().Inbox(ctx, testSession)
+	if err != nil || len(items) != 2 || items[0] != (InboxItem{ID: testMsgID, Delivery: "queue"}) {
+		t.Fatalf("Inbox = %v, %v", items, err)
+	}
+	for name, body := range map[string]string{
+		"no data":              `{}`,
+		"an entry no id":       `{"data":[{"delivery":"queue"}]}`,
+		"an entry no delivery": `{"data":[{"id":"x"}]}`,
+		"a null entry":         `{"data":[null]}`,
+		"an object":            `{"data":{}}`,
+	} {
+		if items, err := serving(t, answering(200, body)).Inbox(ctx, testSession); err == nil {
+			t.Errorf("Inbox of %s = %v, want an error", name, items)
 		}
 	}
 }
 
-func TestResponseBodiesAreBounded(t *testing.T) {
-	// Within the bound, a long answer is still read: a key of 5 KiB is no limit.
-	long := strings.Repeat("x", 5<<10)
-	c := serving(t, answering(200, `{"`+long+`":{"type":"busy"}}`))
-	if busy, err := c.Busy(context.Background(), testSession, testDir); err != nil || busy {
-		t.Fatalf("Busy of a %d byte answer = %v, %v", len(long), busy, err)
-	}
-	huge := strings.Repeat("x", maxStatusBody+1)
-	c = serving(t, answering(200, `{"`+huge+`":{"type":"busy"}}`))
-	if _, err := c.Busy(context.Background(), testSession, testDir); err == nil || !strings.Contains(err.Error(), "longer than") || !IsTooLong(err) {
-		t.Fatalf("Busy of a %d byte answer = %v, want the bound", len(huge), err)
-	}
-	// An error body is quoted bounded and printable.
-	c = serving(t, answering(500, strings.Repeat("e\n", 2000)+"\x00\xff"))
-	_, err := c.Health(context.Background())
-	if err == nil || len(err.Error()) > 600 || strings.ContainsAny(err.Error(), "\x00\xff\n") {
-		t.Fatalf("a 500 with a large body = %q", err)
-	}
-}
-
-// TestAHistoryReplyOverTheBoundIsATooLongError: the history read is the one that
-// can be heavy, and the pump asks again for less when it is, so the over-the-bound
-// answer is a type of its own that carries the bound.
-func TestAHistoryReplyOverTheBoundIsATooLongError(t *testing.T) {
-	c := serving(t, func(w http.ResponseWriter, _ *http.Request) {
+// TestTheClientSendsTheCredentialsToLoopbackAndSaysNothingOfThem: the password is
+// sent as HTTP basic credentials under the user opencode, to a loopback address
+// alone, and it is in no error, whatever the server answers and whatever formats
+// the client.
+func TestTheClientSendsTheCredentialsToLoopbackAndSaysNothingOfThem(t *testing.T) {
+	var user, pass string
+	var ok bool
+	c := serving(t, func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok = r.BasicAuth()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("["))
-		chunk := []byte(strings.Repeat(" ", 1<<20))
-		for i := 0; i < maxMessageBody>>20+1; i++ {
-			if _, err := w.Write(chunk); err != nil {
-				return
-			}
-		}
-		_, _ = w.Write([]byte("]"))
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"_tag":"UnauthorizedError","message":"Authentication required"}`)
 	})
-	_, err := c.Messages(context.Background(), testSession, 10, "")
-	var tl *TooLongError
-	if !errors.As(err, &tl) || !IsTooLong(err) || tl.Limit != maxMessageBody || IsTransport(err) {
-		t.Fatalf("Messages of a reply over the bound = %v, want a TooLongError for %d", err, maxMessageBody)
+	_, err := c.Info(context.Background())
+	if !ok || user != ServiceUser || pass != secret2 {
+		t.Fatalf("credentials %q %q %v", user, pass, ok)
 	}
-	// It is not a general-purpose error: a reply that fits is read as before.
-	if msgs, err := serving(t, answering(200, `[]`)).Messages(context.Background(), testSession, 10, ""); err != nil || len(msgs.Messages) != 0 {
-		t.Fatalf("Messages of an empty history = %v, %v", msgs, err)
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != 401 {
+		t.Fatalf("Info of a 401 = %v", err)
 	}
-}
-
-func TestTheInstallHintSaysWhenHomebrewMoved(t *testing.T) {
-	for _, want := range []string{"npm package opencode-ai", "opencode.ai/install", "Homebrew core moved to OpenCode 2 on 2026-09-28"} {
-		if !strings.Contains(Install1Hint, want) {
-			t.Errorf("the install hint does not say %q: %s", want, Install1Hint)
+	for _, want := range []string{"401", "OPENCODE_PASSWORD", "service file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the 401 does not say %q: %v", want, err)
 		}
 	}
-	if strings.Contains(Install1Hint, "may be") {
-		t.Errorf("the install hint still hedges: %s", Install1Hint)
+	if strings.Contains(err.Error(), "OPENCODE_SERVER_USERNAME") {
+		t.Errorf("the 401 gives OpenCode 1's advice: %v", err)
 	}
-}
-
-func TestATimeoutIsATransportErrorButNotADial(t *testing.T) {
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
-	// Cleanups run last in, first out: the handler is let go before the server
-	// waits for it.
-	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(release) })
-	c, err := NewHTTPClient(srv.URL, Auth{}, WithRequestTimeout(80*time.Millisecond))
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	_, err = c.Health(context.Background())
-	if !IsTransport(err) || IsDial(err) {
-		t.Fatalf("Health of a server that never answers = %v, want a transport error that is not a dial", err)
-	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatalf("the request took %s against an 80ms timeout", time.Since(start))
-	}
-}
-
-func TestAServerThatIsDownIsADialError(t *testing.T) {
-	f := newFake(t)
-	c := f.client()
-	f.stop()
-	_, err := c.Health(context.Background())
-	if !IsDial(err) || !IsTransport(err) {
-		t.Fatalf("Health of a closed port = %v, want a dial error", err)
-	}
-}
-
-func TestACanceledContextIsNotATransportError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	f := newFake(t)
-	if _, err := f.client().Health(ctx); !errors.Is(err, context.Canceled) || IsTransport(err) {
-		t.Fatalf("Health on a canceled context = %v", err)
-	}
-	// And one canceled while the request is in flight.
-	release := make(chan struct{})
-	started := make(chan struct{})
-	c := serving(t, func(http.ResponseWriter, *http.Request) {
-		close(started)
-		<-release
-	})
-	t.Cleanup(func() { close(release) })
-	ctx, cancel = context.WithCancel(context.Background())
-	errc := make(chan error, 1)
-	go func() { _, err := c.Health(ctx); errc <- err }()
-	<-started
-	cancel()
-	select {
-	case err := <-errc:
-		if !errors.Is(err, context.Canceled) || IsTransport(err) {
-			t.Fatalf("Health canceled in flight = %v", err)
+	auth := Auth{Password: secret2}
+	for _, out := range []string{
+		err.Error(),
+		fmt.Sprintf("%v %+v %#v %s", auth, auth, auth, auth),
+		fmt.Sprintf("%v %+v %#v", &auth, &auth, &auth),
+	} {
+		if strings.Contains(out, secret2) {
+			t.Errorf("the password is in %q", out)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("a canceled request did not return")
+	}
+
+	// A host that is not a loopback IP literal is refused before anything is sent.
+	for _, u := range []string{"http://example.com:80", "http://localhost:80", "http://10.0.0.1:80", "https://127.0.0.1:80", "http://127.0.0.1", "http://user@127.0.0.1:80", "http://0.0.0.0:80"} {
+		if _, err := NewHTTPClient(u, auth); err == nil {
+			t.Errorf("NewHTTPClient accepted %s", u)
+		} else if strings.Contains(err.Error(), secret2) {
+			t.Errorf("the refusal of %s holds the password: %v", u, err)
+		}
+	}
+	for _, u := range []string{"http://127.0.0.1:49374", "http://[::1]:49374"} {
+		if _, err := NewHTTPClient(u, auth); err != nil {
+			t.Errorf("NewHTTPClient refused %s: %v", u, err)
+		}
 	}
 }
 
-func TestARedirectIsNotFollowed(t *testing.T) {
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("the redirect was followed")
+func TestTheClientDoesNotFollowARedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the redirect was followed, with credentials: %v", r.Header.Get("Authorization") != "")
 	}))
 	t.Cleanup(target.Close)
 	c := serving(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+		http.Redirect(w, r, target.URL+"/api/info", http.StatusFound)
 	})
-	_, err := c.Health(context.Background())
-	var se *StatusError
-	if !errors.As(err, &se) || se.Code != http.StatusTemporaryRedirect {
-		t.Fatalf("Health of a redirect = %v, want a StatusError", err)
+	if _, err := c.Info(context.Background()); err == nil || !strings.Contains(err.Error(), "302") {
+		t.Fatalf("Info of a redirect = %v", err)
 	}
 }
 
-func TestNewHTTPClientOnlyEverTalksToLoopback(t *testing.T) {
-	for _, ok := range []string{"http://127.0.0.1:4096", "http://127.0.0.1:4096/", "http://[::1]:4096", "http://127.0.0.2:80", LoopbackURL(4096)} {
-		if _, err := NewHTTPClient(ok, Auth{User: "u", Password: "p"}); err != nil {
-			t.Errorf("NewHTTPClient(%q): %v", ok, err)
-		}
-	}
-	for _, bad := range []string{
-		"", "127.0.0.1:4096", "https://127.0.0.1:4096", "http://localhost:4096", "http://example.com:4096",
-		"http://10.0.0.5:4096", "http://0.0.0.0:4096", "http://127.0.0.1", "http://127.0.0.1:0", "http://127.0.0.1:70000",
-		"http://user:pw@127.0.0.1:4096", "http://127.0.0.1:4096/api", "http://127.0.0.1:4096?x=1", "http://127.0.0.1:4096#f",
-		"ftp://127.0.0.1:4096",
-	} {
-		if _, err := NewHTTPClient(bad, Auth{User: "u", Password: "p"}); err == nil {
-			t.Errorf("NewHTTPClient(%q) was accepted", bad)
-		}
-	}
-	if _, err := NewHTTPClient(LoopbackURL(4096), Auth{}, WithRequestTimeout(0)); err == nil {
-		t.Error("a zero request timeout was accepted")
-	}
-	if got := LoopbackURL(4096); got != "http://127.0.0.1:4096" {
-		t.Errorf("LoopbackURL = %q", got)
+func TestAnUnreachableServerIsADialError(t *testing.T) {
+	f := newFake(t)
+	c := f.client()
+	f.stop()
+	if _, err := c.Info(context.Background()); !IsDial(err) {
+		t.Fatalf("Info of a server that is down = %v, want a dial error", err)
 	}
 }

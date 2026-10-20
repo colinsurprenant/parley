@@ -20,8 +20,8 @@ const (
 // flags it uses there and the subcommands it runs under it. A flag is spelled as
 // parley spells it on the command line: "--json", or "-C/--cd" when parley uses
 // a short form that has a long one, in which case both must be there. A
-// subcommand is listed in the yargs help of OpenCode's CLI as an indented line
-// that begins with the whole command, "opencode session delete <sessionID>".
+// subcommand is listed in the help of OpenCode's CLI under its SUBCOMMANDS
+// heading, as an indented line that begins with its name.
 type surface struct {
 	// label, when it is not empty, is the surface's name in the report;
 	// otherwise it is the tool and the subcommand, "codex exec". The default
@@ -85,7 +85,7 @@ func checkSurface(ctx context.Context, tool, bin string, s surface) Result {
 		}
 	}
 	for _, sub := range s.subs {
-		if !listsCommand(text, append(append([]string{tool}, s.cmd...), sub)) {
+		if !listsSubcommand(text, sub) {
 			missing = append(missing, "the "+sub+" subcommand")
 		}
 	}
@@ -99,18 +99,11 @@ func checkSurface(ctx context.Context, tool, bin string, s surface) Result {
 	return Result{OK, name, strings.Join(listed, " ")}
 }
 
-// listsCommand reports whether a yargs help text lists the command, spelled out
-// whole, at the head of an indented line: the prose that mentions it is not
-// the listing.
-func listsCommand(help string, command []string) bool {
-	re := regexp.MustCompile(`(?m)^\s+` + regexp.QuoteMeta(strings.Join(command, " ")) + `(?:\s|$)`)
-	return re.MatchString(help) || listsSubcommand2(help, command[len(command)-1])
-}
-
-// listsSubcommand2 reports whether an OpenCode 2 help text lists sub in its
+// listsSubcommand reports whether an OpenCode help text lists sub in its
 // SUBCOMMANDS section: an indented line whose first column, before two spaces or
-// more, is the name, with aliases after a comma ("upgrade, update").
-func listsSubcommand2(help, sub string) bool {
+// more, is the name, with aliases after a comma ("upgrade, update"). Prose that
+// mentions the name, and a longer name that begins with it, are not the listing.
+func listsSubcommand(help, sub string) bool {
 	in := false
 	for _, line := range strings.Split(help, "\n") {
 		switch {

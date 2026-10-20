@@ -32,8 +32,9 @@ What you can count on:
   records stay where they live.
 
 Parley works across harnesses: Claude Code and Codex, and a line takes OpenCode
-sessions too, 1.x and 2.x (2.x is verified in OpenCode's simulation mode only, not
-yet on a live model); table seats and build peers on OpenCode are next on the list. If every session is Claude Code and one-to-one messages are all you need,
+(2.x) sessions too, last verified against OpenCode 2.0.32 in OpenCode's simulation
+mode (which blocks all model traffic) and not yet on a live model; table seats and
+build peers on OpenCode are next on the list. If every session is Claude Code and one-to-one messages are all you need,
 Claude Code's own
 [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
 does that natively. If you want one agent handing work to the others, you want an
@@ -62,11 +63,12 @@ How it works:
   names as last verified. `contrib/ergo/README.md` installs it.
 - **Claude Code**, **Codex CLI** and/or **OpenCode**, at the versions `parley
   doctor` names as last verified. A different version is a warning from
-  `doctor`, not a failure. OpenCode may be 1.x or 2.x, and only a line takes it:
-  npm's `opencode-ai` and the installer at opencode.ai/install give 1.x, while
-  Homebrew core now ships OpenCode 2 (its installer is opencode.ai/v2/install).
-  2.x support is verified against 2.0.32 in OpenCode's simulation mode, which
-  blocks all model traffic, and not yet on a live model.
+  `doctor`, not a failure. OpenCode must be 2.x, and only a line takes it:
+  `brew install opencode` (Homebrew core) or `npm i -g @opencode/cli`. The legacy
+  1.x (npm's `opencode-ai`, the installer at opencode.ai/install) has no API
+  parley can speak to, and `doctor` fails it. Parley was last verified against
+  OpenCode 2.0.32 in OpenCode's simulation mode, which blocks all model traffic,
+  and not yet on a live model; a newer 2.x is expected to work.
   Claude Code has prerequisites of its own for
   [channels](https://code.claude.com/docs/en/channels):
   - a claude.ai login or a Console API key, not Amazon Bedrock, Google Cloud's

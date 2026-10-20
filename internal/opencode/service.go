@@ -13,7 +13,7 @@ import (
 	"syscall"
 )
 
-// OpenCode 2 runs one background service per user and records how to reach it in
+// OpenCode runs one background service per user and records how to reach it in
 // a registration file, ${XDG_STATE_HOME:-$HOME/.local/state}/opencode/service.json:
 // {"id", "version", "url", "pid", "password"}, written by the service itself with
 // mode 0600 (packages/client/src/effect/service.ts, 2.0.32: "the complete
@@ -55,8 +55,8 @@ func (s Service) GoString() string { return s.String() }
 // Client returns a client for the service: its address is checked to be a
 // loopback one and its password becomes the HTTP basic credentials, sent to that
 // address alone.
-func (s Service) Client(opts ...Option) (*HTTPClient2, error) {
-	return NewHTTPClient2(s.URL, Auth{User: ServiceUser, Password: s.Password}, opts...)
+func (s Service) Client(opts ...Option) (*HTTPClient, error) {
+	return NewHTTPClient(s.URL, Auth{Password: s.Password}, opts...)
 }
 
 // ServicePath is where OpenCode 2 registers its service, given the environment:
@@ -201,7 +201,7 @@ type Discovery struct {
 // file reads as stale and not as a session the server does not know. It returns
 // what the file says, the client and what the server said. The password is the
 // client's alone: it is not in any error.
-func (d Discovery) Find(ctx context.Context) (Service, *HTTPClient2, ServerInfo, error) {
+func (d Discovery) Find(ctx context.Context) (Service, *HTTPClient, ServerInfo, error) {
 	svc, err := ReadService(d.Path)
 	if err != nil {
 		if errors.Is(err, ErrNoService) {
@@ -217,7 +217,7 @@ func (d Discovery) Find(ctx context.Context) (Service, *HTTPClient2, ServerInfo,
 	if err != nil {
 		return svc, nil, ServerInfo{}, err
 	}
-	if err := CheckVersion2(info.Version); err != nil {
+	if err := CheckVersion(info.Version); err != nil {
 		return svc, nil, ServerInfo{}, err
 	}
 	if info.PID != svc.PID || (svc.Version != "" && info.Version != svc.Version) {

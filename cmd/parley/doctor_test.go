@@ -45,17 +45,18 @@ func fakeOpenCodeBin(t *testing.T, dir, version string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	help := func(name string) string { return filepath.Join(testdata, "opencode-1.18.30-"+name+".help") }
+	help := func(name string) string {
+		return filepath.Join(testdata, "opencode-"+doctor.OpenCodeVerified+"-"+name+".help")
+	}
 	script := fmt.Sprintf(`#!/bin/sh
 case "$1 $2" in
 "--version "*) echo %q; exit 0 ;;
-"--help ") cat %q >&2; exit 0 ;;
-"run --help") cat %q >&2; exit 0 ;;
-"session --help") cat %q >&2; exit 0 ;;
-"session list") if [ "$3" = --help ]; then cat %q >&2; exit 0; fi ;;
+"--help ") cat %q; exit 0 ;;
+"run --help") cat %q; exit 0 ;;
+"session --help") cat %q; exit 0 ;;
 esac
 exit 64
-`, version, help("tui"), help("run"), help("session"), help("session-list"))
+`, version, help("tui"), help("run"), help("session"))
 	bin := filepath.Join(dir, "opencode")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -401,7 +402,7 @@ func TestDoctorHarnessOpenCodeChecksOpenCodeAndItsSkills(t *testing.T) {
 			skills++
 		}
 	}
-	for _, surface := range []string{"ok   opencode ", "ok   opencode version", "ok   opencode tui", "ok   opencode run", "ok   opencode session", "ok   opencode session list"} {
+	for _, surface := range []string{"ok   opencode ", "ok   opencode version", "ok   opencode tui", "ok   opencode run", "ok   opencode session"} {
 		found := false
 		for _, l := range ls {
 			found = found || strings.HasPrefix(l, surface)
@@ -438,41 +439,48 @@ func TestDoctorOpenCodeCanBeAddedToTheOthers(t *testing.T) {
 	}
 }
 
-// TestDoctorOpenCodeTwoIsSupported: the front speaks OpenCode 2's HTTP API too,
-// and 2.0.32 is the 2.x verified; any other major version is a FAIL.
-func TestDoctorOpenCodeTwoIsSupported(t *testing.T) {
+// TestDoctorOpenCodeIsSpokenToOnlyAsATwo: the front speaks OpenCode 2's HTTP API
+// and 2.0.32 is the 2.x verified; the legacy 1.x is a FAIL that says where OpenCode
+// 2 comes from, and any other major version is a FAIL.
+func TestDoctorOpenCodeIsSpokenToOnlyAsATwo(t *testing.T) {
 	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
-	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "opencode v"+doctor.OpenCodeVerified2)
+	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "opencode v"+doctor.OpenCodeVerified)
 	res := b.run(t, "--harness", "opencode")
 	if fails := withLevel(reportLines(t, res.stdout), "FAIL"); res.code != 0 || len(fails) != 0 {
 		t.Errorf("an OpenCode 2: exit %d, FAIL lines %v\n%s", res.code, fails, res.stdout)
 	}
-	if !strings.Contains(res.stdout, "ok   opencode version "+doctor.OpenCodeVerified2+", the version last verified") {
+	if !strings.Contains(res.stdout, "ok   opencode version "+doctor.OpenCodeVerified+", the version last verified") {
 		t.Errorf("no ok version line for the verified 2.x:\n%s", res.stdout)
 	}
 
-	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "opencode v3.0.0")
-	res = b.run(t, "--harness", "opencode")
-	fails := withLevel(reportLines(t, res.stdout), "FAIL")
-	if res.code != 1 || len(fails) != 1 || !strings.Contains(fails[0], "major version of the 1.x and 2.x") {
-		t.Errorf("an OpenCode 3: exit %d, FAIL lines %v\n%s", res.code, fails, res.stdout)
+	for version, want := range map[string]string{
+		"1.18.30":         "the legacy 1.x",
+		"opencode v3.0.0": "not a major version parley speaks to",
+	} {
+		b.opencode = fakeOpenCodeBin(t, t.TempDir(), version)
+		res = b.run(t, "--harness", "opencode")
+		fails := withLevel(reportLines(t, res.stdout), "FAIL")
+		if res.code != 1 || len(fails) != 1 || !strings.Contains(fails[0], want) || !strings.Contains(fails[0], "brew install opencode") {
+			t.Errorf("%s: exit %d, FAIL lines %v\n%s", version, res.code, fails, res.stdout)
+		}
 	}
 }
 
-// TestDoctorOpenCodeADifferentOneXVersionIsAWarning: a 1.x other than the
-// verified one warns, and says what to install if a session misbehaves.
-func TestDoctorOpenCodeADifferentOneXVersionIsAWarning(t *testing.T) {
+// TestDoctorOpenCodeADifferentTwoVersionIsAWarning: a 2.x other than the verified
+// one warns, and says what to install if a session misbehaves.
+func TestDoctorOpenCodeADifferentTwoVersionIsAWarning(t *testing.T) {
 	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
-	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "1.19.3")
+	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "2.9.0")
 	res := b.run(t, "--harness", "opencode")
 	warns := withLevel(reportLines(t, res.stdout), "warn")
 	var ok bool
 	for _, l := range warns {
 		ok = ok || strings.Contains(l, "opencode version") && strings.Contains(l, "newer than "+doctor.OpenCodeVerified) &&
-			strings.Contains(l, "It may work as it is") && strings.Contains(l, "install OpenCode "+doctor.OpenCodeVerified+" ("+doctor.OpenCodeInstallURL+")")
+			strings.Contains(l, "It may work as it is") && strings.Contains(l, "Parley was "+doctor.OpenCodeVerifiedNote) &&
+			strings.Contains(l, "a newer 2.x is expected to work") && !strings.Contains(l, "install OpenCode "+doctor.OpenCodeVerified)
 	}
 	if res.code != 0 || !ok {
-		t.Errorf("exit %d; want a warn that says it may work and what to install:\n%s", res.code, res.stdout)
+		t.Errorf("exit %d; want a warn that says it may work and what it was verified against:\n%s", res.code, res.stdout)
 	}
 }
 

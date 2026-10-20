@@ -4,18 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/colinsurprenant/parley/internal/opencode"
 )
 
 // opencodeTarget is the OpenCode server a pump delivers into, found and checked:
-// the client for whichever version it is, the version it reported, and where it
-// is, for the start line. Exactly one of the clients is set.
+// the client, the version it reported, and where it is, for the start line.
 type opencodeTarget struct {
-	client  opencode.Client
-	client2 opencode.Client2
-	// discovery, set with client2 when the service was found from its file, is what
+	client opencode.Client
+	// discovery, set with client when the service was found from its file, is what
 	// finds it again.
 	discovery *opencode.Discovery
 	version   string
@@ -24,14 +21,12 @@ type opencodeTarget struct {
 
 // connectOpenCode finds the OpenCode server to deliver into and checks that it
 // answers, is a version this front speaks to, and knows the session. Every
-// failure is a configuration error that names what to run, for each version where
-// the cause could be either.
+// failure is a configuration error that names what to run.
 //
-// With a port, the server is the one at 127.0.0.1:<port>, and the version is told
-// by asking it: OpenCode 1 answers GET /global/health with {healthy, version};
-// anything else is asked GET /api/info as OpenCode 2, with the password the human
-// set for it. Without one, the server is OpenCode 2's background service, whose
-// address and password are in its service file.
+// With a port, the server is the one at 127.0.0.1:<port> that `opencode serve
+// --port` started, asked GET /api/info with the password the human set for it.
+// Without one, the server is OpenCode's background service, whose address and
+// password are in its service file.
 func connectOpenCode(ctx context.Context, getenv func(string) string, port int, portGiven bool, session string) (*opencodeTarget, error) {
 	if portGiven {
 		return probePort(ctx, getenv, port, session)
@@ -39,16 +34,13 @@ func connectOpenCode(ctx context.Context, getenv func(string) string, port int, 
 	return discoverService(ctx, getenv, session)
 }
 
-// How to start each version on a session, for the errors below.
-func tui1(port, session string) string {
-	return fmt.Sprintf("`opencode --port %s --session %s` in the session's checkout", port, session)
+// tui is how a session is started in OpenCode, for the errors below: in the
+// session's checkout, which starts the background service if none runs.
+func tui(session string) string {
+	return fmt.Sprintf("`opencode -s %s` in the session's checkout, which starts OpenCode's service if none runs", session)
 }
 
-func tui2(session string) string {
-	return fmt.Sprintf("`opencode -s %s` in the session's checkout, which starts OpenCode 2's service if none runs", session)
-}
-
-// discoverService is connectOpenCode without a port: OpenCode 2's background
+// discoverService is connectOpenCode without a port: OpenCode's background
 // service, from its service file. The server is asked who it is, and the answer
 // is held against the file, before the session is asked for, so that a file left
 // behind reads as stale and not as a session the service does not know. The pump
@@ -63,90 +55,54 @@ func discoverService(ctx context.Context, getenv func(string) string, session st
 	var stale *opencode.StaleServiceError
 	switch {
 	case errors.Is(err, opencode.ErrNoService):
-		return nil, cfgErrf("%v: start OpenCode 2 on the session with %s, and the pump finds the service itself; for OpenCode 1.x pass --port <n>, the port of %s", err, tui2(session), tui1("<n>", session))
+		return nil, cfgErrf("%v: start OpenCode on the session with %s, and the pump finds the service itself; for a server started with `opencode serve --port <n>` pass --port <n>", err, tui(session))
 	case errors.Is(err, opencode.ErrServiceAddress):
 		// The address is the service file's to name, and a file is not trusted to name
 		// anything but this machine: the credentials in it go to a loopback address
 		// alone.
-		return nil, cfgErrf("OpenCode 2's service file %s names an address this front will not send its password to: %v", path, err)
+		return nil, cfgErrf("OpenCode's service file %s names an address this front will not send its password to: %v", path, err)
 	case errors.Is(err, opencode.ErrServiceFile):
-		return nil, cfgErrf("OpenCode 2's service file: %v", err)
+		return nil, cfgErrf("OpenCode's service file: %v", err)
 	case errors.As(err, &stale):
-		return nil, cfgErrf("%v; stop OpenCode 2 and start it again with %s", err, tui2(session))
+		return nil, cfgErrf("%v; stop OpenCode and start it again with %s", err, tui(session))
 	case opencode.IsTransport(err):
-		return nil, cfgErrf("OpenCode 2's service file %s names a service at %s, which does not answer, and it may have stopped and left the file behind: start it with %s: %v", path, opencode.RedactURL(svc.URL), tui2(session), err)
+		return nil, cfgErrf("OpenCode's service file %s names a service at %s, which does not answer, and it may have stopped and left the file behind: start it with %s: %v", path, opencode.RedactURL(svc.URL), tui(session), err)
 	case err != nil:
-		return nil, cfgErrf("OpenCode 2's service at %s: %v", opencode.RedactURL(svc.URL), err)
+		return nil, cfgErrf("OpenCode's service at %s: %v", opencode.RedactURL(svc.URL), err)
 	}
 	if _, err := c.Session(ctx, session); err != nil {
 		switch {
 		case errors.Is(err, opencode.ErrSessionNotFound):
-			return nil, cfgErrf("OpenCode 2's service at %s does not know session %s: start OpenCode on it with %s: %v", opencode.RedactURL(svc.URL), session, tui2(session), err)
+			return nil, cfgErrf("OpenCode's service at %s does not know session %s: start OpenCode on it with %s: %v", opencode.RedactURL(svc.URL), session, tui(session), err)
 		case opencode.IsTransport(err):
-			return nil, cfgErrf("OpenCode 2's service at %s stopped answering: start it with %s: %v", opencode.RedactURL(svc.URL), tui2(session), err)
+			return nil, cfgErrf("OpenCode's service at %s stopped answering: start it with %s: %v", opencode.RedactURL(svc.URL), tui(session), err)
 		}
-		return nil, cfgErrf("OpenCode 2's service at %s: %v", opencode.RedactURL(svc.URL), err)
+		return nil, cfgErrf("OpenCode's service at %s: %v", opencode.RedactURL(svc.URL), err)
 	}
-	return &opencodeTarget{client2: c, discovery: d, version: info.Version, where: "the OpenCode 2 service at " + opencode.RedactURL(svc.URL)}, nil
+	return &opencodeTarget{client: c, discovery: d, version: info.Version, where: "the OpenCode service at " + opencode.RedactURL(svc.URL)}, nil
 }
 
-// probePort is connectOpenCode with a port. OpenCode 1 is tried first, because
-// its health path is the answer that is not mistaken for anything: a JSON object
-// with healthy and version. OpenCode 2 serves its web page there.
+// probePort is connectOpenCode with a port: a server `opencode serve --port`
+// started, which wants a password, taken from OPENCODE_PASSWORD, else the older
+// OPENCODE_SERVER_PASSWORD, and sent under the user opencode.
 func probePort(ctx context.Context, getenv func(string) string, port int, session string) (*opencodeTarget, error) {
-	url := opencode.LoopbackURL(port)
 	where := fmt.Sprintf("127.0.0.1:%d", port)
-	user := getenv(opencodeUserEnv)
-	if user == "" {
-		user = opencodeDefaultUser
-	}
-	c1, err := opencode.NewHTTPClient(url, opencode.Auth{User: user, Password: getenv(opencodePasswordEnv)})
-	if err != nil {
-		return nil, &configError{err: err}
-	}
-	portText := strconv.Itoa(port)
-	_, err1 := c1.Health(ctx)
-	switch {
-	case err1 == nil:
-		version, err := opencode.Probe(ctx, c1, session)
-		if err != nil {
-			return nil, probeFailure1(port, session, err)
-		}
-		return &opencodeTarget{client: c1, version: version, where: where}, nil
-	case opencode.IsTransport(err1):
-		return nil, cfgErrf("cannot reach OpenCode on %s: nothing answers there. OpenCode 1 serves its API only while the TUI runs with --port: start it with %s. OpenCode 2 has no --port: start %s, and run the pump without --port, or run `opencode serve --port %s` yourself: %v",
-			where, tui1(portText, session), tui2(session), portText, err1)
-	}
-	// Not OpenCode 1's answer: a page, a 401 for a password, or anything else.
-	// Ask as OpenCode 2, with its own variable and then the old one.
-	password := getenv(opencodePassword2Env)
+	password := getenv(opencodePasswordEnv)
 	if password == "" {
-		password = getenv(opencodePasswordEnv)
+		password = getenv(opencodeLegacyPasswordEnv)
 	}
-	c2, err := opencode.NewHTTPClient2(url, opencode.Auth{User: opencode.ServiceUser, Password: password})
+	c, err := opencode.NewHTTPClient(opencode.LoopbackURL(port), opencode.Auth{Password: password})
 	if err != nil {
 		return nil, &configError{err: err}
 	}
-	info, err2 := opencode.Probe2(ctx, c2, session)
+	info, err := opencode.Probe(ctx, c, session)
 	switch {
-	case err2 == nil:
-		return &opencodeTarget{client2: c2, version: info.Version, where: where}, nil
-	case errors.Is(err2, opencode.ErrSessionNotFound):
-		return nil, cfgErrf("OpenCode 2 on %s does not know session %s: start OpenCode on it with %s: %v", where, session, tui2(session), err2)
-	}
-	return nil, cfgErrf("OpenCode on %s answered as neither version. As OpenCode 1: %v. As OpenCode 2: %v. OpenCode 1 is started with %s; OpenCode 2 with %s, and the pump run without --port, or with `opencode serve --port %s`",
-		where, err1, err2, tui1(portText, session), tui2(session), portText)
-}
-
-// probeFailure1 turns a failed startup probe of an OpenCode 1 server into the
-// configuration error it is, and says what the human runs to make it right when
-// that is the TUI: the server is only there while the TUI runs, and only for the
-// session it was given.
-func probeFailure1(port int, session string, err error) error {
-	switch {
+	case err == nil:
+		return &opencodeTarget{client: c, version: info.Version, where: where}, nil
 	case errors.Is(err, opencode.ErrSessionNotFound):
-		return cfgErrf("OpenCode on 127.0.0.1:%d does not know session %s: start the TUI on it with %s: %v", port, session, tui1(strconv.Itoa(port), session), err)
-	default:
-		return cfgErrf("OpenCode on 127.0.0.1:%d: %v", port, err)
+		return nil, cfgErrf("OpenCode on %s does not know session %s: start OpenCode on it with %s: %v", where, session, tui(session), err)
+	case opencode.IsTransport(err):
+		return nil, cfgErrf("cannot reach OpenCode on %s: nothing answers there. Start the server with `opencode serve --port %d`, or run the pump without --port to use the background service, which %s: %v", where, port, tui(session), err)
 	}
+	return nil, cfgErrf("OpenCode on %s: %v", where, err)
 }
