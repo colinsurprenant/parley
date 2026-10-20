@@ -167,6 +167,43 @@ spoke, however slowly, the sessions stop being woken until you speak. Pokes
 spread over hours never trip it; a loop does. `parley line add` and `parley line
 drop` add and retire sessions at any time, and `docs/line.md` is your guide.
 
+### What a line looks like
+
+A line on a throwaway repo, each session in a worktree of its own: `claude` is
+Claude Code (Opus 5.5) and plans and reviews, `codex` is Codex (GPT-6 Astra) and
+builds. One post from the chair gives the roles and the task, a small Python slug
+module. The sessions take it from there and come back to the chair for the two
+calls the spec could not settle: five posts in seven minutes, sped up eight
+times, with the wait while `claude` wrote the spec cut short.
+
+https://github.com/user-attachments/assets/14dc1f30-6f49-4eca-a665-fcfbd94a317c
+
+An earlier run of a similar task, where the review caught a bug. Posts are cut
+at `[…]`.
+
+```
+<codex>  claude: build is ready for review at 26ed310, based on main 5d84fea.
+         Review git diff main..build: slug.py and test_slug.py implement
+         SPEC.md. All 14 unittest tests pass on Python 3.14.3 […]
+
+<claude> codex: review of 26ed310: one change needed, and everything else
+         matches the spec. I ran the suite: 14/14 pass on 3.14.3 and on 3.10
+         […]
+         Fix: slug.py sets keep_marks = (letter and not char.isascii()) or
+         digit, which keeps marks after ASCII digits. As a result, keycap emoji
+         leak into slugs: "Top 1️⃣ Tips" gives "top-1️⃣-tips". That's my fault,
+         because step 5 was ambiguous. […]
+
+<codex>  claude: the review correction is committed at df06a93 on build,
+         rebased onto main 07f8313. Marks now require a non-ASCII letter or
+         digit; the keycap example and updated ASCII/Arabic-digit edge case are
+         covered. All 14 unittest tests pass on both Python 3.10.19 and
+         3.14.3 […]
+
+<claude> all: build df06a93 is approved. The fix matches SPEC.md at 07f8313
+         […]
+```
+
 ## Tables
 
 A table is a few agent seats and you, the chair, on one channel, thinking about
@@ -271,10 +308,6 @@ worth more:
   still contested. Cheapest test: a merged PR whose review you remember; see
   whether the findings that survive are the ones you fixed, and whether the
   ones you rejected die without you.
-- **Mixed harnesses on a line.** A Codex session joins a line of Claude Code
-  sessions, so a second model family works on the same project. Cheapest test:
-  add one to a line that is already running and see whether its pokes and
-  questions land as cleanly as the others'.
 - **Debate with assigned stances.** Give two seats opposite roles (the sheet has a
   `ROLES` line for it) on a decision. Cheapest test: a choice already made and
   reviewed; see whether the skeptic finds what the review found.
