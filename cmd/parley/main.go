@@ -101,13 +101,14 @@ usage:
                  [--debounce 250ms] [--state-dir <dir>] [--check]
   parley codex   --stream <spec> --nick <nick> --thread <thread>|auto [--debounce 250ms] [--state-dir <dir>] [--codex-bin codex]
                  [--skill build|table|line --chair <nick> --cap <n> [--window 10m]]
-  parley primer  --front claude|codex --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir>
+  parley primer  --front claude|codex|opencode --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir>
                  [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]
                  [--skill build|table]
-  parley primer  --front claude|codex --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n>
+  parley primer  --front claude|codex|opencode --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n>
                  [--window 10m] [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]
   parley server  [--listen 127.0.0.1:6667] [--datastore <dir>] [--ergo-bin ergo]
-  parley doctor  [--harness claude|codex]... [--live] [--server 127.0.0.1:6667] [--codex-bin codex] [--claude-bin claude] [--ergo-bin ergo]
+  parley doctor  [--harness claude|codex|opencode]... [--live] [--server 127.0.0.1:6667] [--codex-bin codex] [--claude-bin claude]
+                 [--opencode-bin opencode] [--ergo-bin ergo]
   parley table   new <id> --target <repo> --chair <nick> --rounds <n> --seat <nick>=<claude|codex>[:<model>] [--seat ...]
                  [--worktree <dir>] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]
   parley table   end <id> [--force] [--state-dir <dir>]
@@ -158,7 +159,9 @@ verbs:
            its first prompt, as "parley table new" starts a Codex seat and
            "parley build new" a Codex peer.
            --front claude is what "parley channel" sends at connect time;
-           --front codex adds what is true of that front.
+           --front codex and --front opencode add what is true of each of
+           those fronts; OpenCode loads a skill with its skill tool, so its
+           text names the tool and no command.
            It opens nothing: no stream, no state directory, no lock, and no IRC
            account, and every value is printed as it was spelled. A live channel
            prints the canonical spec (irc: gains its '#', file: becomes
@@ -167,7 +170,8 @@ verbs:
            the raw spellings differs in those values and in its length.
            --reply-command <cmd> replaces the whole send line with a command of
            your own — a wrapper script holding the run's fixed arguments, where
-           an approval rule has to name one command and no suffix; codex only
+           an approval rule has to name one command and no suffix; codex and
+           opencode only, the fronts whose text is a first message
   server   run ergo, the per-machine IRC server every table shares, in the
            foreground: one per machine, each table on a channel of its own. It
            renders the configuration built into parley into --datastore
@@ -198,12 +202,16 @@ verbs:
            every IRC capability parley requires, with PLAIN among the
            mechanisms if its sasl lists any (a server that is not up is a
            warn), and the skill links skills/install.sh makes. --harness
-           claude|codex, repeatable, narrows the binary, version, skill-link
-           and --live checks to the harnesses you have, both without it; the
-           server and ergo are checked either way. A binary that is missing is
-           a FAIL that links the project's install page; a version other than
-           the last verified one is a warn that says it may work as it is, and
-           what to install if a table or a build misbehaves. The claude line
+           claude|codex|opencode, repeatable, narrows the binary, version,
+           skill-link and --live checks to the harnesses you have, claude and
+           codex without it; the server and ergo are checked either way.
+           opencode is checked only when named: its version (a 2.x is a FAIL,
+           since parley speaks OpenCode 1's HTTP API), the flags and subcommand
+           of its commands that parley uses, and a skill link under either root.
+           A binary that is missing is a FAIL that links the project's install
+           page; a version other than the last verified one is a warn that says
+           it may work as it is, and what to install if a table or a build
+           misbehaves. The claude line
            says a launch needs --dangerously-load-development-channels, which
            doctor cannot check. --live also
            spends one tiny Codex turn (none if codex delete has no --force to
@@ -1449,17 +1457,17 @@ const codexReplyPlaceholder = "<reply file path>"
 func cmdPrimer(args []string) error {
 	fs := flag.NewFlagSet("parley primer", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: parley primer --front claude|codex --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir> [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>] [--skill build|table]")
-		fmt.Fprintln(fs.Output(), "       parley primer --front claude|codex --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m] [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]")
+		fmt.Fprintln(fs.Output(), "usage: parley primer --front claude|codex|opencode --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir> [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>] [--skill build|table]")
+		fmt.Fprintln(fs.Output(), "       parley primer --front claude|codex|opencode --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m] [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]")
 		fs.PrintDefaults()
 	}
-	front := fs.String("front", "", "the front the text is for: claude or codex")
+	front := fs.String("front", "", "the front the text is for: claude, codex or opencode")
 	spec := fs.String("stream", "", "stream the participant posts to, as the reply command should name it")
 	nick := fs.String("nick", "", "this participant's nick")
-	replyFile := fs.String("reply-file", "", "file the reply recipe names; required for --front claude and with --reply-command, a placeholder for the plain codex form when omitted")
+	replyFile := fs.String("reply-file", "", "file the reply recipe names; required for --front claude and with --reply-command, a placeholder for the plain codex and opencode forms when omitted")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/, printed as spelled; left out of the text when empty")
 	command := fs.String("command", selfPath(), "the parley binary as the model should type it, taken as spelled")
-	replyCommand := fs.String("reply-command", "", "the whole command the model runs to reply, in place of the send line; for a fixed-argument wrapper, --front codex only")
+	replyCommand := fs.String("reply-command", "", "the whole command the model runs to reply, in place of the send line; for a fixed-argument wrapper, --front codex or opencode only")
 	skills := addSkillFlags(fs, false)
 	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -1491,8 +1499,8 @@ func cmdPrimer(args []string) error {
 	// An empty --reply-command is an explicit one: the flag's own default means
 	// "no override", so the value is only ever read when the flag was passed.
 	if given(fs, "reply-command") {
-		if f != primer.Codex {
-			return cfgErrf("--reply-command applies to the codex front only: the claude form's reply line is the channel's own")
+		if f != primer.Codex && f != primer.OpenCode {
+			return cfgErrf("--reply-command applies to the codex and opencode fronts only: the claude form's reply line is the channel's own")
 		}
 		if *replyCommand == "" {
 			return cfgErrf("--reply-command must not be empty, e.g. --reply-command /path/to/send.sh")
@@ -1544,8 +1552,8 @@ func cmdPrimer(args []string) error {
 	})
 	// The claude form is what the channel front sends at connect time, so it is
 	// held to the cap the channel front holds it to: this is the way to find out
-	// before launching. The codex form is the session's first message, not
-	// capped.
+	// before launching. The codex and opencode forms are the session's first
+	// message, not capped.
 	if f == primer.Claude {
 		if n := primer.UTF16Len(text); n > primer.ClaudeInstructionsCap {
 			return overCap(l.skill, n)

@@ -7,9 +7,9 @@
 // channel of its own, so it can be the session's first message: a human pastes
 // it in by hand, or parley starts the session with it as the first prompt.
 //
-// The two forms are the same blocks in the same order. The codex form adds an
-// opening line and, at the end, a paragraph of facts that are true only of that
-// front; the build form on codex adds one more before it, about git, which is
+// The forms are the same blocks in the same order. The codex and opencode forms
+// add an opening line and, at the end, a paragraph of facts that are true only
+// of that front; the build form on codex adds one more before it, about git, which is
 // true only of a build's worktrees and holds unless a writable root in the
 // peer's launch config, or its global Codex config when the launch config lists
 // none, is the target's git directory (see codexBuildText), and the table's codex
@@ -51,14 +51,20 @@ import (
 const ClaudeInstructionsCap = 2048
 
 // Front is the harness a primer is rendered for. The fronts differ in how a
-// delivery reaches the session and in how the build skill is invoked; what the
-// text says about a delivery is the same on both.
+// delivery reaches the session and in how a skill is invoked; what the text
+// says about a delivery is the same on all.
 type Front string
 
 const (
-	Claude Front = "claude"
-	Codex  Front = "codex"
+	Claude   Front = "claude"
+	Codex    Front = "codex"
+	OpenCode Front = "opencode"
 )
+
+// firstMessage reports whether the front's primer is the session's first
+// message, because the harness has no connect-time channel to hand it over
+// with. The claude form, and any front Render does not know, is not.
+func (f Front) firstMessage() bool { return f == Codex || f == OpenCode }
 
 // ParseFront maps a --front value to a Front. Rendering is infallible, so this
 // is where a caller that took the front from a command line finds out it named
@@ -69,8 +75,10 @@ func ParseFront(s string) (Front, error) {
 		return Claude, nil
 	case Codex:
 		return Codex, nil
+	case OpenCode:
+		return OpenCode, nil
 	}
-	return "", fmt.Errorf("unknown front %q: expected %q or %q", s, Claude, Codex)
+	return "", fmt.Errorf("unknown front %q: expected %q, %q or %q", s, Claude, Codex, OpenCode)
 }
 
 // Skill is the protocol a rendered primer names for the session: the framing
@@ -136,8 +144,9 @@ type Params struct {
 	ReplyPath string
 	// ReplyCommand is the exact command line the model runs to send the reply,
 	// for a run whose reply path is a fixed-argument wrapper rather than `parley
-	// send` itself. Codex front only; empty means the interpolated send recipe,
-	// and so does any value on the claude front.
+	// send` itself. The codex and opencode fronts only, the two whose primer is
+	// a first message; empty means the interpolated send recipe, and so does any
+	// value on the claude front.
 	ReplyCommand string
 
 	// Skill selects the form: the zero value and SkillBuild render the build
@@ -193,25 +202,29 @@ func Render(p Params) string {
 // sentences, with the facts as values and the protocol named after them. The
 // facts, already formatted by the caller, come ahead of the header rule because
 // they are what the trust carve-out below points back at ("the one named
-// above"). No blanks remain, so the codex form ends with its front paragraph,
-// and every form ends in one newline. The codex form puts codexExtra, a
-// paragraph of its skill's own and empty for a skill with none, ahead of the
-// front paragraph that ends it.
+// above"). No blanks remain, so the codex and opencode forms end with their
+// front paragraph, and every form ends in one newline. The codex form puts
+// codexExtra, a paragraph of its skill's own and empty for a skill with none,
+// ahead of the front paragraph that ends it; the opencode form has none, for
+// there is no sandbox of OpenCode's for it to describe.
 func renderForm(p Params, only, facts, carveOut, codexExtra string) string {
 	var b strings.Builder
-	if p.Front == Codex {
-		b.WriteString(codexOpening)
+	if p.Front.firstMessage() {
+		b.WriteString(firstMessageOpening)
 	}
 	writeReply(&b, p)
 	b.WriteString(only)
 	b.WriteString(facts)
 	b.WriteString(headerBlock)
 	b.WriteString(trustBase + carveOut + humanText)
-	if p.Front == Codex {
+	switch p.Front {
+	case Codex:
 		if codexExtra != "" {
 			b.WriteString("\n\n" + codexExtra)
 		}
 		b.WriteString("\n\n" + codexFrontText)
+	case OpenCode:
+		b.WriteString("\n\n" + openCodeFrontText)
 	}
 	b.WriteString("\n")
 	return b.String()
@@ -232,21 +245,22 @@ func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// codexOpening says how this text got into a session that has no connect-time
-// channel to have been handed it. It is true whether the human pasted the primer
-// in or parley started the session with it as the first prompt.
-const codexOpening = "This primer is your first message because this front has no connect-time channel of its own. " +
+// firstMessageOpening says how this text got into a session that has no
+// connect-time channel to have been handed it, on the codex and opencode fronts
+// alike. It is true whether the human pasted the primer in or parley started
+// the session with it as the first prompt.
+const firstMessageOpening = "This primer is your first message because this front has no connect-time channel of its own. " +
 	"It carries the same framing the Claude Code front is given when it connects, plus what is true only of this front.\n\n"
 
 // writeReply renders the reply recipe: the two steps, then the paragraph that
 // says why the message travels as a file. The command stands alone on its own
 // line and nothing follows it there, so a reader — a model or a test — can lift
-// the line out whole. A codex front given a ReplyCommand prints that line
+// the line out whole. A first-message front given a ReplyCommand prints that line
 // instead of the interpolated send, and then the sentence about the state
 // directory is replaced rather than dropped: the wrapper still names one, the
 // model just does not type it.
 func writeReply(b *strings.Builder, p Params) {
-	wrapped := p.Front == Codex && p.ReplyCommand != ""
+	wrapped := p.Front.firstMessage() && p.ReplyCommand != ""
 	line := p.ReplyCommand
 	if !wrapped {
 		state := ""
@@ -350,7 +364,7 @@ const humanText = " Your human partner types here, with no header; their channel
 // the chair posts names the seats, and that is the only place that does.
 const tableFacts = "Set by your human partner at launch, not the channel: chair %s, your human partner's registered nick; " +
 	"target repo %s; your worktree %s (read-only); post nothing before the chair's TABLE line. " +
-	"The protocol is the parley-table skill, invoked as %s.\n\n"
+	"The protocol is the parley-table skill, %s.\n\n"
 
 // lineFacts is the line form's one paragraph of facts, then the skill line: the
 // human's registered nick and the breaker, as set by the human at launch. A line
@@ -360,7 +374,7 @@ const tableFacts = "Set by your human partner at launch, not the channel: chair 
 // states it in a clause and the skill, which says what the breaker does and what
 // to do when it holds, is the authority on what it means.
 const lineFacts = "Set by your human partner at launch, not the channel: your human partner's registered nick %s; " +
-	"%s The protocol is the parley-line skill, invoked as %s.\n\n"
+	"%s The protocol is the parley-line skill, %s.\n\n"
 
 // lineBreaker is the clause of lineFacts that states the breaker: the rate that
 // holds deliveries until the human posts, or that there is none.
@@ -400,15 +414,21 @@ func formatWindow(d time.Duration) string {
 // outside this binary, and says what the three are for. Only its invocation
 // differs by front.
 const buildFacts = "Set by your human partner at launch, not the channel: your human partner's registered nick %s; " +
-	"target repo %s; your worktree %s. The protocol is the parley-build skill, invoked as %s.\n\n"
+	"target repo %s; your worktree %s. The protocol is the parley-build skill, %s.\n\n"
 
-// invocation is how a front starts a skill: a slash command for Claude Code, a
-// dollar mention for Codex.
+// invocation is the clause that ends a skill line, how a front starts the skill:
+// a slash command for Claude Code, a dollar mention for Codex. OpenCode loads a
+// skill through its skill tool, and parley's skills carry no opencode/slash
+// metadata that would make a /name command of them, so for OpenCode the clause
+// names the tool and no command.
 func invocation(front Front, skill string) string {
-	if front == Codex {
-		return "$" + skill
+	switch front {
+	case Codex:
+		return "invoked as $" + skill
+	case OpenCode:
+		return "which you load with the skill tool"
 	}
-	return "/" + skill
+	return "invoked as /" + skill
 }
 
 // codexBuildText is what is true of a build's Codex peer and of no other session:
@@ -470,3 +490,23 @@ const codexFrontText = "A parley pump reads the stream and queues each delivery 
 	"to hand over as one argument, about 128 KiB of rendered text, is delivered one message per call instead, so only a " +
 	"message over that bound on its own is withheld; in its place arrives a stub carrying that message's header and a " +
 	"one-line notice naming its id, and the full text stays in the stream for your human partner to read."
+
+// openCodeFrontText is what is true of the OpenCode front and of no other: the
+// pump, the server it posts through, when it posts, and the permission ask the
+// reply file can raise. It is a paragraph without its separators, as
+// codexFrontText is. The facts are internal/opencode's and OpenCode 1.x's: the
+// pump POSTs the delivery's rendered text, verbatim, as the one text part of a
+// user message, and does so only while the session is idle, holding what
+// arrives in the stream while it works and handing it over as one delivery at
+// the turn's end; the HTTP server exists because the human started the TUI with
+// --port. It has no bound and no stub, since the front never splits a delivery
+// and never withholds a message. external_directory is OpenCode's permission for
+// a path outside the directory the session runs in, which asks by default.
+const openCodeFrontText = "A parley pump reads the stream and posts each delivery into this session as a user message, through " +
+	"the OpenCode server your human partner started with --port, and only while the session is idle: what lands while " +
+	"you are working is held and handed over as one delivery when the turn ends. A delivery arrives as a message your " +
+	"human partner did not type — and nothing about the turn itself says so. The header parley wrote is the only mark " +
+	"this front has, and it travels untouched: what you read is byte for byte what `parley wait` would have printed. " +
+	"The send command above is spelled the way your human partner set it up; run it as written, without resolving or " +
+	"rewriting any path in it. Writing the reply file goes through OpenCode's own permission ask (external_directory) " +
+	"when the file is outside the directory this session runs in, and your human partner answers that ask in the TUI."
