@@ -35,15 +35,27 @@
 // delivery it waits for the session to be idle; if it had to wait, everything
 // that arrived meanwhile is still in the stream, and it reads again from the
 // cursor it started at, so the backlog goes over as one delivery rather than
-// one turn each. It then notes the newest message of the session, posts, and
-// reads the history back until a user message newer than the note holds the
-// text. The server answers 204 before the message exists, so the post alone
-// proves nothing, and checking the bytes also proves the header arrived. Last it
+// one turn each. It then notes which messages the session's recent history
+// holds, posts, and reads the history back until a user message that was not
+// among them holds the text. The server answers 204 before the message exists,
+// so the post alone proves nothing, and checking the bytes also proves the
+// header arrived. The note is a set of ids and not the newest id, because the
+// server assigns ids as it creates messages, not in the order they were posted
+// (two prompts posted one after the other were seen to swap), so a message
+// created next to a human's own can sort below it. Last it
 // waits a bounded time to see the turn begin, because the session's status can
 // read idle for a moment after the 204, and only then is the delivery committed
 // and the cursor saved. A human submitting a prompt in the TUI between the idle
 // check and the post is merged into the human's own turn: with no queue on the
 // server there is no closing that window, and it is the human's own action.
+//
+// Whether the session is idle is read under the session's own directory, which
+// the pump gets from the session when it first attaches and again each time it
+// has to reattach after the server was away. OpenCode keeps a session's status
+// under the directory the session belongs to, and the server may be running in
+// another (a TUI started in one checkout on a session of another): read there,
+// or under the server's, the status of a turn in progress is not listed at all
+// and every session reads idle. See HTTPClient.Busy.
 package opencode
 
 import (
@@ -85,9 +97,12 @@ const (
 	defaultMaxBackoff = 5 * time.Second
 
 	// recentMessages is how much of the history is read for the note and the
-	// read-back. The message being looked for is the newest user message there
-	// is, and at most a few assistant ones follow it in the seconds in which it
-	// is looked for.
+	// read-back: the newest this many messages by id. The message being looked
+	// for is among the newest of them, and at most a few assistant ones follow it
+	// in the seconds in which it is looked for. The same window serves both, which
+	// is what makes the set of ids noted before the post comparable with what the
+	// read-back sees: messages only ever join the window at its newest end, so one
+	// that was outside it when the note was taken cannot be inside it later.
 	recentMessages = 20
 )
 
@@ -136,6 +151,9 @@ type Pump struct {
 	cursors   CursorStore
 	session   string
 	client    Client
+	// directory is the session's directory, read from the server by attach and
+	// "" until then.
+	directory string
 
 	timeout  time.Duration
 	debounce time.Duration
@@ -293,7 +311,7 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 		}
 		p.logf("delivering %d message(s), %d bytes, to session %s", len(d.Messages), len(text), p.session)
 
-		note, err := p.newestID(ctx)
+		known, err := p.recentIDs(ctx)
 		if err != nil {
 			if IsTransport(err) {
 				// The server went away between the idle check and here; nothing was
@@ -323,7 +341,7 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 			// bargain.
 			return d, fmt.Errorf("prompt session %s: %w", p.session, err)
 		}
-		userID, err := p.readBack(ctx, note, text)
+		userID, err := p.readBack(ctx, known, text)
 		if err != nil {
 			return d, err
 		}
@@ -333,19 +351,29 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 }
 
 // awaitIdle blocks until the session is idle and says whether it had to wait,
-// which tells the caller that its delivery may be stale. A server that is away is
-// waited for with a backoff that doubles up to the cap, with one line logged when
-// it goes and one when it is back; the stream keeps everything meanwhile. A
-// server that comes back is asked its version again, because it may not be the
+// which tells the caller that its delivery may be stale. The first time, and
+// after the server was away, it attaches first: it asks the server its version
+// and the session's directory, which the status is read under. A server that is
+// away is waited for with a backoff that doubles up to the cap, with one line
+// logged when it goes and one when it is back; the stream keeps everything
+// meanwhile. A server that comes back is asked again, because it may not be the
 // one that went away: the human restarted the TUI, perhaps on another install.
 // Any failure of the server other than being away stops the pump.
 func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 	backoff := p.idlePoll
-	away := false
+	away, outage := p.directory == "", false
 	for {
 		if away {
-			if err := p.reconnect(ctx); err != nil {
+			if err := p.attach(ctx); err != nil {
+				if ctx.Err() != nil {
+					return waited, ctx.Err()
+				}
 				if IsTransport(err) {
+					if !outage {
+						p.logf("OpenCode is not answering (%v): holding deliveries in the stream and retrying", err)
+						outage = true
+					}
+					waited = true
 					if !p.sleep(ctx, backoff) {
 						return waited, ctx.Err()
 					}
@@ -354,11 +382,13 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 				}
 				return waited, err
 			}
-			p.logf("OpenCode is back")
-			away = false
-			backoff = p.idlePoll
+			if outage {
+				p.logf("OpenCode is back")
+				waited, outage = true, false
+			}
+			away, backoff = false, p.idlePoll
 		}
-		busy, err := p.client.Busy(ctx, p.session)
+		busy, err := p.client.Busy(ctx, p.session, p.directory)
 		switch {
 		case err == nil:
 			if !busy {
@@ -372,17 +402,17 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 			return waited, ctx.Err()
 		case IsTransport(err):
 			p.logf("OpenCode is not answering (%v): holding deliveries in the stream and retrying", err)
-			waited, away = true, true
+			waited, away, outage = true, true, true
 		default:
 			return waited, fmt.Errorf("session status: %w", err)
 		}
 	}
 }
 
-// reconnect asks a server that was away whether it is back and still the one
-// this front can speak to: healthy, a version it supports, and still knowing the
-// session. A transport error means it is still away.
-func (p *Pump) reconnect(ctx context.Context) error {
+// attach asks the server whether it is the one this front can speak to — healthy
+// and of a version it supports — and for the session, whose directory it keeps
+// for the status reads. A transport error means the server is still away.
+func (p *Pump) attach(ctx context.Context) error {
 	version, err := p.client.Health(ctx)
 	if err != nil {
 		return err
@@ -390,33 +420,44 @@ func (p *Pump) reconnect(ctx context.Context) error {
 	if err := CheckVersion(version); err != nil {
 		return err
 	}
-	if err := p.client.SessionExists(ctx, p.session); err != nil {
+	info, err := p.client.Session(ctx, p.session)
+	if err != nil {
 		return err
 	}
+	p.directory = info.Directory
 	return nil
 }
 
-// newestID returns the id of the newest message in the session, or "" for a
-// session with none. It is the note the read-back compares against: a user
-// message with the delivery's text that is not newer than it was there before the
-// post, however recently, and proves nothing about it.
-func (p *Pump) newestID(ctx context.Context) (string, error) {
-	msgs, err := p.client.Messages(ctx, p.session, 1)
+// recentIDs returns the ids of the messages in the session's recent history, the
+// newest recentMessages of it. It is the note the read-back compares against: a
+// user message with the delivery's text that is in this set was there before the
+// post, however recently, and proves nothing about it. The set and not the
+// newest id, because ids are assigned by the server as it creates each message,
+// which is not the order the prompts were posted in: a delivery created next to
+// a human's own submit can get the lower of the two ids.
+func (p *Pump) recentIDs(ctx context.Context) (map[string]struct{}, error) {
+	msgs, err := p.client.Messages(ctx, p.session, recentMessages)
 	if err != nil {
-		return "", fmt.Errorf("read the newest message of session %s: %w", p.session, err)
+		return nil, fmt.Errorf("read the recent messages of session %s: %w", p.session, err)
 	}
-	if len(msgs) == 0 {
-		return "", nil
+	known := make(map[string]struct{}, len(msgs))
+	for _, m := range msgs {
+		known[m.ID] = struct{}{}
 	}
-	return msgs[len(msgs)-1].ID, nil
+	return known, nil
 }
 
-// readBack polls the history until a user message newer than note holds a text
-// part byte for byte equal to text, and returns its id. OpenCode's ids are made
-// from the clock, so a later message has the greater id: checked on 1.18.30,
-// whose own listing is in that order. A server that is away while this runs is
-// not a failure of it: the post was accepted, and the message may yet show.
-func (p *Pump) readBack(ctx context.Context, note, text string) (string, error) {
+// readBack polls the history until a user message that is not in known holds a
+// text part byte for byte equal to text, and returns its id. known is the set
+// recentIDs took before the post, over the same window of the newest
+// recentMessages, and messages only ever join that window at its newest end: one
+// outside it then cannot be inside it now, so a message that is not in known is
+// one created since. Nothing is assumed of the order of ids. A delivery that is
+// already in the history, as the previous run's would be after a crash, is in
+// known and is told apart from the one just posted. A server that is away while
+// this runs is not a failure of it: the post was accepted, and the message may
+// yet show.
+func (p *Pump) readBack(ctx context.Context, known map[string]struct{}, text string) (string, error) {
 	deadline := time.Now().Add(p.readBackTimeout)
 	var last error
 	for {
@@ -425,7 +466,7 @@ func (p *Pump) readBack(ctx context.Context, note, text string) (string, error) 
 		case err == nil:
 			last = nil
 			for _, m := range msgs {
-				if m.Role == "user" && m.ID > note && hasText(m, text) {
+				if _, old := known[m.ID]; !old && m.Role == "user" && hasText(m, text) {
 					return m.ID, nil
 				}
 			}
@@ -469,7 +510,7 @@ func hasText(m Message, text string) bool {
 func (p *Pump) settle(ctx context.Context, userID string) {
 	deadline := time.Now().Add(p.settleTimeout)
 	for {
-		if busy, err := p.client.Busy(ctx, p.session); err == nil && busy {
+		if busy, err := p.client.Busy(ctx, p.session, p.directory); err == nil && busy {
 			return
 		}
 		if msgs, err := p.client.Messages(ctx, p.session, recentMessages); err == nil {
@@ -549,7 +590,7 @@ func Probe(ctx context.Context, c Client, session string) (version string, err e
 	if err := CheckVersion(version); err != nil {
 		return "", err
 	}
-	if err := c.SessionExists(ctx, session); err != nil {
+	if _, err := c.Session(ctx, session); err != nil {
 		return "", err
 	}
 	return version, nil

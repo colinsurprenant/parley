@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,7 +15,11 @@ import (
 	"time"
 )
 
-const testSession = "ses_ea8bbe5a9ffePFZ3AOhDdaNgbW"
+const (
+	testSession = "ses_ea8bbe5a9ffePFZ3AOhDdaNgbW"
+	// testDir is the directory the fake's session belongs to.
+	testDir = "/work/checkout"
+)
 
 // fakeMsg is one message in the fake's history, in the shape OpenCode 1.18.30
 // lists it: info with the id, role and, for an assistant message, the parent,
@@ -52,6 +57,18 @@ type fakeOpenCode struct {
 	password string
 	msgs     []fakeMsg
 	seq      int
+
+	// dir is the directory the session belongs to. The server itself is taken
+	// to run somewhere else, as a TUI started in another checkout does: like
+	// OpenCode 1.18.30, the fake lists a session's status only under the
+	// session's own directory, and answers {} for a request with none or another.
+	dir         string
+	noDirectory bool
+	statusDirs  []string
+	// nextUserID, if set, is the id the next accepted prompt's message is given
+	// instead of the next in sequence: the server assigns ids when it creates a
+	// message, which is not the order prompts were posted in.
+	nextUserID string
 
 	// manualBusy is a turn the test holds open, as a human's own prompt would.
 	manualBusy bool
@@ -91,7 +108,7 @@ type fakeOpenCode struct {
 
 func newFake(t *testing.T) *fakeOpenCode {
 	t.Helper()
-	f := &fakeOpenCode{t: t, version: "1.18.30", exists: true, turnPolls: 1}
+	f := &fakeOpenCode{t: t, version: "1.18.30", exists: true, turnPolls: 1, dir: testDir}
 	f.start("127.0.0.1:0")
 	t.Cleanup(f.stop)
 	return f
@@ -177,6 +194,15 @@ func (f *fakeOpenCode) seed(role, text string) string {
 	return m.ID
 }
 
+// seedID is seed with an id of the test's choosing.
+func (f *fakeOpenCode) seedID(id, role, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m := f.newMsgLocked(role, "", text)
+	m.ID = id
+	f.msgs = append(f.msgs, m)
+}
+
 func (f *fakeOpenCode) newMsgLocked(role, parent, text string) fakeMsg {
 	f.seq++
 	id := fmt.Sprintf("msg_%012d", f.seq)
@@ -187,17 +213,26 @@ func (f *fakeOpenCode) newMsgLocked(role, parent, text string) fakeMsg {
 	return fakeMsg{ID: id, Role: role, ParentID: parent, Parts: parts}
 }
 
-// userTexts is the text of every user message in the history, oldest first.
+// userTexts is the text of every user message in the history, in id order.
 func (f *fakeOpenCode) userTexts() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
-	for _, m := range f.msgs {
+	msgs := append([]fakeMsg(nil), f.msgs...)
+	sort.SliceStable(msgs, func(i, j int) bool { return msgs[i].ID < msgs[j].ID })
+	for _, m := range msgs {
 		if m.Role == "user" {
 			out = append(out, m.Parts[0]["text"].(string))
 		}
 	}
 	return out
+}
+
+// statusDirsSeen is the directory parameter of every status request so far.
+func (f *fakeOpenCode) statusDirsSeen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.statusDirs...)
 }
 
 func (f *fakeOpenCode) postBodies() []fakePost {
@@ -241,6 +276,12 @@ func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"healthy": true, "version": f.version})
 	case path == "/session/status" && r.Method == http.MethodGet:
 		f.statusReads++
+		dir := r.URL.Query().Get("directory")
+		f.statusDirs = append(f.statusDirs, dir)
+		if dir != f.dir {
+			writeJSON(w, http.StatusOK, map[string]any{})
+			return
+		}
 		if f.statusBusyLocked() {
 			writeJSON(w, http.StatusOK, map[string]any{testSession: map[string]any{"type": "busy"}})
 			return
@@ -255,7 +296,11 @@ func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		switch {
 		case tail == "" && r.Method == http.MethodGet:
-			writeJSON(w, http.StatusOK, map[string]any{"id": id, "title": "t", "directory": "/work"})
+			info := map[string]any{"id": id, "title": "t", "directory": f.dir}
+			if f.noDirectory {
+				delete(info, "directory")
+			}
+			writeJSON(w, http.StatusOK, info)
 		case tail == "message" && r.Method == http.MethodGet:
 			f.messagesLocked(w, r)
 		case tail == "prompt_async" && r.Method == http.MethodPost:
@@ -301,7 +346,9 @@ func (f *fakeOpenCode) messagesLocked(w http.ResponseWriter, r *http.Request) {
 			f.pending = nil
 		}
 	}
-	msgs := f.msgs
+	// The server lists by id, whatever order the messages were created in.
+	msgs := append([]fakeMsg(nil), f.msgs...)
+	sort.SliceStable(msgs, func(i, j int) bool { return msgs[i].ID < msgs[j].ID })
 	if s := r.URL.Query().Get("limit"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 0 {
@@ -342,6 +389,9 @@ func (f *fakeOpenCode) promptLocked(w http.ResponseWriter, r *http.Request) {
 	}
 	if !f.hold {
 		m := f.newMsgLocked("user", "", req.Parts[0].Text)
+		if f.nextUserID != "" {
+			m.ID, f.nextUserID = f.nextUserID, ""
+		}
 		f.pendingID = m.ID
 		if f.userLag > 0 {
 			f.pending, f.lagLeft = append(f.pending, m), f.userLag

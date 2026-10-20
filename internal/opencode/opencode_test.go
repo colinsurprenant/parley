@@ -436,8 +436,9 @@ func TestReadBackTimeoutStopsThePumpWithNothingCommitted(t *testing.T) {
 
 // TestReadBackIsNotSatisfiedByTheSameTextFromBefore: a user message already in
 // the session that holds the very bytes of the delivery, as the previous run's
-// delivery of them would, is not the one just posted. Without the note of the
-// newest message, the read-back would pass at once and the loss would go unseen.
+// delivery of them would, is not the one just posted. Without the note of the ids
+// already in the history, the read-back would pass at once and the loss would go
+// unseen.
 func TestReadBackIsNotSatisfiedByTheSameTextFromBefore(t *testing.T) {
 	f := newFake(t)
 	h := newHarness(t, f, func(c *Config) { c.ReadBackTimeout = 150 * time.Millisecond })
@@ -452,6 +453,132 @@ func TestReadBackIsNotSatisfiedByTheSameTextFromBefore(t *testing.T) {
 	}
 	if c := h.savedCursor(); c != "" {
 		t.Fatalf("a cursor %q was saved on the strength of an older message", c)
+	}
+}
+
+// TestReadBackNeedsNoOrderOfIDs: the server assigns a message's id when it creates
+// the message, and two prompts posted one after the other have been seen to swap.
+// A human's own submit that lands next to the delivery can therefore sort above
+// it, and a read-back that wanted an id greater than the newest one noted would
+// call the delivery lost, stop the pump and send it twice at the next start.
+func TestReadBackNeedsNoOrderOfIDs(t *testing.T) {
+	f := newFake(t)
+	f.seedID("msg_000000001001", "user", "the human typed this a moment ago")
+	f.set(func() { f.nextUserID = "msg_000000000500" })
+	h := newHarness(t, f, func(c *Config) { c.ReadBackTimeout = 300 * time.Millisecond })
+	h.start()
+
+	h.peerSend(peerNick, "created below the newest id")
+	posts := f.waitPosts(1)
+	h.cursorPast("")
+	if got, want := postedText(t, posts[0].Body), h.render(); got != want {
+		t.Fatalf("the posted text is\n%q\nwant\n%q", got, want)
+	}
+	users := f.userTexts()
+	if len(users) != 2 || users[0] != postedText(t, posts[0].Body) {
+		t.Fatalf("the session holds %q, want the delivery (id below) and then the human's message", users)
+	}
+	if strings.Contains(h.logs.String(), "no user message holding it appeared") {
+		t.Fatalf("the read-back timed out:\n%s", h.logs.String())
+	}
+}
+
+// TestRedeliveryAfterACrashIsDeliveredAgain: the history already holds the very
+// text, as the previous run's delivery of it, and the pump posts it again and
+// accepts the new message, not the old one. The pair of this and
+// TestReadBackIsNotSatisfiedByTheSameTextFromBefore is what at-least-once means.
+func TestRedeliveryAfterACrashIsDeliveredAgain(t *testing.T) {
+	f := newFake(t)
+	h := newHarness(t, f, nil)
+	h.peerSend(peerNick, "delivered, then the pump died before it saved the cursor")
+	f.seed("user", h.render())
+	h.start()
+
+	posts := f.waitPosts(1)
+	h.cursorPast("")
+	want := h.render()
+	if postedText(t, posts[0].Body) != want {
+		t.Fatalf("the redelivery is\n%q\nwant\n%q", postedText(t, posts[0].Body), want)
+	}
+	users := f.userTexts()
+	if len(users) != 2 || users[0] != want || users[1] != want {
+		t.Fatalf("the session holds %q, want the old delivery and the new one", users)
+	}
+}
+
+// TestStatusIsAlwaysReadUnderTheSessionsDirectory: the fake lists a turn only
+// under the session's directory, as OpenCode does, and the server is taken to
+// run elsewhere. Every status read the pump made names that directory, and the
+// busy session was waited for, not delivered into.
+func TestStatusIsAlwaysReadUnderTheSessionsDirectory(t *testing.T) {
+	f := newFake(t)
+	f.set(func() { f.manualBusy = true })
+	h := newHarness(t, f, nil)
+	h.start()
+
+	h.peerSend(peerNick, "wait for the turn")
+	deadline := time.Now().Add(testDeadline)
+	for len(f.statusDirsSeen()) < 3 {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the pump never polled the status; logs:\n%s", h.logs.String())
+		}
+		time.Sleep(pollInterval)
+	}
+	if n := len(f.postBodies()); n != 0 {
+		t.Fatalf("%d prompt(s) posted into a busy session", n)
+	}
+	f.set(func() { f.manualBusy = false })
+	f.waitPosts(1)
+	h.cursorPast("")
+	for _, d := range f.statusDirsSeen() {
+		if d != testDir {
+			t.Fatalf("a status read named directory %q, want the session's %q: %q", d, testDir, f.statusDirsSeen())
+		}
+	}
+}
+
+// TestTheDirectoryIsReadAgainWhenTheServerComesBack: the pump does not carry the
+// directory across an outage as a fact, because the server that answers after it
+// may be another one, and the status is read under what the session says now.
+func TestTheDirectoryIsReadAgainWhenTheServerComesBack(t *testing.T) {
+	f := newFake(t)
+	h := newHarness(t, f, nil)
+	h.start()
+
+	h.peerSend(peerNick, "first")
+	f.waitPosts(1)
+	h.cursorPast("")
+
+	addr := f.address()
+	f.stop()
+	h.peerSend(peerNick, "second, while the TUI restarts")
+	h.waitLog("OpenCode is not answering")
+	f.set(func() { f.dir = "/work/the-session-moved" })
+	f.start(addr)
+	f.waitPosts(2)
+
+	dirs := f.statusDirsSeen()
+	if last := dirs[len(dirs)-1]; last != "/work/the-session-moved" {
+		t.Fatalf("the last status read was under %q, want the directory the session reports now: %q", last, dirs)
+	}
+}
+
+func TestASessionWithNoDirectoryStopsThePump(t *testing.T) {
+	f := newFake(t)
+	f.set(func() { f.noDirectory = true })
+	h := newHarness(t, f, nil)
+	h.start()
+
+	h.peerSend(peerNick, "nowhere to watch")
+	err := h.join()
+	if err == nil || !strings.Contains(err.Error(), "no directory") {
+		t.Fatalf("Run returned %v, want the missing directory", err)
+	}
+	if n := len(f.postBodies()); n != 0 {
+		t.Fatalf("%d prompt(s) posted", n)
+	}
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved", c)
 	}
 }
 

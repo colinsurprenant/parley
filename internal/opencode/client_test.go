@@ -114,25 +114,76 @@ func TestHealthOfOpenCode2IsARefusalNotADecodeError(t *testing.T) {
 	}
 }
 
-func TestSessionExists(t *testing.T) {
+func TestSession(t *testing.T) {
 	f := newFake(t)
 	c := f.client()
 	ctx := context.Background()
-	if err := c.SessionExists(ctx, testSession); err != nil {
-		t.Fatalf("SessionExists of a known session: %v", err)
+	info, err := c.Session(ctx, testSession)
+	if err != nil || info.ID != testSession || info.Directory != testDir {
+		t.Fatalf("Session of a known session = %+v, %v; want its id and directory %s", info, err, testDir)
 	}
-	if err := c.SessionExists(ctx, "ses_000000000000000000000000AA"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("SessionExists of an unknown one = %v, want ErrSessionNotFound", err)
+	if _, err := c.Session(ctx, "ses_000000000000000000000000AA"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Session of an unknown one = %v, want ErrSessionNotFound", err)
 	}
 	// An answer for another session is not an answer for this one.
-	other := serving(t, answering(200, `{"id":"ses_000000000000000000000000AA"}`))
-	if err := other.SessionExists(ctx, testSession); err == nil {
-		t.Fatal("SessionExists accepted the answer for another session")
+	other := serving(t, answering(200, `{"id":"ses_000000000000000000000000AA","directory":"/x"}`))
+	if _, err := other.Session(ctx, testSession); err == nil {
+		t.Fatal("Session accepted the answer for another session")
 	}
-	for _, body := range []string{`{}`, `[]`, `{"id":7}`, `x`} {
-		if err := serving(t, answering(200, body)).SessionExists(ctx, testSession); err == nil {
-			t.Errorf("SessionExists accepted %s", body)
+	// The directory is what the status is read under: a session without one is
+	// one this front cannot watch.
+	for name, body := range map[string]string{
+		"nothing":          `{}`,
+		"a list":           `[]`,
+		"id a number":      `{"id":7,"directory":"/x"}`,
+		"no directory":     `{"id":"` + testSession + `"}`,
+		"empty directory":  `{"id":"` + testSession + `","directory":""}`,
+		"directory a list": `{"id":"` + testSession + `","directory":["/x"]}`,
+		"not json":         `x`,
+	} {
+		if info, err := serving(t, answering(200, body)).Session(ctx, testSession); err == nil {
+			t.Errorf("Session accepted %s (%s): %+v", name, body, info)
 		}
+	}
+	f.set(func() { f.noDirectory = true })
+	if _, err := f.client().Session(ctx, testSession); err == nil || !strings.Contains(err.Error(), "no directory") {
+		t.Errorf("Session of one with no directory = %v", err)
+	}
+}
+
+// TestBusyIsReadUnderTheSessionsDirectory is the scoping OpenCode 1.18.30 has:
+// the fake, like the server, lists a turn under the session's directory and
+// answers {} to any other, so a client that left the directory out, or asked for
+// the server's own, would read a session in the middle of a turn as idle.
+func TestBusyIsReadUnderTheSessionsDirectory(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	f.set(func() { f.manualBusy = true })
+	c := f.client()
+	if busy, err := c.Busy(ctx, testSession, testDir); err != nil || !busy {
+		t.Fatalf("Busy under the session's directory = %v, %v; want busy", busy, err)
+	}
+	for _, other := range []string{"/srv/where-the-server-runs", testDir + "/sub"} {
+		if busy, err := c.Busy(ctx, testSession, other); err != nil || busy {
+			t.Fatalf("the fake listed the turn under %s: %v, %v", other, busy, err)
+		}
+	}
+	reads := len(f.statusDirsSeen())
+	if _, err := c.Busy(ctx, testSession, ""); err == nil {
+		t.Fatal("Busy with no directory was accepted")
+	}
+	if n := len(f.statusDirsSeen()); n != reads {
+		t.Fatalf("Busy with no directory made a request anyway")
+	}
+	// A directory with characters a query string treats as its own arrives whole.
+	odd := "/work/my checkout&x=1/é"
+	seen := ""
+	srv := serving(t, func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.Query().Get("directory")
+		answering(200, `{}`)(w, r)
+	})
+	if _, err := srv.Busy(ctx, testSession, odd); err != nil || seen != odd {
+		t.Fatalf("the server saw directory %q (err %v), want %q", seen, err, odd)
 	}
 }
 
@@ -149,7 +200,7 @@ func TestBusy(t *testing.T) {
 		"retry":                  {`{"` + testSession + `":{"type":"retry","attempt":2,"message":"x","next":9}}`, true},
 		"a type from the future": {`{"` + testSession + `":{"type":"compacting"}}`, true},
 	} {
-		got, err := serving(t, answering(200, tc.body)).Busy(ctx, testSession)
+		got, err := serving(t, answering(200, tc.body)).Busy(ctx, testSession, testDir)
 		if err != nil || got != tc.busy {
 			t.Errorf("%s: Busy = %v, %v; want %v", name, got, err, tc.busy)
 		}
@@ -163,7 +214,7 @@ func TestBusy(t *testing.T) {
 		"type a number": `{"` + testSession + `":{"type":1}}`,
 		"not json":      `busy`,
 	} {
-		if got, err := serving(t, answering(200, body)).Busy(ctx, testSession); err == nil {
+		if got, err := serving(t, answering(200, body)).Busy(ctx, testSession, testDir); err == nil {
 			t.Errorf("Busy accepted %s (%s): %v", name, body, got)
 		}
 	}
@@ -317,12 +368,12 @@ func TestResponseBodiesAreBounded(t *testing.T) {
 	// Within the bound, a long answer is still read: a key of 5 KiB is no limit.
 	long := strings.Repeat("x", 5<<10)
 	c := serving(t, answering(200, `{"`+long+`":{"type":"busy"}}`))
-	if busy, err := c.Busy(context.Background(), testSession); err != nil || busy {
+	if busy, err := c.Busy(context.Background(), testSession, testDir); err != nil || busy {
 		t.Fatalf("Busy of a %d byte answer = %v, %v", len(long), busy, err)
 	}
 	huge := strings.Repeat("x", maxStatusBody+1)
 	c = serving(t, answering(200, `{"`+huge+`":{"type":"busy"}}`))
-	if _, err := c.Busy(context.Background(), testSession); err == nil || !strings.Contains(err.Error(), "longer than") {
+	if _, err := c.Busy(context.Background(), testSession, testDir); err == nil || !strings.Contains(err.Error(), "longer than") {
 		t.Fatalf("Busy of a %d byte answer = %v, want the bound", len(huge), err)
 	}
 	// An error body is quoted bounded and printable.

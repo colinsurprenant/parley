@@ -145,6 +145,42 @@ func TestOpencodePostsTheDeliveryIntoTheSession(t *testing.T) {
 	}
 }
 
+// TestOpencodeWaitsOutATurnItReadsUnderTheSessionsDirectory: the server lists a
+// turn only under the directory the session belongs to, and the pump runs against
+// one that is not where it is run from. A pump that read the status without the
+// session's directory would see an idle session and post into the turn.
+func TestOpencodeWaitsOutATurnItReadsUnderTheSessionsDirectory(t *testing.T) {
+	dir := resolvedTempDir(t)
+	spec := "file:" + filepath.Join(dir, "chat.ndjson")
+	srv := newOCServer(t)
+	srv.set(func() { srv.busy = true })
+
+	cmd, _, stderr := startOpencode(t, ocEnv(), ocArgs(spec, "oc-a", srv.port(), ocSession, t.TempDir())...)
+	waitForStderr(t, stderr, "into OpenCode session")
+	mustRun(t, "", "send", "--stream", spec, "--nick", "claude-b", "--", "wait for it")
+	// The pump polls a busy session every half second; give it several.
+	deadline := time.Now().Add(childDeadline)
+	for len(srv.statusDirsSeen()) < 3 {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the pump never polled the status:\n%s", stderr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := len(srv.postBodies()); n != 0 {
+		t.Fatalf("%d prompt(s) posted into a session in the middle of a turn", n)
+	}
+	srv.set(func() { srv.busy = false })
+	srv.waitPosts(1, stderr)
+	for _, d := range srv.statusDirsSeen() {
+		if d != ocDir {
+			t.Fatalf("a status read named directory %q, want the session's %q", d, ocDir)
+		}
+	}
+	if err := stopOpencode(t, cmd, stderr); err != nil {
+		t.Fatalf("opencode exited %v", err)
+	}
+}
+
 // TestOpencodeRestartDoesNotDeliverAgain: the cursor saved once the history
 // showed a delivery carries a restart past it, and a message after it is a
 // delivery of its own.
@@ -310,23 +346,52 @@ func TestOpencodeSessionAutoWithoutAUsableRecord(t *testing.T) {
 	spec := "file:" + filepath.Join(dir, "chat.ndjson")
 	srv := newOCServer(t)
 
-	t.Run("no record", func(t *testing.T) {
-		stateDir := t.TempDir()
-		res := runParleyEnv(t, ocEnv(), "", append([]string{"opencode"}, ocArgs(spec, "oc-a", srv.port(), "auto", stateDir)...)...)
-		if res.code != 2 {
-			t.Fatalf("exited %d, want 2\nstderr: %s", res.code, res.stderr)
-		}
-		rec, _ := state.OpenSessionRecord(stateDir, "oc-a", spec)
-		for _, want := range []string{"no OpenCode session is recorded", `"oc-a"`, rec.Path(), "--session <id>"} {
-			if !strings.Contains(res.stderr, want) {
-				t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+	// What it is told to do about it depends on the skill: a line's session is
+	// recorded by `parley line add`, and a table or a build takes no OpenCode
+	// seat yet, so nothing records one for them.
+	for name, tc := range map[string]struct {
+		extra []string
+		want  []string
+		not   []string
+	}{
+		"no record on a line": {
+			extra: []string{"--skill", "line", "--chair", "colin", "--cap", "3"},
+			want:  []string{"parley line add --harness opencode", "or pass --session <id>"},
+			not:   []string{"take no OpenCode seats"},
+		},
+		"no record on a build": {
+			want: []string{"tables and builds take no OpenCode seats yet", "pass --session <id>"},
+			not:  []string{"parley line add"},
+		},
+		"no record on a table": {
+			extra: []string{"--skill", "table", "--chair", "colin", "--cap", "3"},
+			want:  []string{"tables and builds take no OpenCode seats yet", "pass --session <id>"},
+			not:   []string{"parley line add"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			res := runParleyEnv(t, ocEnv(), "", append([]string{"opencode"}, ocArgs(spec, "oc-a", srv.port(), "auto", stateDir, tc.extra...)...)...)
+			if res.code != 2 {
+				t.Fatalf("exited %d, want 2\nstderr: %s", res.code, res.stderr)
 			}
-		}
-		noLockTaken(t, stateDir, "oc-a")
-		if n := len(srv.postBodies()); n != 0 {
-			t.Errorf("%d prompts", n)
-		}
-	})
+			rec, _ := state.OpenSessionRecord(stateDir, "oc-a", spec)
+			for _, want := range append([]string{"no OpenCode session is recorded", `"oc-a"`, rec.Path()}, tc.want...) {
+				if !strings.Contains(res.stderr, want) {
+					t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+				}
+			}
+			for _, not := range tc.not {
+				if strings.Contains(res.stderr, not) {
+					t.Errorf("stderr says %q:\n%s", not, res.stderr)
+				}
+			}
+			noLockTaken(t, stateDir, "oc-a")
+			if n := len(srv.postBodies()); n != 0 {
+				t.Errorf("%d prompts", n)
+			}
+		})
+	}
 	t.Run("a malformed record", func(t *testing.T) {
 		stateDir := t.TempDir()
 		rec, _ := state.OpenSessionRecord(stateDir, "oc-a", spec)

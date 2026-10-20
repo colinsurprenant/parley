@@ -108,7 +108,7 @@ func cmdOpencode(args []string) error {
 	// not cost the nick an account, a connection or its lock to say so.
 	sessionID, source := *session, ""
 	if *session == sessionAuto {
-		if sessionID, source, err = recordedSession(*stateDir, *nick, *spec); err != nil {
+		if sessionID, source, err = recordedSession(*stateDir, *nick, *spec, skill); err != nil {
 			return err
 		}
 	} else if !state.ValidSessionID(sessionID) {
@@ -153,7 +153,7 @@ func cmdOpencode(args []string) error {
 	// nothing; a command that removed it in between has released the lock, so it
 	// is read again now that this pump holds the nick.
 	if *session == sessionAuto {
-		again, _, err := recordedSession(*stateDir, *nick, *spec)
+		again, _, err := recordedSession(*stateDir, *nick, *spec, skill)
 		if err != nil {
 			return fmt.Errorf("the recorded session is gone since this pump started: %w", err)
 		}
@@ -202,10 +202,11 @@ func probeFailure(port int, session string, err error) error {
 // recordedSession reads the session the record beside the cursor names for nick
 // on the stream spec, for --session auto. It returns the id and a note for the
 // start line saying where it came from. A missing or unreadable record is a
-// configuration error: the invocation asked for something that is not there. The
+// configuration error: the invocation asked for something that is not there, and
+// what it is told to do about it depends on the skill. The
 // spec is canonicalized here as openStream will, and nothing is opened or
 // created.
-func recordedSession(stateDir, nick, spec string) (id, source string, err error) {
+func recordedSession(stateDir, nick, spec string, skill primer.Skill) (id, source string, err error) {
 	canonical, _, err := resolveSpec(spec)
 	if err != nil {
 		return "", "", err
@@ -219,7 +220,13 @@ func recordedSession(stateDir, nick, spec string) (id, source string, err error)
 		return "", "", cfgErrf("--session %s: %v: pass --session <id> instead", sessionAuto, err)
 	}
 	if id == "" {
-		return "", "", cfgErrf("--session %s: no OpenCode session is recorded for nick %q on %s (looked for %s): pass --session <id> for the session the TUI runs (`opencode session list` shows them)", sessionAuto, nick, canonical, rec.Path())
+		// The record is written by `parley line add --harness opencode` and by
+		// nothing else yet: a table or a build takes no OpenCode seat, so advice
+		// to start one would send its user to a verb that cannot.
+		if skill == primer.SkillLine {
+			return "", "", cfgErrf("--session %s: no OpenCode session is recorded for nick %q on %s (looked for %s): run `parley line add --harness opencode` to put the session on the line and record it, or pass --session <id> for one you started by hand (`opencode session list` shows them)", sessionAuto, nick, canonical, rec.Path())
+		}
+		return "", "", cfgErrf("--session %s: no OpenCode session is recorded for nick %q on %s (looked for %s): tables and builds take no OpenCode seats yet, so nothing records one for them; pass --session <id> for the session the TUI runs (`opencode session list` shows them)", sessionAuto, nick, canonical, rec.Path())
 	}
 	return id, fmt.Sprintf(" (--session %s, from %s)", sessionAuto, rec.Path()), nil
 }

@@ -49,12 +49,16 @@ type Part struct {
 type Client interface {
 	// Health returns the server's version string.
 	Health(ctx context.Context) (version string, err error)
-	// SessionExists returns nil if the server knows the session, and
-	// ErrSessionNotFound if it does not.
-	SessionExists(ctx context.Context, session string) error
+	// Session returns what the server knows of the session, or
+	// ErrSessionNotFound if it does not know it.
+	Session(ctx context.Context, session string) (SessionInfo, error)
 	// Busy reports whether the session is in the middle of a turn. A session
 	// the server does not list is idle: OpenCode lists the sessions that are not.
-	Busy(ctx context.Context, session string) (bool, error)
+	// directory is the session's own directory, as Session reported it, and is
+	// required: OpenCode keeps a session's status under the directory the session
+	// belongs to, and a status read for any other directory, the one the server
+	// itself runs in included, lists nothing and so reads every session idle.
+	Busy(ctx context.Context, session, directory string) (bool, error)
 	// Messages returns the newest limit messages of the session, oldest first.
 	// limit must be positive: OpenCode reads zero as "all of them".
 	Messages(ctx context.Context, session string, limit int) ([]Message, error)
@@ -62,6 +66,15 @@ type Client interface {
 	// on it, returning once the server has accepted it. Acceptance is not
 	// arrival: the message lands in the history a moment later.
 	Prompt(ctx context.Context, session, text string) error
+}
+
+// SessionInfo is the part of a session the front needs.
+type SessionInfo struct {
+	ID string
+	// Directory is the absolute directory the session belongs to, the checkout
+	// it was started in. It need not be the directory the server runs in: a TUI
+	// can be started in one directory on a session of another.
+	Directory string
 }
 
 // ErrSessionNotFound is the server's answer, a 404, for a session it does not
@@ -387,42 +400,62 @@ func sessionPath(session, tail string) string {
 	return "/session/" + url.PathEscape(session) + tail
 }
 
-// SessionExists implements Client: GET /session/{id}.
-func (c *HTTPClient) SessionExists(ctx context.Context, session string) error {
+// Session implements Client: GET /session/{id}. The session's directory is
+// required by OpenCode's own schema and by this front: without it the status of
+// the session cannot be read, and a front that guessed would deliver into a turn
+// it could not see.
+func (c *HTTPClient) Session(ctx context.Context, session string) (SessionInfo, error) {
 	path := sessionPath(session, "")
 	op := "GET " + path
 	code, body, err := c.do(ctx, http.MethodGet, path, nil, nil, maxSessionBody)
 	if err != nil {
-		return err
+		return SessionInfo{}, err
 	}
 	switch code {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return fmt.Errorf("%w: %s", ErrSessionNotFound, session)
+		return SessionInfo{}, fmt.Errorf("%w: %s", ErrSessionNotFound, session)
 	default:
-		return statusError(op, code, body)
+		return SessionInfo{}, statusError(op, code, body)
 	}
 	var s struct {
-		ID *string `json:"id"`
+		ID        *string `json:"id"`
+		Directory *string `json:"directory"`
 	}
 	if err := decode(op, body, &s); err != nil {
-		return err
+		return SessionInfo{}, err
 	}
 	// The server answered for the session it was asked for, not another.
 	if s.ID == nil || *s.ID != session {
-		return fmt.Errorf("opencode: %s: the answer is for another session", op)
+		return SessionInfo{}, fmt.Errorf("opencode: %s: the answer is for another session", op)
 	}
-	return nil
+	if s.Directory == nil || *s.Directory == "" {
+		return SessionInfo{}, fmt.Errorf("opencode: %s: the session has no directory, which its status is read under", op)
+	}
+	return SessionInfo{ID: *s.ID, Directory: *s.Directory}, nil
 }
 
-// Busy implements Client: GET /session/status, which answers a map of the
-// sessions that are not idle, each {"type":"busy"}, {"type":"retry",...} or
-// {"type":"idle"}. Anything but idle is a turn in progress, a type this front
-// has never seen included: delivering into a session that might be mid-turn is
-// the one mistake here that cannot be taken back.
-func (c *HTTPClient) Busy(ctx context.Context, session string) (bool, error) {
+// Busy implements Client: GET /session/status?directory=<the session's>, which
+// answers a map of the sessions of that directory that are not idle, each
+// {"type":"busy"}, {"type":"retry",...} or {"type":"idle"}. Anything but idle is
+// a turn in progress, a type this front has never seen included: delivering into
+// a session that might be mid-turn is the one mistake here that cannot be taken
+// back.
+//
+// The directory is not optional. Checked on 1.18.30 with a server running in one
+// directory and a session of another: the status of a turn started on that
+// session, however the prompt was posted (with no directory, or with the
+// server's), is listed under the session's directory and nowhere else, and the
+// same request without the parameter, or with the server's own directory, answers
+// {} for the whole turn. The other session routes this front uses (the session
+// itself, its messages, prompt_async) find the session by id and take no
+// directory.
+func (c *HTTPClient) Busy(ctx context.Context, session, directory string) (bool, error) {
 	const op = "GET /session/status"
-	code, body, err := c.do(ctx, http.MethodGet, "/session/status", nil, nil, maxStatusBody)
+	if directory == "" {
+		return false, errors.New("opencode: the status of a session is read under its directory, and none was given")
+	}
+	code, body, err := c.do(ctx, http.MethodGet, "/session/status", url.Values{"directory": {directory}}, nil, maxStatusBody)
 	if err != nil {
 		return false, err
 	}
@@ -449,8 +482,10 @@ func (c *HTTPClient) Busy(ctx context.Context, session string) (bool, error) {
 }
 
 // Messages implements Client: GET /session/{id}/message?limit=N. Verified on
-// OpenCode 1.18.30: limit=N returns the newest N messages, oldest of them first,
-// and limit=0 returns every message.
+// OpenCode 1.18.30: limit=N returns the newest N messages, oldest of them first
+// (by message id, which the server assigns when it creates the message, so the
+// order is the server's and not the order the prompts were posted in), and
+// limit=0 returns every message.
 func (c *HTTPClient) Messages(ctx context.Context, session string, limit int) ([]Message, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("opencode: message limit %d: OpenCode reads a limit below 1 as no limit", limit)

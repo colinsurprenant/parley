@@ -18,6 +18,11 @@ import (
 // makes.
 const ocSession = "ses_ea8bbe5a9ffePFZ3AOhDdaNgbW"
 
+// ocDir is the directory the fake's sessions belong to. The fake, like OpenCode
+// 1.18.30, lists a session's status only under that directory, and the server
+// is taken to run in another.
+const ocDir = "/work/checkout"
+
 // ocServer is a stand-in for the OpenCode 1 server a TUI serves, for the tests
 // that run the real binary against it. It answers the five calls the front makes
 // and models a session whose every prompt is answered at once: the user message
@@ -36,7 +41,10 @@ type ocServer struct {
 	password string
 	msgs     []ocMsg
 	seq      int
-	posts    [][]byte
+	// busy is a turn in progress on every session, listed under ocDir.
+	busy       bool
+	statusDirs []string
+	posts      [][]byte
 	// refused counts the requests turned away for their credentials.
 	refused int
 }
@@ -69,6 +77,12 @@ func (s *ocServer) set(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fn()
+}
+
+func (s *ocServer) statusDirsSeen() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.statusDirs...)
 }
 
 func (s *ocServer) postBodies() [][]byte {
@@ -111,6 +125,12 @@ func (s *ocServer) serve(w http.ResponseWriter, r *http.Request) {
 	case path == "/global/health" && r.Method == http.MethodGet:
 		ocJSON(w, http.StatusOK, map[string]any{"healthy": true, "version": s.version})
 	case path == "/session/status" && r.Method == http.MethodGet:
+		dir := r.URL.Query().Get("directory")
+		s.statusDirs = append(s.statusDirs, dir)
+		if s.busy && dir == ocDir {
+			ocJSON(w, http.StatusOK, map[string]any{ocSession: map[string]any{"type": "busy"}})
+			return
+		}
 		ocJSON(w, http.StatusOK, map[string]any{})
 	case strings.HasPrefix(path, "/session/"):
 		id, tail, _ := strings.Cut(strings.TrimPrefix(path, "/session/"), "/")
@@ -120,7 +140,7 @@ func (s *ocServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		switch {
 		case tail == "" && r.Method == http.MethodGet:
-			ocJSON(w, http.StatusOK, map[string]any{"id": id})
+			ocJSON(w, http.StatusOK, map[string]any{"id": id, "directory": ocDir})
 		case tail == "message" && r.Method == http.MethodGet:
 			s.listLocked(w, r)
 		case tail == "prompt_async" && r.Method == http.MethodPost:
