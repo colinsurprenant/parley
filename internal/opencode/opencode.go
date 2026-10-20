@@ -42,8 +42,9 @@
 // that arrived meanwhile is still in the stream, and it reads again from the
 // cursor it started at, so the backlog goes over as one delivery rather than
 // one turn each. It then notes which messages the session's recent history
-// holds, posts, and reads the history back until a user message that was not
-// among them holds the text. The server answers 204 before the message exists,
+// holds, posts, and reads the history back, paging back from the newest when
+// the turn has already written more than a page since the post, until a user
+// message that was not among them holds the text. The server answers 204 before the message exists,
 // so the post alone proves nothing, and checking the bytes also proves the
 // header arrived. The note is a set of ids and not the newest id, because the
 // server assigns ids as it creates messages, not in the order they were posted
@@ -113,6 +114,13 @@ const (
 	// kept small: ten of them is a lot to ask of a session that has been running
 	// tools, and is more than the read-back needs.
 	historyWindow = 10
+
+	// maxReadBackPages bounds how far back one look for the delivered message
+	// pages. A page is historyWindow messages, or narrowWindow after a narrowing,
+	// and a turn that has written that many pages of messages in the seconds since
+	// the post is not one to confirm a delivery from; the look is made again at
+	// the next poll, from the newest, until the phase is up.
+	maxReadBackPages = 10
 
 	// narrowWindow replaces historyWindow, for the delivery in hand, when a read
 	// of the newest historyWindow comes back over the bound a reply is read under.
@@ -470,11 +478,11 @@ func (p *Pump) attach(ctx context.Context) error {
 // nothing it could show of the history would confirm a delivery.
 func (p *Pump) recentIDs(ctx context.Context) (known map[string]struct{}, window int, err error) {
 	window = historyWindow
-	msgs, err := p.client.Messages(ctx, p.session, window)
+	page, err := p.client.Messages(ctx, p.session, window, "")
 	if IsTooLong(err) {
 		p.logf("the newest %d messages of session %s are over the bound this front reads a reply under: reading the newest %d instead", window, p.session, narrowWindow)
 		window = narrowWindow
-		msgs, err = p.client.Messages(ctx, p.session, window)
+		page, err = p.client.Messages(ctx, p.session, window, "")
 		if IsTooLong(err) {
 			return nil, 0, fmt.Errorf("the newest %d messages of session %s are still over the %d bytes this front reads a history reply under, after narrowing the read from %d messages: nothing was sent, and no delivery into the session could be confirmed until its recent history is smaller (compact the session in the TUI): %w", narrowWindow, p.session, tooLongLimit(err), historyWindow, err)
 		}
@@ -482,8 +490,8 @@ func (p *Pump) recentIDs(ctx context.Context) (known map[string]struct{}, window
 	if err != nil {
 		return nil, 0, fmt.Errorf("read the recent messages of session %s: %w", p.session, err)
 	}
-	known = make(map[string]struct{}, len(msgs))
-	for _, m := range msgs {
+	known = make(map[string]struct{}, len(page.Messages))
+	for _, m := range page.Messages {
 		known[m.ID] = struct{}{}
 	}
 	return known, window, nil
@@ -492,13 +500,15 @@ func (p *Pump) recentIDs(ctx context.Context) (known map[string]struct{}, window
 // readBack polls the history until a user message that is not in known holds a
 // text part byte for byte equal to text, and returns its id and the window it
 // read with. known is the set recentIDs took before the post, over the newest
-// window messages, and messages only ever join that window at its newest end: one
-// outside it then cannot be inside it now, so a message that is not in known is
-// one created since. Nothing is assumed of the order of ids. A delivery that is
+// window messages, and messages only ever join the history at its newest end: one
+// that is not in known, on a page that reaches back no further than a message that
+// is, was created since. Nothing is assumed of the order of ids. A delivery that is
 // already in the history, as the previous run's would be after a crash, is in
-// known and is told apart from the one just posted. A server that is away while
-// this runs is not a failure of it: the post was accepted, and the message may
-// yet show.
+// known and is told apart from the one just posted. Each poll pages back from the
+// newest (see findDelivered), so a turn that writes more than a window of messages
+// between the post and a poll that succeeds does not push the delivered message
+// out of sight. A server that is away while this runs is not a failure of it: the
+// post was accepted, and the message may yet show.
 //
 // The whole of it is bounded by readBackTimeout, by a deadline on the context of
 // every call and not by a look at the clock between them: a request that stalls
@@ -511,15 +521,12 @@ func (p *Pump) readBack(ctx context.Context, known map[string]struct{}, window i
 	defer cancel()
 	var last error
 	for {
-		msgs, err := p.client.Messages(phase, p.session, window)
+		id, err := p.findDelivered(phase, known, window, text)
 		switch {
+		case err == nil && id != "":
+			return id, window, nil
 		case err == nil:
 			last = nil
-			for _, m := range msgs {
-				if _, old := known[m.ID]; !old && m.Role == "user" && hasText(m, text) {
-					return m.ID, window, nil
-				}
-			}
 		case ctx.Err() != nil:
 			return "", window, ctx.Err()
 		case phase.Err() != nil:
@@ -546,6 +553,40 @@ func (p *Pump) readBack(ctx context.Context, known map[string]struct{}, window i
 			return "", window, fmt.Errorf("the server accepted the delivery but no user message holding it appeared in session %s within %s%s; nothing was committed, so it is delivered again at the next start", p.session, p.readBackTimeout, detail)
 		}
 	}
+}
+
+// findDelivered makes one look for the delivered message: it reads the newest
+// page of the history and, while the message is not on it, the pages before,
+// each of window messages. It stops, finding nothing, at the first page that has
+// a message of known on it, because everything older than that predates the post,
+// and at the last page there is, and at maxReadBackPages. The paging is the
+// answer to a turn that is quicker than the polling: the assistant messages it
+// has written since the post can be more than a page, and the delivered message
+// is then behind them. It returns the id of the message, or "" if it is not there
+// to be found yet.
+func (p *Pump) findDelivered(ctx context.Context, known map[string]struct{}, window int, text string) (string, error) {
+	before := ""
+	for pages := 0; pages < maxReadBackPages; pages++ {
+		page, err := p.client.Messages(ctx, p.session, window, before)
+		if err != nil {
+			return "", err
+		}
+		predates := false
+		for _, m := range page.Messages {
+			if _, old := known[m.ID]; old {
+				predates = true
+				continue
+			}
+			if m.Role == "user" && hasText(m, text) {
+				return m.ID, nil
+			}
+		}
+		if predates || page.Next == "" || len(page.Messages) == 0 {
+			return "", nil
+		}
+		before = page.Next
+	}
+	return "", nil
 }
 
 // tooLongLimit is the bound a TooLongError says it was over.
@@ -586,8 +627,8 @@ func (p *Pump) settle(ctx context.Context, userID string, window int) {
 		if busy, err := p.client.Busy(phase, p.session, p.directory); err == nil && busy {
 			return
 		}
-		if msgs, err := p.client.Messages(phase, p.session, window); err == nil {
-			for _, m := range msgs {
+		if page, err := p.client.Messages(phase, p.session, window, ""); err == nil {
+			for _, m := range page.Messages {
 				if m.Role == "assistant" && m.ParentID == userID {
 					return
 				}
@@ -625,10 +666,12 @@ func (p *Pump) logf(format string, a ...any) {
 }
 
 // CheckVersion refuses a server this front cannot speak to: one whose major
-// version is 2 or more, or whose version cannot be read. The front speaks
-// OpenCode 1's HTTP API, whose prompt endpoint is prompt_async; OpenCode 2 has a
-// different one, and a front that guessed at it could deliver into the wrong
-// place or nowhere. The version comes from the server, so what is quoted of it is
+// version is anything but 1, or whose version cannot be read. The front speaks
+// OpenCode 1's HTTP API, whose prompt endpoint is prompt_async, and was verified
+// on 1.18.30. OpenCode 2 has a different one, and a front that guessed at it could
+// deliver into the wrong place or nowhere; a 0 is a version this front was never
+// shown (a development build, a release from before 1), and is no more a thing to
+// guess at. The version comes from the server, so what is quoted of it is
 // bounded.
 func CheckVersion(version string) error {
 	head, _, _ := strings.Cut(version, ".")
@@ -636,8 +679,11 @@ func CheckVersion(version string) error {
 	if err != nil || head == "" || strings.HasPrefix(head, "+") || strings.HasPrefix(head, "-") {
 		return fmt.Errorf("cannot read an OpenCode version from %s: this front speaks OpenCode 1's HTTP API and is not supported on anything it cannot recognise as OpenCode 1; %s", quoteBounded(version), Install1Hint)
 	}
-	if major >= 2 {
+	switch {
+	case major >= 2:
 		return fmt.Errorf("OpenCode 2 is not supported yet: the server reports version %s, and this front speaks OpenCode 1's HTTP API (prompt_async), which OpenCode 2 does not have; %s", quoteBounded(version), Install1Hint)
+	case major < 1:
+		return fmt.Errorf("OpenCode %s is not supported: this front speaks OpenCode 1's HTTP API (prompt_async) and was verified on 1.x, not on a version 0; %s", quoteBounded(version), Install1Hint)
 	}
 	return nil
 }

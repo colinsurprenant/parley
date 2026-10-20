@@ -24,6 +24,8 @@ type spy struct {
 	// messages, if set, is asked before each history read with the limit and the
 	// number of the read, counting from one; a non-nil answer stands for the read.
 	messages func(limit, call int) error
+	// befores is the before cursor of every history read, in order.
+	befores []string
 }
 
 func (s *spy) Health(ctx context.Context) (string, error) {
@@ -33,17 +35,31 @@ func (s *spy) Health(ctx context.Context) (string, error) {
 	return s.Client.Health(ctx)
 }
 
-func (s *spy) Messages(ctx context.Context, session string, limit int) ([]Message, error) {
+func (s *spy) Messages(ctx context.Context, session string, limit int, before string) (MessagePage, error) {
 	s.mu.Lock()
 	s.limits = append(s.limits, limit)
+	s.befores = append(s.befores, before)
 	n, hook := len(s.limits), s.messages
 	s.mu.Unlock()
 	if hook != nil {
 		if err := hook(limit, n); err != nil {
-			return nil, err
+			return MessagePage{}, err
 		}
 	}
-	return s.Client.Messages(ctx, session, limit)
+	return s.Client.Messages(ctx, session, limit, before)
+}
+
+// pagedReads is how many history reads asked for a page before another.
+func (s *spy) pagedReads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, b := range s.befores {
+		if b != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *spy) seenHealth() int {
