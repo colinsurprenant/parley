@@ -53,6 +53,8 @@ func run(args []string) int {
 		err = cmdChannel(args[1:])
 	case "codex":
 		err = cmdCodex(args[1:])
+	case "opencode":
+		err = cmdOpencode(args[1:])
 	case "primer":
 		err = cmdPrimer(args[1:])
 	case "server":
@@ -100,6 +102,8 @@ usage:
   parley channel --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m]
                  [--debounce 250ms] [--state-dir <dir>] [--check]
   parley codex   --stream <spec> --nick <nick> --thread <thread>|auto [--debounce 250ms] [--state-dir <dir>] [--codex-bin codex]
+                 [--skill build|table|line --chair <nick> --cap <n> [--window 10m]]
+  parley opencode --stream <spec> --nick <nick> --session <ses_id>|auto --port <n> [--debounce 250ms] [--state-dir <dir>]
                  [--skill build|table|line --chair <nick> --cap <n> [--window 10m]]
   parley primer  --front claude|codex --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir>
                  [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]
@@ -151,6 +155,34 @@ verbs:
            in the codex-thread file beside the cursor. auto is reserved, so a
            session literally named auto is passed by its UUID; with no record
            it exits 2
+  opencode run in the foreground and deliver into a live OpenCode session, one
+           user message per delivery, over the HTTP API the OpenCode TUI serves
+           when it is started with "opencode --port <n> --session <id>" in the
+           session's checkout. --port is that <n>; the pump connects to
+           127.0.0.1 and nowhere else, and if the server was started with
+           OPENCODE_SERVER_PASSWORD the pump reads the same variable, and
+           OPENCODE_SERVER_USERNAME (opencode by default), for HTTP basic
+           credentials. The message is the delivery exactly as "parley wait"
+           would print it, peer header included, as the only text part of the
+           request and with no system prompt of its own: the header is the only
+           mark OpenCode gets. OpenCode has no queue, and a message sent while
+           a turn runs would be folded into that turn, so the pump delivers
+           only into an idle session: if it had to wait, everything that came
+           meanwhile goes as one delivery. It counts a delivery as made once the
+           session's history shows a user message with exactly that text, and
+           commits only then, so a crash re-delivers and does not drop. A human
+           submitting in the TUI at the instant of the post is merged into the
+           human's own turn, which the server's API cannot prevent. Before it
+           opens anything, the pump checks that the server answers, is
+           OpenCode 1 (OpenCode 2 is not supported yet; the npm package
+           opencode-ai and opencode.ai/install give OpenCode 1.x), and knows
+           the session; a failure exits 2 and names the TUI command to run. A
+           server that goes away later (the TUI restarted) is waited for, with
+           the deliveries held in the stream, and checked again when it is
+           back. --session is the session id (ses_ and 26 letters or digits,
+           as "opencode session list" shows), or auto: the id recorded for this
+           nick and stream in the opencode-session file beside the cursor;
+           with no record it exits 2
   primer   print the framing a front gives the model — the reply command first,
            then what a delivery is and what it is worth — for a front whose
            harness has none to hand over, so the text is the session's first
@@ -493,14 +525,14 @@ skills:
   would expand before the assignment applied.
 
 tables:
-  With --skill table, channel and codex take --chair <nick> --cap <n>, both
-  required, for a table of several agents and one human chair on one channel.
-  codex takes --skill too, build by default, and neither flag without
-  table or line; it takes no --target or --worktree. Until this participant has
-  posted once, posts by anyone but the chair are held back; after that they
-  arrive as usual until more than <n> messages by anyone but the chair have
-  followed the chair's last post, and then they are held again until the chair
-  posts. The chair's posts always pass and release what the cap held, in
+  With --skill table, channel, codex and opencode take --chair <nick> --cap <n>,
+  both required, for a table of several agents and one human chair on one
+  channel. codex and opencode take --skill too, build by default, and neither
+  flag without table or line; they take no --target or --worktree. Until this
+  participant has posted once, posts by anyone but the chair are held back;
+  after that they arrive as usual until more than <n> messages by anyone but
+  the chair have followed the chair's last post, and then they are held again
+  until the chair posts. The chair's posts always pass and release what the cap held, in
   order, and reset the count; a post held because this participant has not yet
   posted stays held until it does. --cap 0 turns the cap off and keeps the
   first hold. Held posts live in this process's memory only, so a restart
@@ -509,8 +541,8 @@ tables:
   wait takes neither flag. --skill build holds nothing back.
 
 lines:
-  With --skill line, channel and codex take --chair <nick> --cap <n>, both
-  required, and --window <duration>, for a few long-running sessions and one
+  With --skill line, channel, codex and opencode take --chair <nick> --cap <n>,
+  both required, and --window <duration>, for a few long-running sessions and one
   human on one channel. The gate is two rules and nothing else: there is no
   first hold, so this participant receives every other session's post at once,
   before it has posted. Every message by anyone but the chair, this
@@ -549,7 +581,8 @@ state:
   <nick> being the nick with its ASCII capitals folded to lower case, and
   the cursor in a per-stream directory under it, where a Codex seat's
   thread record, codex-thread, also sits: one line, newline included, holding
-  the thread's UUID.
+  the thread's UUID, and an OpenCode session's record, opencode-session: one
+  line, newline included, holding the session id.
   Tables live in <dir>/tables/<id>/, beside the per-nick directories, which is
   why no participant is called tables; builds live in <dir>/builds/<id>/ the same
   way, and no participant is called builds, and lines in <dir>/lines/<id>/, and no

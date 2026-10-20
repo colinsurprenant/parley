@@ -1188,7 +1188,8 @@ func TestUsage(t *testing.T) {
 	for _, want := range []string{"parley send", "parley wait", "parley channel", "parley codex", "parley primer",
 		"--thread", "file:<path>", "irc://host:port/channel", "--state-dir", "--body-file", "irc/<host>_<port>/password",
 		"--front claude|codex", "--reply-file", "--reply-command", "It opens nothing", "the canonical spec",
-		"--thread <thread>|auto", "auto is reserved", "codex-thread", "CODEX_THREAD_ID"} {
+		"--thread <thread>|auto", "auto is reserved", "codex-thread", "CODEX_THREAD_ID",
+		"parley opencode", "--session <ses_id>|auto", "opencode-session"} {
 		if !strings.Contains(res.stdout, want) {
 			t.Fatalf("usage does not mention %q:\n%s", want, res.stdout)
 		}
@@ -1606,13 +1607,13 @@ func TestWaitTakesNeitherTableFlag(t *testing.T) {
 func TestUsageDocumentsTheTableFlags(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{"--chair <nick> --cap <n>", "tables:", "--cap 0 turns the cap", "in this process's memory only", "wait takes neither flag",
-		"[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "it takes no --target or --worktree"} {
+		"[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "they take no --target or --worktree"} {
 		if !strings.Contains(top, want) {
 			t.Fatalf("usage does not mention %q:\n%s", want, top)
 		}
 	}
 	// The per-verb help prints the flags with their own descriptions, on stdout.
-	for front, usage := range map[string]string{"channel": "[--skill build|table --cap <n>]", "codex": "[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]"} {
+	for front, usage := range map[string]string{"channel": "[--skill build|table --cap <n>]", "codex": "[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "opencode": "[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]"} {
 		help := runParley(t, "", front, "-h").stdout
 		for _, want := range []string{"-chair", "-cap", "-skill", usage, "memory only"} {
 			if !strings.Contains(help, want) {

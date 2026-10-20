@@ -352,7 +352,7 @@ func TestUsageDocumentsTheLineSkill(t *testing.T) {
 			t.Fatalf("usage does not mention %q:\n%s", want, top)
 		}
 	}
-	for _, verb := range []string{"channel", "primer", "codex"} {
+	for _, verb := range []string{"channel", "primer", "codex", "opencode"} {
 		help := runParley(t, "", verb, "-h").stdout
 		for _, want := range []string{"--skill line", "-cap", "-window"} {
 			if !strings.Contains(help, want) {
