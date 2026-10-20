@@ -80,6 +80,10 @@ type fakeOpenCode struct {
 	// loseResponses is how many prompt answers are swallowed, the connection
 	// closed after the entry was admitted.
 	loseResponses int
+	// onLose, if set, runs (with the fake's lock held) as an answer is swallowed,
+	// before the connection is closed: the moment a test makes the world change
+	// under the pump, such as a service file that has gone stale.
+	onLose func()
 	// cancelOnPost removes an entry from the inbox as it is admitted: the human
 	// cancelled it.
 	cancelOnPost bool
@@ -445,6 +449,9 @@ func (f *fakeOpenCode) promptLocked(w http.ResponseWriter, r *http.Request) {
 	}
 	if f.loseResponses > 0 {
 		f.loseResponses--
+		if f.onLose != nil {
+			f.onLose()
+		}
 		if hj, ok := w.(http.Hijacker); ok {
 			if conn, _, err := hj.Hijack(); err == nil {
 				conn.Close()

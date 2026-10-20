@@ -355,8 +355,12 @@ the text being the delivery's rendering, verbatim, with no file, agent, skill or
 other part. The server admits the first post of an id and answers a repeat of it
 with the first, so a post that got no answer (a timeout, a reset) is posted again
 under the same id, up to the 30-second bound, and the session ends up with the
-delivery once; a post that never connected has sent nothing and goes back to
-waiting for the server, under an id of its own next time. The delivery counts as
+delivery once. The repeat is made only after the pump has attached to the server
+again (finding the service from its file again in discovery mode, and checking the
+version and the session as at startup), retried with the backoff of the idle wait
+within that bound; nothing is posted through a client whose attach failed. A post
+that never connected has sent nothing and goes back to waiting for the server,
+under an id of its own next time. The delivery counts as
 made when `GET /api/session/<id>/message/<msg id>` answers 200 with a user message
 holding exactly those bytes, and only then is it committed and the cursor saved.
 The 30-second bound is the bound of this post: it ends when the server has admitted
@@ -390,7 +394,8 @@ own large queued prompt can pass the 16 MiB bound), cancelled cannot be told fro
 queued, so the pump says so once, names the attachments as the likely cause, and goes
 on asking for the message: it neither stops nor commits on it. A server that goes
 away during the wait is held for with the backoff of the idle wait (finding the
-service again in discovery mode), since the entry is in its database. There is no
+service again in discovery mode, and no read is made until the attach has
+succeeded), since the entry is in its database. There is no
 step to see the turn begin: a queued post waits for its own turn and is never merged
 into a running one. Delivery is at-least-once: a pump that dies after the post and
 before the commit delivers again on restart rather than drops. Two residual cases are

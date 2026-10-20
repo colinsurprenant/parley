@@ -89,9 +89,14 @@ func (p *Pump) deliverQueued(ctx context.Context, text string) error {
 // handOff posts the delivery under id. A post that got no answer may have been
 // admitted, and is posted again under the same id until the server answers or
 // the read-back bound passes; one that never connected has sent nothing, and is
-// the caller's to start over. Anything else the server says stops the pump. In
-// discovery mode the service is found again between the tries, since a service
-// that restarted is at another address.
+// the caller's to start over. Anything else the server says stops the pump.
+//
+// The repeat is made only after the pump has attached to the server again, within
+// the bound of the phase and with the backoff of the idle wait: a post that got no
+// answer is the sign that the server may be another one now (in discovery mode, a
+// service that restarted at another address), and a client whose attach failed is
+// not one to post through. A service that stays away to the end of the bound is
+// the post that got no answer, and ends the phase the same way.
 func (p *Pump) handOff(ctx context.Context, id, text string) error {
 	phase, cancel := context.WithTimeout(ctx, p.postTimeout)
 	defer cancel()
@@ -118,15 +123,19 @@ func (p *Pump) handOff(ctx context.Context, id, text string) error {
 			}
 			last = err
 			p.logf("%v: posting the delivery again under message id %s", err, id)
-			if p.discovery != nil {
-				if aerr := p.attach(phase); aerr != nil && !IsTransport(aerr) && phase.Err() == nil {
+			if !p.sleep(phase, p.readBackPoll) {
+				break
+			}
+			if aerr := p.attachWithin(phase, p.idlePoll); aerr != nil {
+				if phase.Err() == nil {
 					return aerr
 				}
+				last = aerr
 			}
 		default:
 			return fmt.Errorf("prompt session %s: %w", p.session, err)
 		}
-		if phase.Err() != nil || !p.sleep(phase, p.readBackPoll) {
+		if phase.Err() != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

@@ -664,23 +664,28 @@ func writeFakeService(t *testing.T, path string, f *fakeOpenCode, password strin
 // can make wrong.
 func writeServiceJSON(t *testing.T, path, url, version string, pid int, password string) {
 	t.Helper()
-	b, err := json.Marshal(map[string]any{"id": "svc", "version": version, "url": url, "pid": pid, "password": password})
-	if err != nil {
+	if err := putServiceJSON(path, url, version, pid, password); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// putServiceJSON is writeServiceJSON for a goroutine that is not the test's.
+func putServiceJSON(path, url, version string, pid int, password string) error {
+	b, err := json.Marshal(map[string]any{"id": "svc", "version": version, "url": url, "pid": pid, "password": password})
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	if err := os.Chmod(tmp, 0o600); err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		t.Fatal(err)
-	}
+	return os.Rename(tmp, path)
 }
 
 // newDiscoveryHarness is a pump that finds the service from the file at path, as
@@ -857,5 +862,106 @@ func TestAServerThatGoesAwayDuringTheWaitIsWaitedFor(t *testing.T) {
 	h.waitLog("OpenCode is back")
 	if n := len(f.postBodies()); n != 1 {
 		t.Fatalf("%d prompts, want the one", n)
+	}
+}
+
+// TestAPostThatGotNoAnswerIsPostedAgainOnlyAfterTheServiceIsFoundAgain: the answer
+// to the first post is lost, and the service's file goes stale at that moment (a
+// service that restarted, or a file that was written a moment before it was up). A
+// client whose attach failed is not one to post through: the pump attaches until
+// the file describes the server that answers, within the bound of the post, and only
+// then posts the same id again.
+func TestAPostThatGotNoAnswerIsPostedAgainOnlyAfterTheServiceIsFoundAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake(t)
+	writeFakeService(t, path, a, "")
+	a.set(func() {
+		a.loseResponses = 1
+		a.onLose = func() { _ = putServiceJSON(path, "http://"+a.addr, a.version, 999, "") }
+	})
+	h := newDiscoveryHarness(t, path)
+	h.start()
+
+	base := a.read("info")
+	h.peerSend(peerNick, "sent as the service restarted")
+	// The attach before the post, then two attaches that find the file stale.
+	deadline := time.Now().Add(testDeadline)
+	for a.read("info") < base+3 && len(a.postBodies()) < 2 {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("%d reads of info, %d posts; logs:\n%s", a.read("info"), len(a.postBodies()), h.logs.String())
+		}
+		time.Sleep(pollInterval)
+	}
+	if n := len(a.postBodies()); n != 1 {
+		t.Fatalf("%d posts reached the server while the file was stale, want only the one that got no answer; logs:\n%s", n, h.logs.String())
+	}
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved before the delivery was shown", c)
+	}
+
+	// The file describes the server again.
+	writeFakeService(t, path, a, "")
+	posts := a.waitPosts(2)
+	first, _, _ := post(t, posts[0].Body)
+	if again, _, _ := post(t, posts[1].Body); again != first {
+		t.Fatalf("the repeat was made under id %s, not the %s of the first post", again, first)
+	}
+	h.cursorPast("")
+	time.Sleep(100 * time.Millisecond)
+	if n := len(a.postBodies()); n != 2 {
+		t.Fatalf("%d posts, want the one and its repeat", n)
+	}
+	if users := a.userTexts(); len(users) != 1 {
+		t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
+	}
+}
+
+// TestTheWaitForAnAdmittedDeliveryReadsOnlyThroughAnAttachThatSucceeded: the
+// delivery is in the inbox behind a turn, and the server goes away and comes back
+// while its file is stale. No read of the message, the inbox or the active list is
+// made between the read that failed and the attach that found the service; then the
+// wait goes on, and the delivery commits.
+func TestTheWaitForAnAdmittedDeliveryReadsOnlyThroughAnAttachThatSucceeded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake(t)
+	a.set(func() { a.busyOnPost = true })
+	writeFakeService(t, path, a, "")
+	h := newDiscoveryHarness(t, path)
+	h.start()
+
+	h.peerSend(peerNick, "behind a turn, across a restart with a stale file")
+	a.waitPosts(1)
+	a.waitReads("inbox", 2)
+
+	addr := a.address()
+	writeServiceJSON(t, path, "http://"+addr, "2.0.32", 999, "")
+	a.stop()
+	h.waitLog("the delivery is queued there, holding for the server")
+	a.start(addr)
+	// Two attaches that find the file stale, with the server up to be asked.
+	base := a.read("info")
+	a.waitReads("info", base+2)
+	message, inbox, active := a.read("message"), a.read("inbox"), a.read("active")
+	time.Sleep(100 * time.Millisecond)
+	if m, i, ac := a.read("message"), a.read("inbox"), a.read("active"); m != message || i != inbox || ac != active {
+		t.Fatalf("the wait read through a client whose attach failed: message %d to %d, inbox %d to %d, active %d to %d",
+			message, m, inbox, i, active, ac)
+	}
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved before the delivery was shown", c)
+	}
+
+	// The file describes the server again: the reads resume, and the turn ends.
+	writeFakeService(t, path, a, "")
+	a.waitReads("message", message+1)
+	a.set(func() { a.busyOnPost = false })
+	a.release()
+	h.cursorPast("")
+	h.waitLog("OpenCode is back")
+	if n := len(a.postBodies()); n != 1 {
+		t.Fatalf("%d posts, want the one", n)
+	}
+	if users := a.userTexts(); len(users) != 1 {
+		t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
 	}
 }

@@ -388,6 +388,12 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 // comes before asking for the session (Discovery.Find), so a stale file reads as
 // stale.
 //
+// The client the pump uses is replaced only by an attach that went through whole.
+// An attach that failed leaves the pump with a client it has no right to use, and
+// every caller that gets an error from here goes back to attaching before it makes
+// another request to the session: awaitIdle and awaitServer loop on it, and
+// handOff does through attachWithin.
+//
 // A service that is not there (no file, or one that does not describe the server
 // that answers), or is starting (a 5xx), is a server that is away, and is returned
 // as a transport failure, which the loop holds for with its backoff. A 401 after the
@@ -395,14 +401,15 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 // is refused. With a port nothing is found again, and the errors are the server's
 // own.
 func (p *Pump) attach(ctx context.Context) error {
+	client := p.client
 	if p.discovery != nil {
 		_, c, _, err := p.discovery.Find(ctx)
 		if err != nil {
 			return holdForService(err)
 		}
-		p.client = c
+		client = c
 	} else {
-		info, err := p.client.Info(ctx)
+		info, err := client.Info(ctx)
 		if err != nil {
 			return err
 		}
@@ -410,13 +417,38 @@ func (p *Pump) attach(ctx context.Context) error {
 			return err
 		}
 	}
-	if _, err := p.client.Session(ctx, p.session); err != nil {
+	if _, err := client.Session(ctx, p.session); err != nil {
 		if p.discovery != nil {
 			return holdForService(err)
 		}
 		return err
 	}
+	p.client = client
 	return nil
+}
+
+// attachWithin attaches, and again after every failure that is the server being
+// away, sleeping backoff between the tries and doubling it up to the pump's cap,
+// until the attach succeeds. It ends with the context, and with any failure that
+// waiting does not mend. No request to the session is made by it or between its
+// tries, which is the point of it: the caller posts, or reads, only once it returns
+// nil.
+func (p *Pump) attachWithin(ctx context.Context, backoff time.Duration) error {
+	for {
+		err := p.attach(ctx)
+		switch {
+		case err == nil:
+			return nil
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case !IsTransport(err):
+			return err
+		}
+		if !p.sleep(ctx, backoff) {
+			return ctx.Err()
+		}
+		backoff = min(backoff*2, p.maxBackoff)
+	}
 }
 
 // holdForService turns the failures that mean "the service is not up yet" into a
@@ -443,24 +475,14 @@ func holdForService(err error) error {
 // restart.
 func (p *Pump) awaitServer(ctx context.Context, cause error) error {
 	p.logf("OpenCode is not answering (%v): the delivery is queued there, holding for the server", cause)
-	backoff := p.idlePoll
-	for {
-		if !p.sleep(ctx, backoff) {
-			return ctx.Err()
-		}
-		backoff = min(backoff*2, p.maxBackoff)
-		err := p.attach(ctx)
-		switch {
-		case err == nil:
-			p.logf("OpenCode is back")
-			return nil
-		case ctx.Err() != nil:
-			return ctx.Err()
-		case IsTransport(err):
-		default:
-			return err
-		}
+	if !p.sleep(ctx, p.idlePoll) {
+		return ctx.Err()
 	}
+	if err := p.attachWithin(ctx, min(p.idlePoll*2, p.maxBackoff)); err != nil {
+		return err
+	}
+	p.logf("OpenCode is back")
+	return nil
 }
 
 // tooLongLimit is the bound a TooLongError says it was over.
