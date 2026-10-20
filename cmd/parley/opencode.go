@@ -163,6 +163,7 @@ func cmdOpencode(args []string) error {
 		Session:   sessionID,
 		Client:    target.client,
 		Client2:   target.client2,
+		Discovery: target.discovery,
 		Debounce:  *debounce,
 		Log:       os.Stderr,
 	})

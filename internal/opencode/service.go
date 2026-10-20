@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,7 +47,7 @@ type Service struct {
 }
 
 func (s Service) String() string {
-	return fmt.Sprintf("opencode.Service{ID:%q, Version:%q, URL:%q, PID:%d, Password:<redacted>}", s.ID, s.Version, s.URL, s.PID)
+	return fmt.Sprintf("opencode.Service{ID:%q, Version:%q, URL:%q, PID:%d, Password:<redacted>}", s.ID, s.Version, RedactURL(s.URL), s.PID)
 }
 
 func (s Service) GoString() string { return s.String() }
@@ -152,5 +153,75 @@ func ReadService(path string) (Service, error) {
 // ServiceWhere names a service for a line of output: its address, and its
 // process id, never its password.
 func ServiceWhere(s Service) string {
-	return s.URL + " (pid " + strconv.Itoa(s.PID) + ")"
+	return RedactURL(s.URL) + " (pid " + strconv.Itoa(s.PID) + ")"
+}
+
+// The ways Discovery.Find fails that a caller tells apart. Test for them with
+// errors.Is (ErrNoService is above) and errors.As.
+var (
+	// ErrServiceFile wraps a registration file that is there and is refused or
+	// cannot be read.
+	ErrServiceFile = errors.New("opencode: the service file is refused")
+	// ErrServiceAddress wraps a registration file whose address this front will not
+	// send its password to.
+	ErrServiceAddress = errors.New("opencode: the service file names an address that is not loopback")
+)
+
+// StaleServiceError is a registration file that does not describe the server that
+// answers at its address: another process id or another version. The file was
+// left by a service that is gone, or is about to be rewritten by one that is
+// starting, and the address now belongs to another server or to the next.
+type StaleServiceError struct {
+	Path          string
+	URL           string
+	FilePID, PID  int
+	FileVersion   string
+	ServerVersion string
+}
+
+func (e *StaleServiceError) Error() string {
+	return fmt.Sprintf("the service file %s describes pid %d (version %q) at %s, and the server that answers there is pid %d (OpenCode %s): the file is stale or the address belongs to another server",
+		e.Path, e.FilePID, e.FileVersion, RedactURL(e.URL), e.PID, e.ServerVersion)
+}
+
+// Discovery finds OpenCode 2's service from its registration file, whenever it is
+// asked. The service can stop and start again with another address, password and
+// process id while a pump runs, so what was read once is not kept as the truth:
+// the pump asks again after every outage.
+type Discovery struct {
+	// Path is the registration file; ServicePath says where it is.
+	Path string
+	// Options are given to the client it makes.
+	Options []Option
+}
+
+// Find reads the registration file, makes a client for the address in it, and
+// asks the server who it is before anything else is asked of it: the server must
+// be a version this front speaks to and the one the file describes, so that a stale
+// file reads as stale and not as a session the server does not know. It returns
+// what the file says, the client and what the server said. The password is the
+// client's alone: it is not in any error.
+func (d Discovery) Find(ctx context.Context) (Service, *HTTPClient2, ServerInfo, error) {
+	svc, err := ReadService(d.Path)
+	if err != nil {
+		if errors.Is(err, ErrNoService) {
+			return Service{}, nil, ServerInfo{}, err
+		}
+		return Service{}, nil, ServerInfo{}, fmt.Errorf("%w: %w", ErrServiceFile, err)
+	}
+	c, err := svc.Client(d.Options...)
+	if err != nil {
+		return svc, nil, ServerInfo{}, fmt.Errorf("%w: %w", ErrServiceAddress, err)
+	}
+	info, err := c.Info(ctx)
+	if err != nil {
+		return svc, nil, ServerInfo{}, err
+	}
+	if err := CheckVersion2(info.Version); err != nil {
+		return svc, nil, ServerInfo{}, err
+	}
+	if info.PID != svc.PID || (svc.Version != "" && info.Version != svc.Version) {
+		return svc, nil, ServerInfo{}, &StaleServiceError{Path: d.Path, URL: svc.URL, FilePID: svc.PID, PID: info.PID, FileVersion: svc.Version, ServerVersion: info.Version}
+	}
+	return svc, c, info, nil
 }

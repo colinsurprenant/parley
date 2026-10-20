@@ -141,8 +141,11 @@ func TestPrompt2SendsTheThreeFieldsAndChecksTheAnswer(t *testing.T) {
 	// The same id with other text is answered with the first, which is not the text
 	// that was asked to be posted: the client says so and does not take it for a
 	// delivery.
-	if err := f.client().Prompt(ctx, testSession, testMsgID, text+"more"); err == nil || !strings.Contains(err.Error(), "other text") {
-		t.Fatalf("Prompt of another text under the same id = %v", err)
+	err := f.client().Prompt(ctx, testSession, testMsgID, text+"more")
+	for _, want := range []string{"admitted the prompt under message id " + testMsgID + " with other text", "a plugin may have rewritten it", "will probably be taken up as it is", "nothing was committed", "a restart sends the delivery again under a new id"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Prompt of another text under the same id = %v, want it to say %q", err, want)
+		}
 	}
 	// Text JSON cannot carry is refused before anything is sent.
 	if err := f.client().Prompt(ctx, testSession, "msg_x", "bad \xff text"); err == nil || !strings.Contains(err.Error(), "UTF-8") {
@@ -213,7 +216,7 @@ func TestMessage2(t *testing.T) {
 	}
 }
 
-func TestInbox2AndSteer(t *testing.T) {
+func TestInbox2(t *testing.T) {
 	f := newFake2(t)
 	f.set(func() { f.parked = true })
 	ctx := context.Background()
@@ -228,19 +231,6 @@ func TestInbox2AndSteer(t *testing.T) {
 	items, err := f.client().Inbox(ctx, testSession)
 	if err != nil || len(items) != 2 || items[0] != (InboxItem{ID: testMsgID, Delivery: "queue"}) {
 		t.Fatalf("Inbox = %v, %v", items, err)
-	}
-	if err := f.client().Steer(ctx, testSession, testMsgID); err != nil {
-		t.Fatalf("Steer = %v", err)
-	}
-	if got := f.patched(); len(got) != 1 || got[0] != testMsgID+` {"delivery":"steer"}` {
-		t.Fatalf("patches %q", got)
-	}
-	// Nothing is left to steer once it is taken up, and the server says so.
-	if err := f.client().Steer(ctx, testSession, testMsgID); !errors.Is(err, ErrConflict) {
-		t.Fatalf("Steer of an entry that is no longer queued = %v, want ErrConflict", err)
-	}
-	if err := f.client().Steer(ctx, "ses_000000000000000000000000AA", testMsgID); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("Steer in an unknown session = %v", err)
 	}
 	for name, body := range map[string]string{
 		"no data":              `{}`,

@@ -45,7 +45,7 @@ type InboxItem struct {
 // no directory to read it under.
 //
 // An error from a method is one of the kinds Client's say, with ErrConflict
-// besides: a 409.
+// besides: a 409 on a post.
 type Client2 interface {
 	// Info returns the server's version and process id.
 	Info(ctx context.Context) (ServerInfo, error)
@@ -65,10 +65,6 @@ type Client2 interface {
 	Message(ctx context.Context, session, id string) (msg UserMessage, found bool, err error)
 	// Inbox returns the session's inbox, oldest first.
 	Inbox(ctx context.Context, session string) ([]InboxItem, error)
-	// Steer changes an inbox entry from queue to steer, which makes the server
-	// take it up at the next boundary, an idle session's included. ErrConflict is
-	// the answer for an entry that is no longer in the inbox, or no longer queued.
-	Steer(ctx context.Context, session, id string) error
 }
 
 // ErrConflict is the server's 409: the request names something that is not in
@@ -284,7 +280,10 @@ func (c *HTTPClient2) Prompt(ctx context.Context, session, id, text string) erro
 	case d.Type == nil || *d.Type != "user" || d.Payload == nil || d.Payload.Text == nil:
 		return fmt.Errorf("opencode: %s: the answer is not a user input", op)
 	case *d.Payload.Text != text:
-		return fmt.Errorf("opencode: %s: the server holds other text under message id %s than the text posted", op, id)
+		// The prompt was admitted, so the entry is in the inbox and will be taken up as
+		// the server holds it. A plugin that rewrites prompts (OpenCode 2 runs them
+		// on every prompt) is the likely cause. Posting again would be a second entry.
+		return fmt.Errorf("opencode: %s: the server admitted the prompt under message id %s with other text than was posted (%d bytes against %d; a plugin may have rewritten it): the entry is in the session's inbox and will probably be taken up as it is, and nothing was committed, so a restart sends the delivery again under a new id", op, id, len(*d.Payload.Text), len(text))
 	}
 	return nil
 }
@@ -365,25 +364,4 @@ func (c *HTTPClient2) Inbox(ctx context.Context, session string) ([]InboxItem, e
 		out = append(out, InboxItem{ID: *it.ID, Delivery: *it.Delivery})
 	}
 	return out, nil
-}
-
-// Steer implements Client2: PATCH /api/session/{id}/inbox/{inboxID} with
-// {"delivery":"steer"}, which answers 204.
-func (c *HTTPClient2) Steer(ctx context.Context, session, id string) error {
-	path := session2Path(session, "/inbox/"+url.PathEscape(id))
-	op := "PATCH " + path
-	code, body, err := c.h.do(ctx, http.MethodPatch, path, nil, []byte(`{"delivery":"steer"}`), maxPromptBody)
-	if err != nil {
-		return err
-	}
-	switch {
-	case code == http.StatusNoContent:
-		return nil
-	case code == http.StatusNotFound && notFoundTag(body) == "SessionNotFoundError":
-		return fmt.Errorf("%w: %s", ErrSessionNotFound, session)
-	case code == http.StatusConflict:
-		return fmt.Errorf("%w: %w", ErrConflict, statusError2(op, code, body))
-	default:
-		return statusError2(op, code, body)
-	}
 }

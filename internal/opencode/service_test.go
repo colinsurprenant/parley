@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -171,5 +172,59 @@ func TestServicePath(t *testing.T) {
 		case tc.err == "" && (err != nil || got != tc.want):
 			t.Errorf("%s: ServicePath = %q, %v, want %q", name, got, err, tc.want)
 		}
+	}
+}
+
+func TestAURLIsPrintedWithoutItsUserinfo(t *testing.T) {
+	for raw, want := range map[string]string{
+		"http://user:secret@127.0.0.1:1":      "http://127.0.0.1:1",
+		"http://user@127.0.0.1:1/path":        "http://127.0.0.1:1/path",
+		"http://a@b:secret@127.0.0.1:1":       "http://127.0.0.1:1",
+		"http://u:p ss@host:1":                "http://host:1",
+		"http://127.0.0.1:1":                  "http://127.0.0.1:1",
+		"http://127.0.0.1:1/x@y":              "http://127.0.0.1:1/x@y",
+		"not a url with secret@somewhere":     "not a url with secret@somewhere",
+		"HTTP://USER:SECRET@127.0.0.1:1?q=@z": "HTTP://127.0.0.1:1?q=@z",
+	} {
+		if got := RedactURL(raw); got != want {
+			t.Errorf("RedactURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// TestNoErrorAboutAURLQuotesItsUserinfo: a registration file can name any URL, and
+// the refusal of it says what was wrong with it. Whatever is wrong, the credentials
+// in it are not repeated, in the client's error or in the service's own printing.
+func TestNoErrorAboutAURLQuotesItsUserinfo(t *testing.T) {
+	for _, raw := range []string{
+		"http://user:hunter2@127.0.0.1:1",
+		"http://user:hunter2@example.com:1",
+		"https://user:hunter2@127.0.0.1:1",
+		"http://user:hunter2@127.0.0.1",
+		"http://user:hunter2@127.0.0.1:99999",
+		"http://user:hunter2@127.0.0.1:1/path",
+		"http://user:hun ter2@127.0.0.1:1",
+		"http://user:hunter2@[::1:1",
+	} {
+		_, err := NewHTTPClient(raw, Auth{})
+		if err == nil {
+			t.Errorf("NewHTTPClient accepted %q", raw)
+			continue
+		}
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("the refusal of %q quotes the credentials: %v", raw, err)
+		}
+		if _, err := (Service{URL: raw, PID: 1}).Client(); err == nil || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("Service.Client of %q = %v", raw, err)
+		}
+		if out := fmt.Sprintf("%v %+v %#v %s", Service{URL: raw, PID: 1}, Service{URL: raw}, Service{URL: raw}, ServiceWhere(Service{URL: raw, PID: 1})); strings.Contains(out, "hunter2") {
+			t.Errorf("the service prints the credentials of %q: %s", raw, out)
+		}
+	}
+	// And through Find, with a file on disk.
+	path := serviceFile(t, `{"url":"http://user:hunter2@127.0.0.1:1","pid":2}`, 0o600)
+	_, _, _, err := Discovery{Path: path}.Find(context.Background())
+	if !errors.Is(err, ErrServiceAddress) || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("Find = %v", err)
 	}
 }

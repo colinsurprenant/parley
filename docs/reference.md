@@ -315,9 +315,17 @@ another address, another scheme or a path is refused before the password goes
 anywhere), `GET /api/info` must answer a 2.x version, and the `pid` (and `version`)
 it answers must be the file's, so that a file left by a service that has gone, at
 an address something else now has, is not taken for it. `XDG_STATE_HOME` must be
-absolute when set. The password is never logged, printed or put in an error. The
-file is read once, when the pump starts: if the service comes back at another
-address, restart the pump. With `--port` the pump first asks OpenCode 1's
+absolute when set. The password is never logged, printed or put in an error, and a
+URL is printed without any userinfo. The file is read when the pump starts and again
+every time it attaches, which is before each delivery and after every outage: a
+restarted service has a new address, password and process id. While the file is
+absent, or does not describe the server that answers (a stale file, or one written a
+moment before the service is up), or the server answers a 5xx (starting), the pump
+holds with its backoff and says so once; a 401 after the file was read again is the
+end of the pump, since the password is the service's own. The server is asked who it
+is, and held against the file, before the session is asked for, so a stale file
+reads as stale. With `--port` nothing is found again and the failures are the
+server's own, as for OpenCode 1. With `--port` the pump first asks OpenCode 1's
 `GET /global/health`; a `{healthy, version}` answer is OpenCode 1, and any other
 (OpenCode 2 serves its web page there) is asked `GET /api/info` as OpenCode 2, with
 the password from `OPENCODE_PASSWORD`, else `OPENCODE_SERVER_PASSWORD`, under the
@@ -383,28 +391,46 @@ delivery once; a post that never connected has sent nothing and goes back to
 waiting for the server, under an id of its own next time. The delivery counts as
 made when `GET /api/session/<id>/message/<msg id>` answers 200 with a user message
 holding exactly those bytes, and only then is it committed and the cursor saved.
-Until then the message is a 404 and the entry is in the session's inbox
-(`GET /api/session/<id>/inbox`), and the pump distinguishes three states there.
-(1) **In the inbox, the session busy:** the delivery waits behind a turn that is
-not its own, which is not a failure and has no bound: the 30 seconds begin again
-for as long as the session is seen busy. (2) **In the inbox, the session idle on
-two reads half a second apart:** the queue is parked, as it is after an interrupt (a
-turn that begins after one is steer-scoped, so entries queued during it wait at its
-end; a failed turn alone does not park the queue), when nothing takes up a queued
-entry; the pump changes the entry to
-`steer` with `PATCH /api/session/<id>/inbox/<msg id>` `{"delivery":"steer"}`, once,
-which wakes the session, and logs that it did. (3) **Not in the inbox and not a
+The 30-second bound is the bound of this post: it ends when the server has admitted
+the prompt and its answer has been read, with the text that was posted. A 409 on the
+post is the server saying the id is in use for something else, and stops the pump.
+If the answer holds other text than was posted (a plugin that rewrites prompts), the
+entry was admitted and will probably be taken up as the server holds it: the pump
+stops, commits nothing, and says so, and a restart sends the delivery again under a
+new id.
+
+After admission the pump waits **with no deadline**. The message is a 404 until the
+session takes the entry up, and the entry is in the session's inbox
+(`GET /api/session/<id>/inbox`) meanwhile. There are two ways it waits and one way
+it ends otherwise. (1) **In the inbox, the session busy:** the delivery waits behind
+a turn that is not its own, and goes over when that turn ends; the pump logs it once.
+(2) **In the inbox, the session idle on two reads half a second apart:** the queue is
+parked, as it is after an interrupt (a turn that begins after one is steer-scoped, so
+entries queued during it wait at its end; a failed turn alone does not park the
+queue). The pump logs once "parked after an interrupt; it goes over when the session
+takes it up" and goes on waiting for the human to resume the session. It **never
+steers** the entry: a `PATCH` to steer has no idle precondition and is promoted at
+the next step of whatever turn runs (so into a turn the human starts at that
+instant), and it wakes execution, which releases the prompts the human parked by
+interrupting. Waiting respects their interrupt. (3) **Not in the inbox and not a
 message:** the human cancelled it, which only a human does, on purpose; the pump
 reads the message once more (the entry leaves the inbox and becomes a message in
 one step, so a message is there if that is what happened), logs the cancel, counts
-the delivery as handed over and does not send it again. The read-back bound
-stops the pump, exit 1 with nothing committed, as for 1.x, and an entry still in
-the inbox is then delivered twice at the next start. There is no step to see the
-turn begin: a queued post waits for its own turn and cannot be merged into the one
-before. Delivery is at-least-once, the bound and the stub of a large message apply
-as for 1.x, and a server that goes away is waited for as for 1.x. A 409 on the post
-or the steer is the server saying the entry is not in the state asked for, and a
-steer's is looked at again, not counted as the wake.
+the delivery as handed over and does not send it again. If the inbox is too large to
+read (it carries every queued entry's payload, attachments included, and the human's
+own large queued prompt can pass the 16 MiB bound), cancelled cannot be told from
+queued, so the pump says so once, names the attachments as the likely cause, and goes
+on asking for the message: it neither stops nor commits on it. A server that goes
+away during the wait is held for with the backoff of the idle wait (finding the
+service again in discovery mode), since the entry is in its database. There is no
+step to see the turn begin: a queued post waits for its own turn and is never merged
+into a running one. The converse is the usual rule of a steer: a prompt the human
+submits as steer while a delivery's turn runs is folded into that turn, as any steer
+is. Delivery is at-least-once, the stub of a large message applies as for 1.x, and
+one place is narrower still: a post whose answer is lost is posted again under the
+same id, and if the human deleted the admitted entry in that instant, the second post
+admits it once more, since OpenCode keeps no tombstone of a cancelled id; the
+delivery then goes over although the human took it back, once.
 
 **Credentials.** A 1.x server started with `OPENCODE_SERVER_PASSWORD` wants HTTP
 basic credentials. The pump reads the same variables OpenCode's own CLI does, the

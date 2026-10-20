@@ -149,6 +149,11 @@ type Config struct {
 	// the one for an OpenCode 2 server.
 	Client  Client
 	Client2 Client2
+	// Discovery, with Client2, makes the pump find OpenCode 2's service again from
+	// its registration file whenever it attaches (every delivery, and after every
+	// outage), instead of keeping the client it started with: Client2 is then the
+	// first of them. Without it the server is the one Client2 is for, wherever it is.
+	Discovery *Discovery
 
 	// Timeout bounds one delivery wait; Debounce is the quiet window that joins
 	// a burst into one delivery, as for `parley wait`.
@@ -175,6 +180,7 @@ type Pump struct {
 	session   string
 	client    Client
 	client2   Client2
+	discovery *Discovery
 	// directory is the session's directory, read from the server by attach and
 	// "" until then.
 	directory string
@@ -206,6 +212,9 @@ func New(cfg Config) (*Pump, error) {
 	if cfg.Client != nil && cfg.Client2 != nil {
 		return nil, errors.New("opencode: a client for OpenCode 1 and one for OpenCode 2")
 	}
+	if cfg.Discovery != nil && cfg.Client2 == nil {
+		return nil, errors.New("opencode: discovery of OpenCode 2's service with no client for it")
+	}
 	if strings.TrimSpace(cfg.Session) == "" {
 		return nil, errors.New("opencode: empty session")
 	}
@@ -223,6 +232,7 @@ func New(cfg Config) (*Pump, error) {
 		session:         cfg.Session,
 		client:          cfg.Client,
 		client2:         cfg.Client2,
+		discovery:       cfg.Discovery,
 		timeout:         orDefault(cfg.Timeout, defaultTimeout),
 		debounce:        cfg.Debounce,
 		idlePoll:        orDefault(cfg.IdlePoll, defaultIdlePoll),

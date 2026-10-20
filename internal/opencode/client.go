@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -233,22 +234,27 @@ func LoopbackURL(port int) string { return "http://127.0.0.1:" + strconv.Itoa(po
 // address, and a name such as localhost, which a resolver could point anywhere,
 // is refused for the same reason `parley server --listen` refuses it.
 func NewHTTPClient(baseURL string, auth Auth, opts ...Option) (*HTTPClient, error) {
+	// Every message below names the URL as RedactURL spells it: it may have come
+	// from a file, and a URL with credentials in it must not be echoed with them,
+	// least of all in the error that refuses it, and url.Parse's own error quotes the
+	// raw string.
+	shown := RedactURL(baseURL)
 	u, err := url.Parse(baseURL)
 	if err != nil {
-		return nil, fmt.Errorf("opencode: server URL: %w", err)
+		return nil, fmt.Errorf("opencode: server URL %q is not a URL", shown)
 	}
 	if u.Scheme != "http" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("opencode: server URL %q must be http://<loopback ip>:<port> and nothing else", baseURL)
+		return nil, fmt.Errorf("opencode: server URL %q must be http://<loopback ip>:<port> and nothing else", shown)
 	}
 	host, port, err := net.SplitHostPort(u.Host)
 	if err != nil {
-		return nil, fmt.Errorf("opencode: server URL %q has no port: %w", baseURL, err)
+		return nil, fmt.Errorf("opencode: server URL %q has no port", shown)
 	}
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-		return nil, fmt.Errorf("opencode: server URL %q is not a loopback IP address", baseURL)
+		return nil, fmt.Errorf("opencode: server URL %q is not a loopback IP address", shown)
 	}
 	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return nil, fmt.Errorf("opencode: server URL %q has no valid port", baseURL)
+		return nil, fmt.Errorf("opencode: server URL %q has no valid port", shown)
 	}
 	c := &HTTPClient{
 		base:    "http://" + u.Host,
@@ -671,3 +677,13 @@ func (c *HTTPClient) Prompt(ctx context.Context, session, text string) error {
 		return statusError(op, code, body)
 	}
 }
+
+// userinfoRE is the userinfo of a URL: whatever sits between the scheme's "//" and
+// the "@" that ends it, before the first "/", "?" or "#".
+var userinfoRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@`)
+
+// RedactURL is raw with any userinfo taken out ("http://user:secret@host:1" is
+// "http://host:1"), for a URL that is about to be printed. It works on the text,
+// not on a parse, so that a string that does not parse is redacted as well. A URL
+// that came out of a file is the case: it is printed to say what was wrong with it.
+func RedactURL(raw string) string { return userinfoRE.ReplaceAllString(raw, "$1") }

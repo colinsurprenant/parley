@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -100,7 +101,7 @@ func TestAQueuedDeliveryLandsAndIsCommitted(t *testing.T) {
 		t.Fatalf("the session holds %v, want the delivery once", users)
 	}
 	if n := len(f.patched()); n != 0 {
-		t.Fatalf("%d steer request(s) for a delivery the session took up at once", n)
+		t.Fatalf("%d change request(s) for a delivery the session took up at once", n)
 	}
 	if strings.Contains(h.logs.String(), "settle") || strings.Contains(h.logs.String(), "did not go busy") {
 		t.Fatalf("OpenCode 2 has no settle step:\n%s", h.logs.String())
@@ -216,14 +217,14 @@ func TestTheMessageIsReadAgainWhenTheEntryLeftTheInboxBetweenTheReads(t *testing
 		t.Fatalf("a delivery that was taken up was called cancelled:\n%s", h.logs.String())
 	}
 	if n := len(f.patched()); n != 0 {
-		t.Fatalf("a delivery that was only in the inbox for a moment was steered %d time(s)", n)
+		t.Fatalf("a delivery that was only in the inbox for a moment was changed %d time(s)", n)
 	}
 }
 
-// TestAnEntryTheSessionTakesUpWithinTheParkedPollsIsNotSteered: it takes two reads
+// TestAnEntryTheSessionTakesUpWithinTheParkedPollsIsNotCalledParked: it takes two reads
 // of an idle session, spaced by the idle poll, to call an entry parked, and an entry
-// the session takes up before the second is left alone.
-func TestAnEntryTheSessionTakesUpWithinTheParkedPollsIsNotSteered(t *testing.T) {
+// the session takes up before the second is not called so.
+func TestAnEntryTheSessionTakesUpWithinTheParkedPollsIsNotCalledParked(t *testing.T) {
 	f := newFake2(t)
 	f.set(func() { f.lagReads = 2 })
 	h := newHarness2(t, f, func(c *Config) { c.IdlePoll = 300 * time.Millisecond })
@@ -233,46 +234,61 @@ func TestAnEntryTheSessionTakesUpWithinTheParkedPollsIsNotSteered(t *testing.T) 
 	f.waitPosts(1)
 	h.cursorPast("")
 	if n := len(f.patched()); n != 0 {
-		t.Fatalf("an entry the session took up on its own was steered %d time(s)", n)
+		t.Fatalf("an entry the session took up on its own was changed %d time(s)", n)
+	}
+	if strings.Contains(h.logs.String(), "parked") {
+		t.Fatalf("an entry the session took up was called parked:\n%s", h.logs.String())
 	}
 }
 
-// TestAParkedDeliveryIsChangedToSteerOnce: after an interrupt the queue is parked and nothing takes up an entry until it is steered. The entry is
-// in the inbox with the session idle across two reads, and the pump changes it to
-// steer, once, and says so.
-func TestAParkedDeliveryIsChangedToSteerOnce(t *testing.T) {
+// TestAParkedDeliveryWaitsForTheHumanToResumeAndIsNeverSteered: after an interrupt
+// the queue is parked and nothing takes up an entry. The entry is in the inbox with
+// the session idle, and the pump says once that it is parked and goes on waiting,
+// with no deadline and no request to change it: a steer would be promoted into
+// whatever turn runs next, and would wake what the human parked. The entry goes over
+// when the human resumes the session.
+func TestAParkedDeliveryWaitsForTheHumanToResumeAndIsNeverSteered(t *testing.T) {
 	f := newFake2(t)
 	f.set(func() { f.parked = true })
-	h := newHarness2(t, f, nil)
+	h := newHarness2(t, f, func(c *Config) { c.ReadBackTimeout = 150 * time.Millisecond })
 	h.start()
 
 	h.peerSend(peerNick, "into a parked session")
 	f.waitPosts(1)
-	h.cursorPast("")
-	id, _, _ := post(t, f.postBodies()[0].Body)
-	if got := f.patched(); len(got) != 1 || got[0] != id+` {"delivery":"steer"}` {
-		t.Fatalf("steer requests %q, want one for %s", got, id)
+	h.waitLog("parked after an interrupt; it goes over when the session takes it up")
+	// Far past the bound of the post, and past many idle polls.
+	time.Sleep(700 * time.Millisecond)
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved while the delivery was parked", c)
 	}
+	select {
+	case <-h.done:
+		t.Fatalf("the pump stopped with %v while the delivery was parked", h.runErr)
+	default:
+	}
+	if got := f.patched(); len(got) != 0 {
+		t.Fatalf("the pump changed an entry (%q); it never steers", got)
+	}
+	if n := f.read("active"); n < 3 {
+		t.Fatalf("%d read(s) of the active list: the pump was not looking", n)
+	}
+	f.resume()
+	h.cursorPast("")
 	if users := f.userTexts(); len(users) != 1 {
 		t.Fatalf("the session holds %v", users)
 	}
-	if !strings.Contains(h.logs.String(), "changed it to steer") {
-		t.Fatalf("the steer was not logged:\n%s", h.logs.String())
+	if n := strings.Count(h.logs.String(), "parked after an interrupt"); n != 1 {
+		t.Fatalf("the parked state was logged %d times, want once:\n%s", n, h.logs.String())
 	}
-	// The session is not parked for good by one steer: the next delivery waits for
-	// two reads again and is steered again, for its own id.
-	h.peerSend(peerNick, "and again")
-	f.waitPosts(2)
-	h.cursorPast(h.savedCursor())
-	if got := f.patched(); len(got) != 2 {
-		t.Fatalf("steer requests %q, want one per delivery", got)
+	if got := f.patched(); len(got) != 0 {
+		t.Fatalf("the pump changed an entry (%q); it never steers", got)
 	}
 }
 
 // TestADeliveryBehindAnotherTurnWaitsPastTheBoundOfTheReadBack: the human started
 // a turn in the moment between the idle check and the post. The entry waits in the
-// inbox behind it, which is not a failure and has no bound of its own: the read-back
-// bound begins again while the session is seen busy.
+// inbox behind it, which is not a failure and has no bound: the read-back bound is
+// the bound of the post, and this wait has none.
 func TestADeliveryBehindAnotherTurnWaitsPastTheBoundOfTheReadBack(t *testing.T) {
 	f := newFake2(t)
 	f.set(func() { f.busyOnPost = true })
@@ -286,7 +302,7 @@ func TestADeliveryBehindAnotherTurnWaitsPastTheBoundOfTheReadBack(t *testing.T) 
 		t.Fatalf("a cursor %q was saved while the delivery was still in the inbox", c)
 	}
 	if n := len(f.patched()); n != 0 {
-		t.Fatalf("an entry behind a running turn was steered %d time(s)", n)
+		t.Fatalf("an entry behind a running turn was changed %d time(s)", n)
 	}
 	f.set(func() { f.busyOnPost = false })
 	f.release()
@@ -364,27 +380,6 @@ func TestADeliveryIntoASessionThatWasDeletedStopsThePump(t *testing.T) {
 	}
 	if c := h.savedCursor(); c != "" {
 		t.Fatalf("a cursor %q was saved", c)
-	}
-}
-
-// TestASteerThatLosesTheRaceIsLookedAtAgain: the server answers a steer with 409,
-// as it does for an entry that was taken up or cancelled since the read. The pump
-// does not count that as the wake and looks again; the entry that is still parked
-// is changed at the next look.
-func TestASteerThatLosesTheRaceIsLookedAtAgain(t *testing.T) {
-	f := newFake2(t)
-	f.set(func() { f.parked, f.steerConflicts = true, 1 })
-	h := newHarness2(t, f, nil)
-	h.start()
-
-	h.peerSend(peerNick, "steered into a conflict")
-	f.waitPosts(1)
-	h.cursorPast("")
-	if got := f.patched(); len(got) != 2 {
-		t.Fatalf("steer requests %q, want the refused one and the one that woke it", got)
-	}
-	if users := f.userTexts(); len(users) != 1 {
-		t.Fatalf("the session holds %v", users)
 	}
 }
 
@@ -613,5 +608,278 @@ func TestNewTakesOneClient(t *testing.T) {
 	only2.Client2 = f.client()
 	if _, err := New(only2); err != nil {
 		t.Errorf("New refused a client for OpenCode 2: %v", err)
+	}
+}
+
+// TestAnInboxTooLargeToReadIsWaitedOutAndNeverCommitted: the inbox carries every
+// queued entry's payload, attachments included, and the human's large queued prompt
+// can pass the bound it is read under. Unread, it cannot say whether the delivery's
+// entry is still there, so the pump does not call it cancelled and does not give up:
+// it says so once and goes on asking for the message.
+func TestAnInboxTooLargeToReadIsWaitedOutAndNeverCommitted(t *testing.T) {
+	f := newFake2(t)
+	// The entry is gone from the inbox, as a cancelled one is; the inbox cannot say.
+	f.set(func() { f.inboxTooLong, f.cancelOnPost = true, true })
+	h := newHarness2(t, f, func(c *Config) { c.ReadBackTimeout = 150 * time.Millisecond })
+	h.start()
+
+	h.peerSend(peerNick, "behind an inbox that cannot be read")
+	posts := f.waitPosts(1)
+	h.waitLog("inbox is over the")
+	time.Sleep(600 * time.Millisecond)
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved on an inbox that could not be read", c)
+	}
+	select {
+	case <-h.done:
+		t.Fatalf("the pump stopped with %v on an inbox that could not be read", h.runErr)
+	default:
+	}
+	if strings.Contains(h.logs.String(), "cancelled") {
+		t.Fatalf("the delivery was called cancelled on an inbox that could not be read:\n%s", h.logs.String())
+	}
+	if n := strings.Count(h.logs.String(), "inbox is over the"); n != 1 {
+		t.Fatalf("the oversized inbox was logged %d times, want once:\n%s", n, h.logs.String())
+	}
+	for _, want := range []string{"cannot be told whether delivery", "attachments are the likely cause"} {
+		if !strings.Contains(h.logs.String(), want) {
+			t.Fatalf("the log does not say %q:\n%s", want, h.logs.String())
+		}
+	}
+	// The message shows, as the session takes it up: the delivery lands.
+	id, text, _ := post(t, posts[0].Body)
+	f.set(func() { f.msgs = append(f.msgs, fake2Msg{id: id, text: text}) })
+	h.cursorPast("")
+}
+
+// TestAPromptTheServerEchoesAsOtherTextIsSaidToBeAdmitted: after admission the entry
+// is in the inbox and will probably be taken up as the server holds it. The pump
+// stops, commits nothing, and says the entry is there and that a restart sends the
+// delivery again under a new id.
+func TestAPromptTheServerEchoesAsOtherTextIsSaidToBeAdmitted(t *testing.T) {
+	f := newFake2(t)
+	f.set(func() { f.echoOther = true })
+	h := newHarness2(t, f, nil)
+	h.start()
+
+	h.peerSend(peerNick, "rewritten by a plugin")
+	err := h.join()
+	for _, want := range []string{"admitted the prompt", "a plugin may have rewritten it", "will probably be taken up as it is", "a restart sends the delivery again under a new id"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Run returned %v, want it to say %q", err, want)
+		}
+	}
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved", c)
+	}
+}
+
+// writeFakeService writes the registration file the way the service does: a
+// temporary file in the directory, mode 0600, renamed into place.
+func writeFakeService(t *testing.T, path string, f *fakeOC2, password string) {
+	t.Helper()
+	f.mu.Lock()
+	pid, version, addr := f.pid, f.version, f.addr
+	f.mu.Unlock()
+	writeServiceJSON(t, path, "http://"+addr, version, pid, password)
+}
+
+// writeServiceJSON writes a registration file with the values given, which a test
+// can make wrong.
+func writeServiceJSON(t *testing.T, path, url, version string, pid int, password string) {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{"id": "svc", "version": version, "url": url, "pid": pid, "password": password})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newDiscoveryHarness is a pump that finds the service from the file at path, as
+// `parley opencode` does without --port.
+func newDiscoveryHarness(t *testing.T, path string) *harness {
+	t.Helper()
+	d := &Discovery{Path: path, Options: []Option{WithRequestTimeout(2 * time.Second)}}
+	_, c, _, err := d.Find(context.Background())
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	chat := filepath.Join(t.TempDir(), "chat.ndjson")
+	dir, err := state.Open(t.TempDir(), selfNick, "file:"+chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newHarness2On(t, c, chat, dir, func(cfg *Config) { cfg.Discovery = d })
+}
+
+func (f *fakeOC2) setPassword(pw string) { f.set(func() { f.password = pw }) }
+
+// TestTheServiceIsFoundAgainAfterItRestartsElsewhere: a restarted service has a new
+// address, password and process id. The pump read the file once, at the start, and
+// reads it again each time it attaches, so the next delivery goes to the new one.
+func TestTheServiceIsFoundAgainAfterItRestartsElsewhere(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake2(t)
+	a.setPassword("password-of-a")
+	writeFakeService(t, path, a, "password-of-a")
+	h := newDiscoveryHarness(t, path)
+	h.start()
+
+	h.peerSend(peerNick, "to the first service")
+	a.waitPosts(1)
+	first := h.cursorPast("")
+
+	a.stop()
+	b := newFake2(t)
+	b.set(func() { b.pid, b.password = 777, "password-of-b" })
+	writeFakeService(t, path, b, "password-of-b")
+	h.peerSend(peerNick, "to the restarted service")
+	b.waitPosts(1)
+	h.cursorPast(first)
+	if n := len(a.postBodies()); n != 1 {
+		t.Fatalf("%d prompts reached the first service, want the one", n)
+	}
+	if users := b.userTexts(); len(users) != 1 || !strings.Contains(users[0], "to the restarted service") {
+		t.Fatalf("the restarted service holds %v", users)
+	}
+}
+
+// TestADeliveryIsHeldForAServiceThatIsNotThereOrIsStarting: with the file gone, a
+// file that describes another process, or a service that answers 503, the pump holds
+// with its backoff, says so once, and delivers when the service is up.
+func TestADeliveryIsHeldForAServiceThatIsNotThereOrIsStarting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake2(t)
+	writeFakeService(t, path, a, "")
+	h := newDiscoveryHarness(t, path)
+	h.start()
+
+	h.peerSend(peerNick, "one")
+	a.waitPosts(1)
+	first := h.cursorPast("")
+
+	// The service is gone and its file with it.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	h.peerSend(peerNick, "two")
+	h.waitLog("OpenCode is not answering")
+	time.Sleep(100 * time.Millisecond)
+	if c := h.savedCursor(); c != first {
+		t.Fatalf("a delivery was committed with no service: %q", c)
+	}
+	// The file is back but describes a process that is not the one answering (a
+	// file left behind, or written a moment before the service is up): the pump
+	// asks and keeps holding.
+	a.mu.Lock()
+	url := "http://" + a.addr
+	a.mu.Unlock()
+	writeServiceJSON(t, path, url, "2.0.32", 999, "")
+	reads := a.read("info")
+	a.waitReads("info", reads+3)
+	if c := h.savedCursor(); c != first {
+		t.Fatalf("a delivery was committed to a server the file does not describe: %q", c)
+	}
+	// The file now describes a service that answers 503 for a while (starting).
+	b := newFake2(t)
+	b.set(func() { b.pid, b.info503 = 555, 3 })
+	writeFakeService(t, path, b, "")
+	b.waitPosts(1)
+	h.cursorPast(first)
+	if n := strings.Count(h.logs.String(), "OpenCode is not answering"); n < 1 {
+		t.Fatalf("the outage was not logged:\n%s", h.logs.String())
+	}
+	if !strings.Contains(h.logs.String(), "OpenCode is back") {
+		t.Fatalf("the return was not logged:\n%s", h.logs.String())
+	}
+	if n := len(a.postBodies()); n != 1 {
+		t.Fatalf("%d prompts reached the first service while it was away, want the one", n)
+	}
+}
+
+// TestA401AfterTheFileIsReadAgainStopsThePump: the password in the file is the
+// service's own; if it is refused after the file was read, there is nothing to wait
+// for.
+func TestA401AfterTheFileIsReadAgainStopsThePump(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake2(t)
+	a.setPassword("right")
+	writeFakeService(t, path, a, "right")
+	h := newDiscoveryHarness(t, path)
+	h.start()
+
+	h.peerSend(peerNick, "one")
+	a.waitPosts(1)
+	h.cursorPast("")
+	writeFakeService(t, path, a, "wrong")
+	h.peerSend(peerNick, "two")
+	err := h.join()
+	if err == nil || !strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "wrong") {
+		t.Fatalf("Run returned %v", err)
+	}
+	if n := len(a.postBodies()); n != 1 {
+		t.Fatalf("%d prompts reached a service that refused the password", n)
+	}
+}
+
+// TestAStaleServiceFileReadsAsStaleBeforeTheSessionIsAsked: Info and the cross-check
+// come first, so a file for another process is not a session the server does not
+// know.
+func TestAStaleServiceFileReadsAsStaleBeforeTheSessionIsAsked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake2(t)
+	a.set(func() { a.exists = false })
+	a.set(func() { a.pid = 1 })
+	writeFakeService(t, path, a, "")
+	a.set(func() { a.pid = 2 })
+	d := Discovery{Path: path, Options: []Option{WithRequestTimeout(2 * time.Second)}}
+	_, _, _, err := d.Find(context.Background())
+	var stale *StaleServiceError
+	if !errors.As(err, &stale) || stale.FilePID != 1 || stale.PID != 2 {
+		t.Fatalf("Find = %v, want a StaleServiceError for pid 1 against 2", err)
+	}
+	if n := a.read("session"); n != 0 {
+		t.Fatalf("the session was asked for %d times before the file was shown to be stale", n)
+	}
+	if !strings.Contains(err.Error(), "the file is stale or the address belongs to another server") {
+		t.Fatalf("the error: %v", err)
+	}
+}
+
+// TestAServerThatGoesAwayDuringTheWaitIsWaitedFor: the delivery is in the server's
+// inbox, which survives the server; the pump holds with its backoff, says so, and
+// goes on asking for the message when the server is back. It has no deadline to
+// give up at, and sends nothing twice.
+func TestAServerThatGoesAwayDuringTheWaitIsWaitedFor(t *testing.T) {
+	f := newFake2(t)
+	f.set(func() { f.busyOnPost = true })
+	h := newHarness2(t, f, func(c *Config) { c.ReadBackTimeout = 100 * time.Millisecond })
+	h.start()
+
+	h.peerSend(peerNick, "behind a turn, across a restart")
+	f.waitPosts(1)
+	addr := f.address()
+	f.stop()
+	h.waitLog("the delivery is queued there, holding for the server")
+	time.Sleep(400 * time.Millisecond)
+	f.start(addr)
+	f.set(func() { f.busyOnPost = false })
+	f.release()
+	h.cursorPast("")
+	h.waitLog("OpenCode is back")
+	if n := len(f.postBodies()); n != 1 {
+		t.Fatalf("%d prompts, want the one", n)
 	}
 }

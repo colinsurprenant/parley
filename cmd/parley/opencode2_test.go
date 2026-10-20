@@ -139,6 +139,12 @@ func TestOpencodeServiceDiscoveryFailuresAreConfigurationErrors(t *testing.T) {
 			},
 			want: []string{"will not send its password to"},
 		},
+		"an address with credentials": {
+			setup: func(t *testing.T, h string, s *oc2Server) {
+				writeService(t, h, strings.Replace(s.url(), "http://", "http://user:hunter2@", 1), oc2PID, 0o600)
+			},
+			want: []string{"will not send its password to", "http://127.0.0.1:"},
+		},
 		"an address with a path": {
 			setup: func(t *testing.T, h string, s *oc2Server) { writeService(t, h, s.url()+"/x", oc2PID, 0o600) },
 			want:  []string{"will not send its password to"},
@@ -198,7 +204,7 @@ func TestOpencodeServiceDiscoveryFailuresAreConfigurationErrors(t *testing.T) {
 					t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
 				}
 			}
-			for _, secret := range []string{oc2Password, "rotated"} {
+			for _, secret := range []string{oc2Password, "rotated", "hunter2"} {
 				if strings.Contains(res.stderr, secret) || strings.Contains(res.stdout, secret) {
 					t.Errorf("the output quotes a password:\n%s", res.stderr)
 				}

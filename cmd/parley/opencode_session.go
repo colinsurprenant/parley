@@ -480,11 +480,18 @@ func openCodeDeleteChosen(bin, name, id, dir string) error {
 	cmd := exec.CommandContext(ctx, bin, "session", "delete", id)
 	cmd.Dir = existingDir(dir)
 	cmd.Stdin = nil
+	// Its own process group, taken whole on a failure, like every other run of the
+	// binary here. A delete may start OpenCode 2's service when none runs; the
+	// service detaches itself (its own session and process group, stdin and stdout
+	// on /dev/null, checked on 2.0.32), so the group-kill does not reach it.
+	ownGroup(cmd)
 	var out limitBuffer
 	out.limit = 4096
 	cmd.Stdout, cmd.Stderr = &out, &out
-	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
+	if err != nil {
+		killGroup(cmd)
+	}
 	if err == nil {
 		return nil
 	}
@@ -512,10 +519,11 @@ func openCodeVersion(ctx context.Context, bin, dir string) (ocVersion, error) {
 	cmd := exec.CommandContext(ctx, bin, "--version")
 	cmd.Dir = existingDir(dir)
 	cmd.Stdin = nil
+	ownGroup(cmd)
 	out, errs := &limitBuffer{limit: 4096}, &limitBuffer{limit: 4096}
 	cmd.Stdout, cmd.Stderr = out, errs
-	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Run(); err != nil {
+		killGroup(cmd)
 		return ocVersion{}, fmt.Errorf("opencode --version: %w: %s", err, codex.PlainLine(firstLine(strings.TrimSpace(errs.String()))))
 	}
 	text := doctor.OpenCodeVersion(out.String())

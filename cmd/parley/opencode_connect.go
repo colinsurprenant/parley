@@ -15,8 +15,11 @@ import (
 type opencodeTarget struct {
 	client  opencode.Client
 	client2 opencode.Client2
-	version string
-	where   string
+	// discovery, set with client2 when the service was found from its file, is what
+	// finds it again.
+	discovery *opencode.Discovery
+	version   string
+	where     string
 }
 
 // connectOpenCode finds the OpenCode server to deliver into and checks that it
@@ -46,43 +49,45 @@ func tui2(session string) string {
 }
 
 // discoverService is connectOpenCode without a port: OpenCode 2's background
-// service, from its service file.
+// service, from its service file. The server is asked who it is, and the answer
+// is held against the file, before the session is asked for, so that a file left
+// behind reads as stale and not as a session the service does not know. The pump
+// is given the same Discovery, to find the service again whenever it attaches.
 func discoverService(ctx context.Context, getenv func(string) string, session string) (*opencodeTarget, error) {
 	path, err := opencode.ServicePath(getenv)
 	if err != nil {
 		return nil, cfgErrf("%v: pass --port <n> for the server at 127.0.0.1:<n>", err)
 	}
-	svc, err := opencode.ReadService(path)
+	d := &opencode.Discovery{Path: path}
+	svc, c, info, err := d.Find(ctx)
+	var stale *opencode.StaleServiceError
 	switch {
 	case errors.Is(err, opencode.ErrNoService):
 		return nil, cfgErrf("%v: start OpenCode 2 on the session with %s, and the pump finds the service itself; for OpenCode 1.x pass --port <n>, the port of %s", err, tui2(session), tui1("<n>", session))
-	case err != nil:
-		return nil, cfgErrf("OpenCode 2's service file: %v", err)
-	}
-	// The address is the service file's to name, and a file is not trusted to name
-	// anything but this machine: the credentials in it go to a loopback address
-	// alone.
-	c, err := svc.Client()
-	if err != nil {
+	case errors.Is(err, opencode.ErrServiceAddress):
+		// The address is the service file's to name, and a file is not trusted to name
+		// anything but this machine: the credentials in it go to a loopback address
+		// alone.
 		return nil, cfgErrf("OpenCode 2's service file %s names an address this front will not send its password to: %v", path, err)
-	}
-	info, err := opencode.Probe2(ctx, c, session)
-	switch {
-	case errors.Is(err, opencode.ErrSessionNotFound):
-		return nil, cfgErrf("OpenCode 2's service at %s does not know session %s: start OpenCode on it with %s: %v", svc.URL, session, tui2(session), err)
+	case errors.Is(err, opencode.ErrServiceFile):
+		return nil, cfgErrf("OpenCode 2's service file: %v", err)
+	case errors.As(err, &stale):
+		return nil, cfgErrf("%v; stop OpenCode 2 and start it again with %s", err, tui2(session))
 	case opencode.IsTransport(err):
-		return nil, cfgErrf("OpenCode 2's service file %s names a service at %s, which does not answer, and it may have stopped and left the file behind: start it with %s: %v", path, svc.URL, tui2(session), err)
+		return nil, cfgErrf("OpenCode 2's service file %s names a service at %s, which does not answer, and it may have stopped and left the file behind: start it with %s: %v", path, opencode.RedactURL(svc.URL), tui2(session), err)
 	case err != nil:
-		return nil, cfgErrf("OpenCode 2's service at %s: %v", svc.URL, err)
+		return nil, cfgErrf("OpenCode 2's service at %s: %v", opencode.RedactURL(svc.URL), err)
 	}
-	// The file is what the service wrote about itself, and the server that answers
-	// at its address has to be that service: a file left by a service that has
-	// gone, whose address something else now has, would otherwise be taken for it.
-	if info.PID != svc.PID || (svc.Version != "" && info.Version != svc.Version) {
-		return nil, cfgErrf("the service file %s describes pid %d at %s, and the server that answers there is pid %d (OpenCode %s): the file is stale or the address belongs to another server; stop OpenCode 2 and start it again with %s",
-			path, svc.PID, svc.URL, info.PID, info.Version, tui2(session))
+	if _, err := c.Session(ctx, session); err != nil {
+		switch {
+		case errors.Is(err, opencode.ErrSessionNotFound):
+			return nil, cfgErrf("OpenCode 2's service at %s does not know session %s: start OpenCode on it with %s: %v", opencode.RedactURL(svc.URL), session, tui2(session), err)
+		case opencode.IsTransport(err):
+			return nil, cfgErrf("OpenCode 2's service at %s stopped answering: start it with %s: %v", opencode.RedactURL(svc.URL), tui2(session), err)
+		}
+		return nil, cfgErrf("OpenCode 2's service at %s: %v", opencode.RedactURL(svc.URL), err)
 	}
-	return &opencodeTarget{client2: c, version: info.Version, where: "the OpenCode 2 service at " + svc.URL}, nil
+	return &opencodeTarget{client2: c, discovery: d, version: info.Version, where: "the OpenCode 2 service at " + opencode.RedactURL(svc.URL)}, nil
 }
 
 // probePort is connectOpenCode with a port. OpenCode 1 is tried first, because

@@ -193,10 +193,10 @@ verbs:
            that text; on OpenCode 2 it posts under a message id of its own,
            posts again under the same id when a post got no answer, and counts
            the delivery as made once the message with that id holds exactly that
-           text, waiting behind a turn that is not its own, changing an entry
-           that sits in the inbox of an idle session (parked, as the queue is
-           after an interrupt) to steer, once, and treating an entry the human
-           cancelled as handed over; it commits only then, so a crash
+           text, waiting with no deadline behind a turn that is not its own, or
+           for the human to resume a session an interrupt parked (it never
+           steers an entry), and treating an entry the human cancelled as
+           handed over; it commits only then, so a crash
            re-delivers and does not drop. On OpenCode 1 a human submitting in
            the TUI at the instant of the post is merged into the human's own
            turn, which the server's API cannot prevent. Before it opens

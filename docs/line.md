@@ -281,7 +281,11 @@ against 2.0.32 in OpenCode's simulation mode, which blocks all model traffic, an
      fails or you interrupt it, `opencode session delete <id>` is run from the
      checkout (an answer of "Session not found", for a run that failed before it made
      the session, is not a failure). A 2.x run starts the user's one background
-     service if none runs, and the session lives in it.
+     service if none runs, and the session lives in it. The service detaches
+     itself (checked on 2.0.32: its own process group and session, stdin and stdout
+     on `/dev/null`, stderr not on parley's pipes), so a run that parley stops by
+     taking its process group, on a timeout or an interrupt, leaves the service and
+     the TUIs on it alone, and a run that succeeds is not held up by it.
    - **A limit of creating the session through `opencode run`, on 1.x:** it carries
      OpenCode's own session-level denies for the `question` tool and for plan mode
      (1.18.30 sets them when the run is not interactive). The session cannot ask
@@ -331,7 +335,10 @@ against 2.0.32 in OpenCode's simulation mode, which blocks all model traffic, an
    `XDG_STATE_HOME`. The pump refuses the file unless it is a regular file you
    own that nobody else can read or write, names an `http` address on a loopback
    IP, and the server there answers as the service the file describes (same
-   process id and version). **Authentication on 2.x:** the service's password is
+   process id and version). It reads the file again every time it attaches, so a
+   service that restarts at another address with another password is followed: the
+   pump holds while the file is absent or the service is starting, and stops on a
+   401 after reading the file again. **Authentication on 2.x:** the service's password is
    the file's, sent to that address as HTTP basic credentials under the user
    `opencode` and never printed, so there is nothing to set; for an `opencode
    serve` you started yourself, give `--port` and set `OPENCODE_PASSWORD` (or the
@@ -352,8 +359,14 @@ against 2.0.32 in OpenCode's simulation mode, which blocks all model traffic, an
    bytes; 2.x: the message the pump posted under its own id holds them), and a crash
    delivers again rather than drop (`docs/reference.md`, "opencode: the OpenCode
    front"). On 1.x a line you submit in the TUI at the instant of a post is merged
-   into your own turn, and the server's API cannot prevent that; on 2.x it is not
-   merged, it is a turn of its own. A delivery is posted whole, with one bound: a
+   into your own turn, and the server's API cannot prevent that. On 2.x the delivery
+   is queued and is never merged into a turn that runs; the other way round, a prompt
+   you submit as a steer while a delivery's turn runs is folded into that turn, as any
+   steer is. If you interrupt the session while a delivery waits in its inbox, the
+   delivery stays parked there and the pump says so once and waits: it goes over when
+   you resume the session, and the pump never steers it, which would put it into
+   whatever turn runs next. If you delete a queued delivery in the TUI, the pump
+   counts it as handed over and does not send it again. A delivery is posted whole, with one bound: a
    message whose rendering is over 128 KiB, and a message that would take one
    delivery past 512 KiB, is not posted, and a stub takes its place, its own
    header over a one-line notice naming it, while the full text stays in the stream
@@ -525,8 +538,8 @@ before it has read the others', run a table instead: a line has no seal.
   them, tries the server again and delivers once it answers; restart the TUI with
   the same `--port` and `--session`. On 2.x the service outlives the TUI, so closing
   the TUI stops nothing; a service that is stopped is waited for the same way, and
-  if it comes back at another address, restart the pump, which reads the service
-  file once when it starts.
+  when it comes back, at another address or not, the pump finds it again from its
+  file.
 - **A front restart loses what it held.** Held posts live in the front's memory
   only. A restarted session hears everything new, but not the posts the breaker
   was holding for it, so ask the others to repeat what it missed; your client's

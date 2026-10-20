@@ -40,7 +40,7 @@ type fake2Post struct {
 // against a live server in simulation mode): a prompt with an id is admitted into
 // the inbox, a repeat of an id is answered with the first, an idle session takes a
 // queued entry up at once and a busy one after its turn, steer entries go first, a
-// parked session takes nothing until an entry is changed to steer, and an entry
+// parked session takes nothing until the human resumes it, and an entry
 // leaves the inbox and becomes a message in one step.
 //
 // A turn is counted in reads of the active list and not in time, as the OpenCode 1
@@ -65,8 +65,8 @@ type fakeOC2 struct {
 	// busy for; busyLeft is what is left of the one in progress.
 	turnReads int
 	busyLeft  int
-	// parked makes the session take nothing up from the queue until an entry is
-	// steered: the state after an interrupt.
+	// parked makes the session take nothing up from the queue until resume: the
+	// state after an interrupt.
 	parked bool
 
 	// lagReads is the lag given to an entry on admission.
@@ -82,14 +82,23 @@ type fakeOC2 struct {
 	busyOnPost bool
 	// corrupt makes the message that an entry becomes hold other text.
 	corrupt bool
-	// steerConflicts is how many steer requests are answered 409 and not applied.
-	steerConflicts int
 	// deleteOnPost makes the session unknown once an entry has been admitted.
 	deleteOnPost bool
 
-	posts   []fake2Post
+	posts []fake2Post
+	// patches are the requests to change an inbox entry. The pump makes none: it
+	// never steers, and the fake answers 405, so one is a failure of the test.
 	patches []string
-	reads   map[string]int
+	// echoOther makes the answer to a prompt carry other text than was posted, as a
+	// plugin that rewrites prompts would leave it; the entry is admitted as posted.
+	echoOther bool
+	// info503 is how many reads of /api/info are answered 503, a service that is
+	// starting.
+	info503 int
+	// inboxTooLong makes the inbox read answer a body past the bound the front
+	// reads it under, as an inbox full of attachments does.
+	inboxTooLong bool
+	reads        map[string]int
 
 	srv  *httptest.Server
 	addr string
@@ -171,6 +180,15 @@ func (f *fakeOC2) set(fn func()) {
 func (f *fakeOC2) release() {
 	f.set(func() {
 		f.manualBusy = false
+		f.promoteLocked()
+	})
+}
+
+// resume is the human resuming a session an interrupt parked: it takes up what
+// waited.
+func (f *fakeOC2) resume() {
+	f.set(func() {
+		f.parked = false
 		f.promoteLocked()
 	})
 }
@@ -290,6 +308,11 @@ func (f *fakeOC2) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/api/info" && r.Method == http.MethodGet:
 		f.reads["info"]++
+		if f.info503 > 0 {
+			f.info503--
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"_tag": "ServiceUnavailable", "message": "starting"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"version": f.version, "pid": f.pid, "urls": []string{"http://" + f.addr}})
 	case path == "/api/session/active" && r.Method == http.MethodGet:
 		f.reads["active"]++
@@ -327,6 +350,11 @@ func (f *fakeOC2) sessionLocked(w http.ResponseWriter, r *http.Request, tail str
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": testSession, "title": "t", "location": map[string]any{"directory": f.dir}}})
 	case tail == "inbox" && r.Method == http.MethodGet:
 		f.reads["inbox"]++
+		if f.inboxTooLong {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"msg_x","delivery":"queue","pad":"` + strings.Repeat("x", maxMessageBody) + `"}]}`))
+			return
+		}
 		out := make([]map[string]any, 0, len(f.inbox))
 		for _, it := range f.inbox {
 			out = append(out, inboxJSON(it))
@@ -418,24 +446,15 @@ func (f *fakeOC2) promptLocked(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": inboxJSON(item)})
+	echo := inboxJSON(item)
+	if f.echoOther {
+		echo["payload"] = map[string]any{"text": item.text + " (rewritten)"}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": echo})
 }
 
 func (f *fakeOC2) steerLocked(w http.ResponseWriter, r *http.Request, id string) {
 	body, _ := io.ReadAll(r.Body)
 	f.patches = append(f.patches, id+" "+string(body))
-	if f.steerConflicts > 0 {
-		f.steerConflicts--
-		writeJSON(w, http.StatusConflict, map[string]any{"_tag": "ConflictError", "message": "conflict"})
-		return
-	}
-	for i := range f.inbox {
-		if f.inbox[i].id == id && f.inbox[i].delivery == "queue" && string(body) == `{"delivery":"steer"}` {
-			f.inbox[i].delivery = "steer"
-			f.promoteLocked()
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-	}
-	writeJSON(w, http.StatusConflict, map[string]any{"_tag": "ConflictError", "message": "not a queued entry"})
+	w.WriteHeader(http.StatusMethodNotAllowed)
 }

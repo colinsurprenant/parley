@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,6 +284,17 @@ func TestLineAddOpenCode2InterruptedDeletesTheChosenID(t *testing.T) {
 	b.wantDeletes(t, 1, idOfRun(t, b))
 	if n := b.listCalls(t); n != 0 {
 		t.Errorf("sessions were listed %d times; the id is known", n)
+	}
+	// The run is a process group of its own and the stop took it whole: the child
+	// the opencode started is gone with it, as on 1.x.
+	for deadline := time.Now().Add(childDeadline); ; {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the opencode's child %d outlived the run", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
