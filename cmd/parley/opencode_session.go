@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/colinsurprenant/parley/internal/codex"
+	"github.com/colinsurprenant/parley/internal/doctor"
 	"github.com/colinsurprenant/parley/internal/state"
 )
 
@@ -37,6 +38,8 @@ const (
 	openCodeDeleteTimeout = time.Minute
 	// maxOpenCodeEvents bounds the event types a refusal lists.
 	maxOpenCodeEvents = 12
+	// openCodeVersionTimeout bounds one `opencode --version`.
+	openCodeVersionTimeout = time.Minute
 	// openCodeListMax is how many of the newest sessions are asked for when
 	// looking for one a stopped run left: a page wide enough that the sessions
 	// made in the project since the run began do not push it off.
@@ -55,6 +58,10 @@ type openCodeSession struct {
 	base, stream string // where the session is recorded
 	// timeout is the turn's bound; zero means openCodeTurnTimeout.
 	timeout time.Duration
+	// sid is the session id parley chose, on OpenCode 2, where opencode run
+	// --session creates the session under the id it is given; it is empty on
+	// OpenCode 1, whose run makes up an id and announces it.
+	sid string
 }
 
 // openCodeTurn is what a run's `--format json` events say. Every event is one
@@ -192,12 +199,21 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 	if c.model != "" {
 		args = append(args, "-m", c.model)
 	}
+	if c.sid != "" {
+		args = append(args, "--session", c.sid)
+	}
 
 	env.logf("starting OpenCode session %s (opencode run with its primer, up to %s)", c.nick, timeout)
 	started := time.Now()
 	turn, stderr, runErr := runOpenCodeTurn(ctx, c.bin, c.dir, args, c.prompt, timeout)
 
 	switch {
+	case c.sid != "":
+		// OpenCode 2: the id is this run's own choice, so the session is known to
+		// delete whatever the events say or do not, and nothing is searched for. It
+		// may not exist, if the run failed before it made it, and deleting it then
+		// is not an error (openCodeDeleteChosen).
+		env.push(fmt.Sprintf("OpenCode session %s (session %s)", c.sid, c.nick), func() error { return openCodeDeleteChosen(c.bin, c.name, c.sid, c.dir) })
 	case len(turn.Others) > 0:
 		// Output that names two sessions does not say which one this run made, and
 		// nothing is deleted on a guess: the error names them for the human.
@@ -245,6 +261,9 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 	}
 	if !state.ValidSessionID(turn.SessionID) {
 		return "", "", fmt.Errorf("opencode run for session %s: the session id %s is not an OpenCode session id (ses_ and 26 letters or digits)", c.nick, clipQuoted(turn.SessionID))
+	}
+	if c.sid != "" && turn.SessionID != c.sid {
+		return "", "", fmt.Errorf("opencode run for session %s: its events name session %s and not %s, the id this run chose for the session it made, so the turn is not shown to be that session's", c.nick, clipQuoted(turn.SessionID), c.sid)
 	}
 	if len(turn.Others) > 0 {
 		seen := []string{clipQuoted(turn.SessionID)}
@@ -394,4 +413,63 @@ func openCodeDelete(bin, name, id, dir string) error {
 		return fmt.Errorf("%s session delete %s: %w: %s (remove it yourself with: %s session delete %s)", name, id, err, codex.PlainLine(firstLine(strings.TrimSpace(out.String()))), name, id)
 	}
 	return nil
+}
+
+// openCodeDeleteChosen is openCodeDelete for a session whose id parley chose, on
+// OpenCode 2: a delete that is answered "Session not found" (exit 1) found nothing
+// to remove, which is the session never having been made, and not a failure.
+func openCodeDeleteChosen(bin, name, id, dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), openCodeDeleteTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "session", "delete", id)
+	cmd.Dir = existingDir(dir)
+	cmd.Stdin = nil
+	var out limitBuffer
+	out.limit = 4096
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.WaitDelay = 5 * time.Second
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	if text := strings.TrimSpace(out.String()); strings.Contains(strings.ToLower(text), "session not found") {
+		return nil
+	}
+	return fmt.Errorf("%s session delete %s: %w: %s (remove it yourself with: %s session delete %s)", name, id, err, codex.PlainLine(firstLine(strings.TrimSpace(out.String()))), name, id)
+}
+
+// ocVersion is the version an opencode binary reports.
+type ocVersion struct {
+	major int
+	text  string
+}
+
+// openCodeVersion asks the binary which OpenCode it is: 1.x prints a bare version
+// ("1.18.30") and 2.x "opencode v2.0.32". A binary that prints no version is taken
+// for a 1.x, as every binary was before the two were told apart; doctor has
+// already warned of it. A major version after 2 is refused here, before anything
+// is made, as the pump would refuse its server. The output is the binary's own and
+// is read as text: it is parsed for a number, and quoted bounded.
+func openCodeVersion(ctx context.Context, bin, dir string) (ocVersion, error) {
+	ctx, cancel := context.WithTimeout(ctx, openCodeVersionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "--version")
+	cmd.Dir = existingDir(dir)
+	cmd.Stdin = nil
+	out, errs := &limitBuffer{limit: 4096}, &limitBuffer{limit: 4096}
+	cmd.Stdout, cmd.Stderr = out, errs
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Run(); err != nil {
+		return ocVersion{}, fmt.Errorf("opencode --version: %w: %s", err, codex.PlainLine(firstLine(strings.TrimSpace(errs.String()))))
+	}
+	text := doctor.OpenCodeVersion(out.String())
+	head, _, _ := strings.Cut(text, ".")
+	major, err := strconv.Atoi(head)
+	if err != nil {
+		return ocVersion{major: 1}, nil
+	}
+	if major > 2 {
+		return ocVersion{}, fmt.Errorf("opencode %s: parley starts sessions on OpenCode 1.x and 2.x only", text)
+	}
+	return ocVersion{major: major, text: text}, nil
 }

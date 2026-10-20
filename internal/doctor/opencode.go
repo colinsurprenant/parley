@@ -5,22 +5,15 @@ import (
 	"fmt"
 )
 
-// openCodeRemedy is what a person does about an OpenCode 1.x that is not the
-// one verified: nothing here can try it, so it is the next session that shows.
-const openCodeRemedy = "If an OpenCode session misbehaves, install OpenCode " + OpenCodeVerified + " (" + OpenCodeInstallURL + "), e.g. npm i -g opencode-ai@" + OpenCodeVerified + "."
+// openCodeRemedy and openCodeRemedy2 are what a person does about an OpenCode
+// that is not the one verified for its major version: nothing here can try it,
+// so it is the next session that shows.
+const (
+	openCodeRemedy  = "If an OpenCode session misbehaves, install OpenCode " + OpenCodeVerified + " (" + OpenCodeInstallURL + "), e.g. npm i -g opencode-ai@" + OpenCodeVerified + "."
+	openCodeRemedy2 = "If an OpenCode session misbehaves, install OpenCode " + OpenCodeVerified2 + " (" + OpenCodeInstallURL + "). It was verified against a server in simulation mode, not yet against a live model."
+)
 
-// openCodeV2 is the report on an OpenCode 2. The front posts a delivery with
-// OpenCode 1's prompt_async route, which OpenCode 2 does not have (read from
-// the 2.0.32 source: its prompt route takes a delivery of queue or steer). The
-// way out is spelled out, both ways to a 1.x: opencode-ai is OpenCode's npm
-// package, and @1 picks the newest 1.x of it; opencode.ai/install is a script
-// that installs 1.x only and refuses a 2. Homebrew core, where a person likely
-// got the 2, now ships OpenCode 2.
-const openCodeV2 = "OpenCode 2 is not supported yet: parley's front speaks OpenCode 1's HTTP API (prompt_async); " +
-	"install opencode 1.x, e.g. npm i -g opencode-ai@1 or curl -fsSL https://opencode.ai/install | bash (1.x only); " +
-	"Homebrew core now ships OpenCode 2"
-
-// openCodeSurfaces are the flags and the subcommand of OpenCode's CLI that
+// openCodeSurfaces are the flags and the subcommand of OpenCode 1's CLI that
 // parley uses or tells a human to use, read from the 1.18.30 help. The default
 // command is the TUI, started with --port so that it serves the HTTP API the
 // front posts through, and with -s/--session to resume a session; run is how a
@@ -34,14 +27,30 @@ var openCodeSurfaces = []surface{
 	{cmd: []string{"session", "list"}, flags: []string{"--format", "-n/--max-count"}},
 }
 
-// checkOpenCode is the static OpenCode check: the binary, its version (OpenCode
-// 1 prints it bare, "1.18.30", and 2 as "opencode v2.0.32"; versionRE finds
-// the number in either), and the
-// flags and subcommand of the commands parley uses. A 2.x is refused with the
-// one line above and nothing else, since its CLI may differ in ways that would
-// only bury it. There is no live half: the front is verified against a server by
-// hand. OpenCode creates its own empty data, cache, config and state
-// directories on any invocation, --version and --help included.
+// openCode2Surfaces are OpenCode 2's, read from the 2.0.32 help. The default
+// command has no --port: it and run reach one background service, and -s/--session
+// is how the TUI continues a session, and how run continues one or creates it
+// under the id it is given, which is how a session is started with its primer as
+// the first message. A session is removed again with session delete, and nothing
+// is searched for: the id is parley's own.
+var openCode2Surfaces = []surface{
+	{label: "opencode tui", flags: []string{"-s/--session"}},
+	{cmd: []string{"run"}, flags: []string{"--format", "-m/--model", "--title", "-s/--session"}},
+	{cmd: []string{"session"}, subs: []string{"delete", "list"}},
+}
+
+// OpenCodeVersion is the version number in what opencode --version printed:
+// OpenCode 1 prints it bare, "1.18.30", and 2 as "opencode v2.0.32". It is empty
+// if there is none.
+func OpenCodeVersion(stdout string) string { return versionRE.FindString(stdout) }
+
+// checkOpenCode is the static OpenCode check: the binary, its version, and the
+// flags and subcommands of the commands parley uses, by the major version the
+// binary says it is: 1.x and 2.x are different CLIs, and parley speaks to both.
+// A major version after 2 is a FAIL, since the pump refuses it. There is no live
+// half: the front is verified against a server by hand. OpenCode creates its own
+// empty data, cache, config and state directories on any invocation, --version
+// and --help included.
 func checkOpenCode(ctx context.Context, bin string) []Result {
 	path, err := Resolve(bin)
 	if err != nil {
@@ -52,11 +61,17 @@ func checkOpenCode(ctx context.Context, bin string) []Result {
 	if err != nil {
 		return append(rs, Result{Fail, "opencode version", fmt.Sprintf("opencode --version: %s", describe(err, stdout, stderr))})
 	}
-	if have := versionRE.FindString(stdout); have != "" && numericParts(have)[0] >= 2 {
-		return append(rs, Result{Fail, "opencode version", openCodeV2 + " (found " + have + ")"})
+	verified, remedy, surfaces := OpenCodeVerified, openCodeRemedy, openCodeSurfaces
+	if have := OpenCodeVersion(stdout); have != "" {
+		switch major := numericParts(have)[0]; {
+		case major == 2:
+			verified, remedy, surfaces = OpenCodeVerified2, openCodeRemedy2, openCode2Surfaces
+		case major > 2:
+			return append(rs, Result{Fail, "opencode version", fmt.Sprintf("OpenCode %s is a later major version than the 1.x and 2.x that parley speaks to: its pump refuses a server of any other, so a session on it could not be delivered into; install OpenCode 2.x (%s)", have, OpenCodeInstallURL)})
+		}
 	}
-	rs = append(rs, compareVersion("opencode", stdout, OpenCodeVerified, openCodeRemedy))
-	for _, s := range openCodeSurfaces {
+	rs = append(rs, compareVersion("opencode", stdout, verified, remedy))
+	for _, s := range surfaces {
 		rs = append(rs, checkSurface(ctx, "opencode", path, s))
 	}
 	return rs

@@ -64,7 +64,7 @@ func TestHealth(t *testing.T) {
 
 // TestHealthOfOpenCode2IsARefusalNotADecodeError: on OpenCode 2 the health path
 // serves the web page with a 200 (checked live on 2.0.32), a page larger than the
-// bound among them, and the front says what that means instead of a JSON error.
+// bound among them, and the client says what that means instead of a JSON error.
 func TestHealthOfOpenCode2IsARefusalNotADecodeError(t *testing.T) {
 	page := `<!doctype html><html><head><title>OpenCode</title></head><body><div id="root"></div></body></html>`
 	for name, h := range map[string]http.HandlerFunc{
@@ -93,7 +93,7 @@ func TestHealthOfOpenCode2IsARefusalNotADecodeError(t *testing.T) {
 			t.Errorf("%s: Health = %v, want an UnsupportedServerError", name, err)
 			continue
 		}
-		for _, want := range []string{"OpenCode 2 is not supported yet", "GET /global/health", "opencode-ai", "opencode.ai/install"} {
+		for _, want := range []string{"GET /global/health", "not the OpenCode 1 server", "start it again"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%s: the refusal does not say %q: %v", name, want, err)
 			}

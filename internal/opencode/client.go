@@ -38,8 +38,7 @@ type Part struct {
 
 // Client is the HTTP seam of the front: everything the pump asks of an OpenCode
 // server, and nothing else. HTTPClient is the real one for OpenCode 1's API; the
-// tests swap in their own, and a client for OpenCode 2's different API is a
-// second implementation of this and not a change to the pump.
+// tests swap in their own. OpenCode 2's different API is Client2's.
 //
 // An error from a method is one of: ErrSessionNotFound; a *TransportError, for a
 // request that got no answer (IsDial says that it never reached the server at
@@ -114,6 +113,8 @@ type StatusError struct {
 	Code   int
 	Status string
 	Body   string
+	// Hint replaces the advice that follows a 401, which is OpenCode 1's.
+	Hint string
 }
 
 func (e *StatusError) Error() string {
@@ -122,37 +123,50 @@ func (e *StatusError) Error() string {
 		s += ": " + e.Body
 	}
 	if e.Code == http.StatusUnauthorized {
-		s += " (the server wants the password it was started with: set OPENCODE_SERVER_PASSWORD, and OPENCODE_SERVER_USERNAME if it is not opencode)"
+		if e.Hint != "" {
+			s += " (" + e.Hint + ")"
+		} else {
+			s += " (the server wants the password it was started with: set OPENCODE_SERVER_PASSWORD, and OPENCODE_SERVER_USERNAME if it is not opencode)"
+		}
 	}
 	return s
 }
 
-// Install1Hint says how to get the server this front speaks to. It is part of
-// every refusal that means "this is not OpenCode 1", because the usual cause is
-// an install of OpenCode 2, which a package manager may hand out as the current
-// release: Homebrew core did, from 2026-09-28.
-const Install1Hint = "this front needs OpenCode 1.x: install the npm package opencode-ai, or use the installer at opencode.ai/install (Homebrew core moved to OpenCode 2 on 2026-09-28)"
+// Install1Hint, Install2Hint and InstallHint say how to get an OpenCode this
+// front speaks to: either version. A package manager may hand out the other one
+// than the human meant, and Homebrew core did, from 2026-09-28: it moved to
+// OpenCode 2.
+const (
+	Install1Hint = "OpenCode 1.x: install the npm package opencode-ai, or use the installer at opencode.ai/install (Homebrew core moved to OpenCode 2 on 2026-09-28)"
+	Install2Hint = "OpenCode 2: use the installer at opencode.ai/v2/install, or Homebrew core"
+	InstallHint  = "install OpenCode, " + Install1Hint + "; " + Install2Hint
+)
 
 // UnsupportedServerError is a server that answered the health check as something
-// other than OpenCode 1 does. OpenCode 2, which this front does not support yet,
-// serves its web page with a 200 at the paths OpenCode 1 serves JSON at, so the
-// answer that gives it away is a page, or any body that is not the {healthy,
-// version} object.
+// other than OpenCode 1 does. OpenCode 2 serves its web page with a 200 at the
+// paths OpenCode 1 serves JSON at, so the answer that gives it away is a page, or
+// any body that is not the {healthy, version} object.
 type UnsupportedServerError struct {
 	Op  string
 	Why string
 }
 
 func (e *UnsupportedServerError) Error() string {
-	return fmt.Sprintf("OpenCode 2 is not supported yet: %s was not answered as OpenCode 1's server answers it (%s), and this front speaks OpenCode 1's HTTP API; %s", e.Op, e.Why, Install1Hint)
+	return fmt.Sprintf("%s was not answered as OpenCode 1's server answers it (%s): this is not the OpenCode 1 server this client speaks to; if it is OpenCode 2, the pump finds its protocol when it starts, so start it again", e.Op, e.Why)
 }
 
-// Auth is the HTTP basic credentials OpenCode's server takes when it is started
-// with OPENCODE_SERVER_PASSWORD. An empty Password sends none.
+// Auth is the HTTP basic credentials OpenCode's server takes: OpenCode 1's when
+// it is started with OPENCODE_SERVER_PASSWORD, and OpenCode 2's always. An empty
+// Password sends none. It never prints its password, whatever verb formats it.
 type Auth struct {
 	User     string
 	Password string
 }
+
+func (a Auth) String() string {
+	return "opencode.Auth{User:" + strconv.Quote(a.User) + ", Password:<redacted>}"
+}
+func (a Auth) GoString() string { return a.String() }
 
 const (
 	// DefaultRequestTimeout bounds one request, response body included. The

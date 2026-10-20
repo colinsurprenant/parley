@@ -944,17 +944,17 @@ func TestTheOpenCodeFormEndsWithItsFrontParagraph(t *testing.T) {
 			t.Fatalf("the opencode %s form carries the front paragraph %d times, want once", name, n)
 		}
 		// The facts it states: a pump posting a user message through the server the
-		// human started with --port, only while idle, one held delivery after a busy
+		// session runs on, only while idle, one held delivery after a busy
 		// turn, a message the human did not type, the header as the only mark, and
 		// the permission ask the reply file can raise.
 		for _, want := range []string{
-			"posts each delivery into this session as a user message", "the OpenCode server your human partner started with --port",
+			"posts each delivery into this session as a user message", "the OpenCode server this session runs on",
 			"only while the session is idle", "held and handed over as one delivery when the turn ends",
 			"a message your human partner did not type", "nothing about the turn itself says so",
 			"The header parley wrote is the only mark", "byte for byte what `parley wait` would have printed, save for the stub below",
 			"A delivery is posted whole up to about 512 KiB of rendered text", "a message over about 128 KiB on its own, and every message past that bound, arrives as a stub",
 			"that message's header and a one-line notice naming its id", "the full text stays in the stream for your human partner to read",
-			"run it as written", "(external_directory)", "answers that ask in the TUI"} {
+			"run it as written", "(external_directory)", "OpenCode 1 asks by default, OpenCode 2 allows it by default", "answers that ask in the TUI"} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("the opencode %s form lacks %q:\n%s", name, want, got)
 			}

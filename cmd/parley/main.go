@@ -103,7 +103,7 @@ usage:
                  [--debounce 250ms] [--state-dir <dir>] [--check]
   parley codex   --stream <spec> --nick <nick> --thread <thread>|auto [--debounce 250ms] [--state-dir <dir>] [--codex-bin codex]
                  [--skill build|table|line --chair <nick> --cap <n> [--window 10m]]
-  parley opencode --stream <spec> --nick <nick> --session <ses_id>|auto --port <n> [--debounce 250ms] [--state-dir <dir>]
+  parley opencode --stream <spec> --nick <nick> --session <ses_id>|auto [--port <n>] [--debounce 250ms] [--state-dir <dir>]
                  [--skill build|table|line --chair <nick> --cap <n> [--window 10m]]
   parley primer  --front claude|codex|opencode --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir>
                  [--reply-file <path>] [--state-dir <dir>] [--command <spelling>] [--reply-command <cmd>]
@@ -158,34 +158,54 @@ verbs:
            session literally named auto is passed by its UUID; with no record
            it exits 2
   opencode run in the foreground and deliver into a live OpenCode session, one
-           user message per delivery, over the HTTP API the OpenCode TUI serves
-           when it is started with "opencode --port <n> --session <id>" in the
-           session's checkout. --port is that <n>; the pump connects to
-           127.0.0.1 and nowhere else, and if the server was started with
-           OPENCODE_SERVER_PASSWORD the pump reads the same variable, and
-           OPENCODE_SERVER_USERNAME (opencode by default), for HTTP basic
-           credentials. The message is the delivery exactly as "parley wait"
-           would print it, peer header included, as the only text part of the
-           request and with no system prompt of its own: the header is the only
-           mark OpenCode gets. A delivery is bounded, because the pump reads
-           the session's history back to confirm it: a message that renders to
-           over 128 KiB, and every message once the delivery has 512 KiB, is
-           replaced by a stub, its own header over one line naming its id, and
-           the full text stays in the stream. OpenCode has no queue, and a
-           message sent while a turn runs would be folded into that turn, so the
-           pump delivers only into an idle session: if it had to wait,
-           everything that came meanwhile goes as one delivery. It counts a
-           delivery as made once the session's history shows a user message
-           with exactly that text, and commits only then, so a crash
-           re-delivers and does not drop. A human submitting in the TUI at the
-           instant of the post is merged into the human's own turn, which the
-           server's API cannot prevent. Before it opens anything, the pump
-           checks that the server answers, is OpenCode 1 (OpenCode 2 is not
-           supported yet; the npm package opencode-ai and opencode.ai/install
-           give OpenCode 1.x), and knows the session; a failure exits 2 and
-           names the TUI command to run. The same check, which also reads the
-           session's directory, where the server keeps its status, is made
-           again before every delivery, and a server that goes away (the TUI
+           user message per delivery, over the HTTP API of the OpenCode server
+           the session runs on: OpenCode 1's TUI, which serves it when it is
+           started with "opencode --port <n> --session <id>" in the session's
+           checkout, or OpenCode 2's background service, which "opencode -s <id>"
+           in the checkout starts and which has no port. Without --port the pump
+           finds that service from the file it writes, service.json in
+           $XDG_STATE_HOME/opencode (~/.local/state/opencode if unset), after
+           checking that the file is a regular file you own with no group or
+           world permission, that it names an http address on a loopback IP, and
+           that the server there answers as the service it describes; its
+           password is read from the file, sent to that address alone and never
+           printed. With --port the pump probes 127.0.0.1:<n> and tells the
+           version by the answer: OpenCode 1's health JSON, else OpenCode 2's
+           /api/info. The pump connects to 127.0.0.1 and nowhere else. A server
+           started with OPENCODE_SERVER_PASSWORD (OpenCode 1) needs the pump to
+           read the same variable, and OPENCODE_SERVER_USERNAME (opencode by
+           default), for HTTP basic credentials, and an OpenCode 2 that
+           "opencode serve" started needs OPENCODE_PASSWORD (or the older
+           OPENCODE_SERVER_PASSWORD). The message is the delivery exactly as
+           "parley wait" would print it, peer header included, as the only text
+           of the request and with no system prompt of its own: the header is
+           the only mark OpenCode gets. A delivery is bounded, because the pump
+           reads it back to confirm it: a message that renders to over 128 KiB,
+           and every message once the delivery has 512 KiB, is replaced by a
+           stub, its own header over one line naming its id, and the full text
+           stays in the stream. OpenCode 1 has no queue, and a message sent
+           while a turn runs would be folded into that turn, so the pump
+           delivers into an idle session only; OpenCode 2 queues the post and
+           takes it up as a turn of its own, but the pump waits for an idle
+           session there too, so that if it had to wait, everything that came
+           meanwhile goes as one delivery. On OpenCode 1 it counts a delivery as
+           made once the session's history shows a user message with exactly
+           that text; on OpenCode 2 it posts under a message id of its own,
+           posts again under the same id when a post got no answer, and counts
+           the delivery as made once the message with that id holds exactly that
+           text, waiting behind a turn that is not its own, changing an entry
+           that sits in the inbox of an idle session (parked, as the queue is
+           after an interrupt) to steer, once, and treating an entry the human
+           cancelled as handed over; it commits only then, so a crash
+           re-delivers and does not drop. On OpenCode 1 a human submitting in
+           the TUI at the instant of the post is merged into the human's own
+           turn, which the server's API cannot prevent. Before it opens
+           anything, the pump checks that the server answers, is OpenCode 1 or
+           OpenCode 2 (2.0.32 is the 2.x it was verified against, in OpenCode's
+           simulation mode and not yet on a live model), and knows the session;
+           a failure exits 2 and names the command to run for each version. The
+           same check, which also reads the session's directory, is made again
+           before every delivery, and a server that goes away (the TUI
            restarted) is waited for, with the deliveries held in the stream.
            --session is the session id (ses_ and 26 letters or digits, as
            "opencode session list" shows), or auto: the id recorded for this
@@ -244,9 +264,11 @@ verbs:
            claude|codex|opencode, repeatable, narrows the binary, version,
            skill-link and --live checks to the harnesses you have, claude and
            codex without it; the server and ergo are checked either way.
-           opencode is checked only when named: its version (a 2.x is a FAIL,
-           since parley speaks OpenCode 1's HTTP API), the flags and subcommand
-           of its commands that parley uses, and a skill link under either root.
+           opencode is checked only when named: its version (1.x and 2.x are
+           both read, each against the version verified for it; a major version
+           after 2 is a FAIL), the flags and subcommands of its commands that
+           parley uses, by the version it is, and a skill link under either
+           root.
            A binary that is missing is a FAIL that links the project's install
            page; a version other than the last verified one is a warn that says
            it may work as it is, and what to install if a table or a build
@@ -474,38 +496,51 @@ verbs:
            repository has none), unless the line is there already; the record
            says whether the line added it, and a line put there by another
            session of the line, as in another worktree of the repository, is
-           taken as the line's own. An OpenCode session (OpenCode 1.x) gets no
-           launch file and nothing else written in its checkout; it gets the
-           same kind of reply directory as a Codex one, and a session started by
-           opencode run --format json --title "parley line <id> <nick> <token>"
-           in the checkout (the token is the random part of the reply directory's
-           name, the run's own; -m provider/model when a model is given), with
-           the primer on stdin, so that it reaches the model as it is, stdin
-           otherwise closed, the environment passed on and a 5-minute limit,
-           whose events must all carry one session id of the shape OpenCode makes
-           (an event with none fails the turn) and end with a step_finish whose
-           reason is stop; the id is recorded in the opencode-session file
-           --session auto reads. A failure or an interrupt takes down what the
-           run made, a started Codex thread (codex delete --force) or OpenCode
-           session (opencode session delete, run from the checkout) included;
-           events that name two sessions delete none and name both; a run
+           taken as the line's own. An OpenCode session (1.x or 2.x, told by
+           opencode --version) gets no launch file and nothing else written in
+           its checkout; it gets the same kind of reply directory as a Codex
+           one, and a session started by opencode run --format json --title
+           "parley line <id> <nick> <token>" in the checkout (the token is the
+           random part of the reply directory's name, the run's own; -m
+           provider/model when a model is given; on 2.x also --session <id>, an
+           id parley makes the way OpenCode does, which the run creates the
+           session under), with the primer on stdin, so that it reaches the
+           model as it is, stdin otherwise closed, the environment passed on and
+           a 5-minute limit, whose events must all carry one session id of the
+           shape OpenCode makes (an event with none fails the turn; on 2.x it
+           must be the id parley chose) and end with a step_finish whose reason
+           is stop; the id is recorded in the opencode-session file --session
+           auto reads. A failure or an interrupt takes down what the run made, a
+           started Codex thread (codex delete --force) or OpenCode session
+           (opencode session delete, run from the checkout) included; on 1.x,
+           events that name two sessions delete none and name both, and a run
            stopped before its first event, which made a session it never named,
            is looked for with opencode session list --format json -n 200 in the
-           checkout, by its exact title, and deleted. The session carries
-           OpenCode's session-level denies for the question tool and plan mode,
-           as opencode run makes it. The output is what is left for that
+           checkout, by its exact title, and deleted; on 2.x the session id is
+           known before the run, is the one deleted whatever the run did, and
+           nothing is searched for. A 1.x session carries OpenCode's
+           session-level denies for the question tool and plan mode, as opencode
+           run makes it; a 2.x run adds no rule to the session and rejects the
+           permission asks and cancels the questions of its own turn. The output
+           is what is left for that
            session: for Claude the cd and the launch line (plus --model), the
            same plus --resume <session-id> for a conversation under way,
            /parley-line, the /mcp and Channels-notice checks; for Codex the
            network notice, the pump line with --thread auto, the codex resume
-           line, $parley-line and the /status check; for OpenCode the cd and the
+           line, $parley-line and the /status check; for OpenCode 1 the cd and the
            opencode --port <free port> --session <id> line, which comes first
            because the pump checks the server it serves, the pump line with
            --session auto and the same port, the check that the session has
            loaded the parley-line skill, a note that each write of its reply
            file raises OpenCode's external_directory ask, answered in the TUI
            with Allow always, a note on the denies, and a note on
-           OPENCODE_SERVER_PASSWORD. drop <id> <nick> takes the
+           OPENCODE_SERVER_PASSWORD; for OpenCode 2 the cd and the opencode -s
+           <id> line, which comes first because it starts the service, the pump
+           line with --session auto and no port, the skill check, notes that
+           OpenCode 2 allows external_directory by default (and the rule that
+           makes it ask), on what the run did with permissions, on the service's
+           password, and that 2.x is verified in simulation mode only.
+           drop <id> <nick> takes the
            id's lock and the session's nick lock without waiting and refuses,
            exit 1, while either is held. It removes the session's thread record
            or session record (only if it holds the recorded thread or session), its

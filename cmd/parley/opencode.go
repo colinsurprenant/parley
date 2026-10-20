@@ -15,12 +15,16 @@ import (
 )
 
 // The variables OpenCode's own CLI reads for the credentials of a server started
-// with a password. The front reads the same two, so a human who has them set for
-// `opencode` has set them for the pump.
+// with a password. The front reads the same, so a human who has them set for
+// `opencode` has set them for the pump: OpenCode 1's two, and OpenCode 2's, which
+// is OPENCODE_PASSWORD with OPENCODE_SERVER_PASSWORD as its older name and a user
+// name that is always opencode. OpenCode 2's own service needs none: its password
+// is in the file the pump finds it by.
 const (
-	opencodePasswordEnv = "OPENCODE_SERVER_PASSWORD"
-	opencodeUserEnv     = "OPENCODE_SERVER_USERNAME"
-	opencodeDefaultUser = "opencode"
+	opencodePasswordEnv  = "OPENCODE_SERVER_PASSWORD"
+	opencodeUserEnv      = "OPENCODE_SERVER_USERNAME"
+	opencodeDefaultUser  = "opencode"
+	opencodePassword2Env = "OPENCODE_PASSWORD"
 )
 
 // sessionAuto is the --session value that asks for the recorded session instead
@@ -30,24 +34,25 @@ const sessionAuto = "auto"
 
 // cmdOpencode runs the OpenCode front: a foreground pump that blocks on the
 // stream and hands every delivery to a live OpenCode session over the HTTP API
-// the TUI serves when it is started with --port. It opens the stream, the state
-// directory, the lock and the cursor exactly as cmdCodex does, and differs in
-// where the delivery goes and in what is checked before anything is opened: the
-// server has to be there, be one this front speaks to, and know the session, and
-// a pump pointed at nothing is a bad invocation that must cost the nick no IRC
-// account, no connection and no lock to say so. Nothing is printed on stdout:
+// the OpenCode server serves: the TUI's, started with --port, on OpenCode 1, and
+// the background service's, found without a port, on OpenCode 2. It opens the
+// stream, the state directory, the lock and the cursor exactly as cmdCodex does,
+// and differs in where the delivery goes and in what is checked before anything
+// is opened: the server has to be there, be one this front speaks to, and know
+// the session, and a pump pointed at nothing is a bad invocation that must cost
+// the nick no IRC account, no connection and no lock to say so. Nothing is printed on stdout:
 // the deliveries go into the OpenCode session, and everything this process has
 // to say goes to stderr, so the terminal running it stays a log and nothing else.
 func cmdOpencode(args []string) error {
 	fs := flag.NewFlagSet("parley opencode", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: parley opencode --stream <spec> --nick <nick> --session <ses_id>|auto --port <n> [--debounce 250ms] [--state-dir <dir>] [--skill build|table|line --chair <nick> --cap <n> [--window 10m]]")
+		fmt.Fprintln(fs.Output(), "usage: parley opencode --stream <spec> --nick <nick> --session <ses_id>|auto [--port <n>] [--debounce 250ms] [--state-dir <dir>] [--skill build|table|line --chair <nick> --cap <n> [--window 10m]]")
 		fs.PrintDefaults()
 	}
 	spec := fs.String("stream", "", "stream to read, e.g. file:/path/to/chat.ndjson")
 	nick := fs.String("nick", "", "this participant's nick")
 	session := fs.String("session", "", "the live OpenCode session to deliver into, an id such as ses_ea8bbe5a9ffePFZ3AOhDdaNgbW, or auto for the session id recorded for this nick and stream, in the opencode-session file beside the cursor")
-	port := fs.Int("port", 0, "required: the port the OpenCode TUI serves its HTTP API on, the one it was started with in `opencode --port <n>`; the pump connects to 127.0.0.1 and nowhere else. If the server was started with OPENCODE_SERVER_PASSWORD, set it (and OPENCODE_SERVER_USERNAME, opencode by default) here too")
+	port := fs.Int("port", 0, "the port of an OpenCode server on 127.0.0.1, which the pump probes to tell OpenCode 1 from OpenCode 2: the port the OpenCode 1 TUI serves its HTTP API on, the one it was started with in `opencode --port <n>`, or an OpenCode 2 `opencode serve --port <n>`; the pump connects to 127.0.0.1 and nowhere else. Without it the pump finds OpenCode 2's background service from its service file, in $XDG_STATE_HOME/opencode (default ~/.local/state/opencode), whose password it reads from there. A server started with OPENCODE_SERVER_PASSWORD (OpenCode 1) or OPENCODE_PASSWORD (OpenCode 2) needs the same set here (and OPENCODE_SERVER_USERNAME for OpenCode 1, opencode by default)")
 	debounce := fs.Duration("debounce", 250*time.Millisecond, "quiet window that joins a burst into one delivery")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ (default $XDG_STATE_HOME/parley)")
 	skillFlag := fs.String("skill", string(primer.SkillBuild), "the skill the session was started with: build (two peers, nothing held back), table (a seat at a table, which needs --chair and --cap) or line (a session on a line, which needs --chair and --cap)")
@@ -92,10 +97,8 @@ func cmdOpencode(args []string) error {
 	if _, _, err := resolveSpec(*spec); err != nil {
 		return err
 	}
-	if !given(fs, "port") {
-		return cfgErrf("--port is required: the port the OpenCode TUI serves its HTTP API on, from `opencode --port <n>`")
-	}
-	if *port < 1 || *port > 65535 {
+	portGiven := given(fs, "port")
+	if portGiven && (*port < 1 || *port > 65535) {
 		return cfgErrf("--port %d is not a port: want 1 to 65535", *port)
 	}
 	// There is no default session: a pump pointed at nothing would post every
@@ -115,20 +118,12 @@ func cmdOpencode(args []string) error {
 		return cfgErrf("--session %q is not an OpenCode session id: want ses_ and 26 letters or digits, as `opencode session list` shows them, or auto", sessionID)
 	}
 
-	user := os.Getenv(opencodeUserEnv)
-	if user == "" {
-		user = opencodeDefaultUser
-	}
-	client, err := opencode.NewHTTPClient(opencode.LoopbackURL(*port), opencode.Auth{User: user, Password: os.Getenv(opencodePasswordEnv)})
-	if err != nil {
-		return &configError{err: err}
-	}
 	// Before the stream is opened, for the reason above: a server that is not
 	// there, is not one this front speaks to, or does not know the session is a
-	// bad invocation, and the TUI command that makes it right is named.
-	version, err := opencode.Probe(context.Background(), client, sessionID)
+	// bad invocation, and the command that makes it right is named.
+	target, err := connectOpenCode(context.Background(), os.Getenv, *port, portGiven, sessionID)
 	if err != nil {
-		return probeFailure(*port, sessionID, err)
+		return err
 	}
 
 	s, canonical, err := openStream(*spec, *nick, *stateDir)
@@ -166,7 +161,8 @@ func cmdOpencode(args []string) error {
 		Deliverer: stream.NewDeliverer(s, *nick, gate...),
 		Cursors:   dir,
 		Session:   sessionID,
-		Client:    client,
+		Client:    target.client,
+		Client2:   target.client2,
 		Debounce:  *debounce,
 		Log:       os.Stderr,
 	})
@@ -175,28 +171,11 @@ func cmdOpencode(args []string) error {
 	}
 	ctx, stop := signalContext()
 	defer stop()
-	fmt.Fprintf(os.Stderr, "parley opencode: %s as %s into OpenCode session %s on 127.0.0.1:%d (OpenCode %s)%s\n", canonical, *nick, sessionID, *port, version, source)
+	fmt.Fprintf(os.Stderr, "parley opencode: %s as %s into OpenCode session %s on %s (OpenCode %s)%s\n", canonical, *nick, sessionID, target.where, target.version, source)
 	if err := pump.Run(ctx); err != nil {
 		return fmt.Errorf("opencode: %w", err)
 	}
 	return nil
-}
-
-// probeFailure turns a failed startup probe into the configuration error it is,
-// and says what the human runs to make it right when that is the TUI: the server
-// is only there while the TUI runs, and only for the session it was given.
-func probeFailure(port int, session string, err error) error {
-	tui := fmt.Sprintf("`opencode --port %d --session %s` in the session's checkout", port, session)
-	switch {
-	case errors.Is(err, opencode.ErrSessionNotFound):
-		return cfgErrf("OpenCode on 127.0.0.1:%d does not know session %s: start the TUI on it with %s: %v", port, session, tui, err)
-	case opencode.IsTransport(err):
-		// OpenCode 2's TUI has no --port at all, so a machine whose opencode is
-		// OpenCode 2 gets here too, and the hint says what this front needs.
-		return cfgErrf("cannot reach OpenCode on 127.0.0.1:%d: the TUI serves its API there only while it runs with --port, so start it with %s (%s): %v", port, tui, opencode.Install1Hint, err)
-	default:
-		return cfgErrf("OpenCode on 127.0.0.1:%d: %v", port, err)
-	}
 }
 
 // recordedSession reads the session the record beside the cursor names for nick

@@ -49,6 +49,8 @@ mv "$d/.count.tmp" "$d/count"
 mode=ok
 [ -f "$d/mode-$n" ] && mode=$(cat "$d/mode-$n")
 id=ses_$(printf '%026d' "$n")
+# OpenCode 2 creates the session under the id it is given.
+prev=; for a in "$@"; do [ "$prev" = --session ] && id=$a; prev=$a; done
 [ -f "$d/id" ] && id=$(cat "$d/id")
 start() { printf '{"type":"step_start","timestamp":1,"sessionID":"%s","part":{"id":"prt_1","type":"step-start"}}\n' "$1"; }
 text() { printf '{"type":"text","timestamp":2,"sessionID":"%s","part":{"id":"prt_2","type":"text","text":"%s"}}\n' "$1" "$2"; }
@@ -95,6 +97,13 @@ run)
 		text "$id" ready; finish "$id" stop
 		exit 0 ;;
 	failafter) start "$id"; err "$id" "the model went away"; echo "bad turn" >&2; exit 1 ;;
+	simfail)
+		# What a 2.0.32 server in simulation mode does with a turn: it retries the
+		# step, every try a step_start, and ends with an error event and status 1.
+		start "$id"; start "$id"; start "$id"
+		printf '{"type":"error","timestamp":4,"sessionID":"%s","error":{"type":"provider.transport","message":"Transport: Simulation denied unregistered network destination: POST https://opencode.ai/inference/openai/v1/chat/completions"}}\n' "$id"
+		exit 1 ;;
+	unsaid) echo "boom: could not reach the service" >&2; exit 3 ;;
 	errorzero) start "$id"; err "$id" "stream broke"; finish "$id" stop; exit 0 ;;
 	ctrlerror)
 		start "$id"
@@ -129,6 +138,7 @@ session)
 	case "$2" in
 	delete)
 		if [ "$mode" = faildelete ]; then echo "cannot delete" >&2; exit 5; fi
+		if [ "$mode" = gone ]; then echo "Session not found: $3" >&2; exit 1; fi
 		exit 0 ;;
 	list)
 		if [ "$mode" = faillist ]; then echo "db locked" >&2; exit 4; fi
@@ -547,8 +557,8 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 		{"no opencode on the machine", 2, "opencode-ai", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			return b.ladd("demo", "build", "opencode", co), []string{"PATH=" + b.pathWith(t, "claude", "codex", "ergo", "git", "cat", "mv")}
 		}},
-		{"an OpenCode 2", 1, "OpenCode 2 is not supported yet", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
-			b.write(t, "version", "opencode v2.0.32")
+		{"an OpenCode 3", 1, "later major version", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			b.write(t, "version", "opencode v3.0.0")
 			return b.ladd("demo", "build", "opencode", co), nil
 		}},
 		{"no parley-line skill under either root", 1, "parley-line", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {

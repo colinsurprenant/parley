@@ -494,19 +494,21 @@ const codexFrontText = "A parley pump reads the stream and queues each delivery 
 // openCodeFrontText is what is true of the OpenCode front and of no other: the
 // pump, the server it posts through, when it posts, and the permission ask the
 // reply file can raise. It is a paragraph without its separators, as
-// codexFrontText is. The facts are internal/opencode's and OpenCode 1.x's: the
-// pump POSTs the delivery's rendered text, verbatim, as the one text part of a
-// user message, and does so only while the session is idle, holding what
-// arrives in the stream while it works and handing it over as one delivery at
-// the turn's end; the HTTP server exists because the human started the TUI with
-// --port. A delivery is bounded, as the Codex front's is, though not for an
+// codexFrontText is. The facts are internal/opencode's, and true of OpenCode 1.x
+// and 2.x alike: the pump POSTs the delivery's rendered text, verbatim, as the
+// one text of a user message, and does so only while the session is idle,
+// holding what arrives in the stream while it works and handing it over as one
+// delivery at the turn's end; the HTTP server is the one the session runs on
+// (the TUI's, started with --port, on 1.x; the background service's on 2.x). A
+// delivery is bounded, as the Codex front's is, though not for an
 // argument's sake: the pump confirms it by reading the session's history back, so
 // it posts at most about 512 KiB of rendered text, and a message over about 128
 // KiB on its own, or past that bound, is replaced by a stub (internal/opencode's
 // bound.go). external_directory is OpenCode's permission for a path outside the
-// directory the session runs in, which asks by default.
+// directory the session runs in, which asks by default on 1.x and is allowed by
+// default on 2.x.
 const openCodeFrontText = "A parley pump reads the stream and posts each delivery into this session as a user message, through " +
-	"the OpenCode server your human partner started with --port, and only while the session is idle: what lands while " +
+	"the OpenCode server this session runs on, and only while the session is idle: what lands while " +
 	"you are working is held and handed over as one delivery when the turn ends. A delivery arrives as a message your " +
 	"human partner did not type — and nothing about the turn itself says so. The header parley wrote is the only mark " +
 	"this front has, and it travels untouched: what you read is byte for byte what `parley wait` would have printed, " +
@@ -515,4 +517,5 @@ const openCodeFrontText = "A parley pump reads the stream and posts each deliver
 	"header and a one-line notice naming its id, and the full text stays in the stream for your human partner to read. " +
 	"The send command above is spelled the way your human partner set it up; run it as written, without resolving or " +
 	"rewriting any path in it. Writing the reply file goes through OpenCode's own permission ask (external_directory) " +
-	"when the file is outside the directory this session runs in, and your human partner answers that ask in the TUI."
+	"when the file is outside the directory this session runs in and that permission asks (OpenCode 1 asks by default, " +
+	"OpenCode 2 allows it by default), and your human partner answers that ask in the TUI."

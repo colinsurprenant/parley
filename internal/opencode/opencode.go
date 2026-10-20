@@ -1,8 +1,9 @@
 // Package opencode delivers peer messages into a live OpenCode session. It is
 // the OpenCode front: one long-running pump that blocks on the stream exactly as
 // `parley wait` does and hands each delivery to the session the human is
-// running in the OpenCode TUI, as one user message, over the HTTP API the TUI
-// serves when it is started with --port.
+// running in the OpenCode TUI, as one user message, over the HTTP API of the
+// OpenCode server the session runs on: the TUI's, which serves it when it is
+// started with --port, on OpenCode 1, and the background service's on OpenCode 2.
 //
 // OpenCode has no channel of its own. A prompt posted to a session is a user
 // message, and nothing about it tells the model that the text was not typed by
@@ -33,6 +34,12 @@
 // the session does with its own permissions once it has a message, since parley
 // is not a sandbox and OpenCode's bash tool is allowed by default; and hand
 // edits of parley's state.
+//
+// This is the delivery for OpenCode 1. OpenCode 2 is a second protocol under the
+// same loop, in queue.go: it queues the prompt under an id of its own and reads it
+// back by that id, and everything above (the header, the bound, the cursor, the
+// threat model) holds for it unchanged. Where the doc below says "the history", on
+// OpenCode 2 read "the message with the id".
 //
 // Delivery is a protocol with five steps, because OpenCode offers no queue of
 // its own: a prompt posted while a turn is running is merged into that turn at
@@ -127,8 +134,8 @@ type CursorStore interface {
 	SaveCursor(cursor string) error
 }
 
-// Config is everything a Pump needs. Deliverer, Cursors, Session and Client are
-// required.
+// Config is everything a Pump needs. Deliverer, Cursors and Session are
+// required, and exactly one of Client and Client2.
 type Config struct {
 	Deliverer *stream.Deliverer
 	Cursors   CursorStore
@@ -137,8 +144,10 @@ type Config struct {
 	// as it is.
 	Session string
 
-	// Client is the HTTP seam; see Client.
-	Client Client
+	// Client is the HTTP seam for an OpenCode 1 server; see Client. Client2 is
+	// the one for an OpenCode 2 server.
+	Client  Client
+	Client2 Client2
 
 	// Timeout bounds one delivery wait; Debounce is the quiet window that joins
 	// a burst into one delivery, as for `parley wait`.
@@ -164,6 +173,7 @@ type Pump struct {
 	cursors   CursorStore
 	session   string
 	client    Client
+	client2   Client2
 	// directory is the session's directory, read from the server by attach and
 	// "" until then.
 	directory string
@@ -189,8 +199,11 @@ func New(cfg Config) (*Pump, error) {
 	if cfg.Cursors == nil {
 		return nil, errors.New("opencode: nil cursor store")
 	}
-	if cfg.Client == nil {
+	if cfg.Client == nil && cfg.Client2 == nil {
 		return nil, errors.New("opencode: nil client")
+	}
+	if cfg.Client != nil && cfg.Client2 != nil {
+		return nil, errors.New("opencode: a client for OpenCode 1 and one for OpenCode 2")
 	}
 	if strings.TrimSpace(cfg.Session) == "" {
 		return nil, errors.New("opencode: empty session")
@@ -208,6 +221,7 @@ func New(cfg Config) (*Pump, error) {
 		cursors:         cfg.Cursors,
 		session:         cfg.Session,
 		client:          cfg.Client,
+		client2:         cfg.Client2,
 		timeout:         orDefault(cfg.Timeout, defaultTimeout),
 		debounce:        cfg.Debounce,
 		idlePoll:        orDefault(cfg.IdlePoll, defaultIdlePoll),
@@ -293,7 +307,7 @@ func (p *Pump) Run(ctx context.Context) error {
 // that the stream will not deliver again.
 //
 // Every attempt starts with awaitIdle, which attaches to the server first: each
-// delivery is preceded by a check that the server is the OpenCode 1 it was and by
+// delivery is preceded by a check that the server is the OpenCode it was and by
 // a fresh read of the session's directory, however long the pump sat in Wait
 // since, and an attempt that failed because the server went away starts over the
 // same way.
@@ -335,6 +349,23 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 			p.logf("%d of %d message(s) go over as stubs, past the %d byte bound of a message or the %d byte bound of a delivery; the text stays in the stream", withheld, len(d.Messages), maxMessageBytes, maxDeliveryBytes)
 		}
 		p.logf("delivering %d message(s), %d bytes, to session %s", len(d.Messages), len(text), p.session)
+
+		if p.client2 != nil {
+			var unsent *notSentError
+			switch err := p.deliverQueued(ctx, text); {
+			case err == nil:
+				return d, nil
+			case errors.As(err, &unsent):
+				p.logf("%v: nothing was sent, waiting for the server again", unsent.err)
+				again = true
+				if !p.sleep(ctx, p.idlePoll) {
+					return d, ctx.Err()
+				}
+				continue
+			default:
+				return d, err
+			}
+		}
 
 		known, window, err := p.recentIDs(ctx)
 		if err != nil {
@@ -414,7 +445,7 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 			}
 			away, backoff = false, p.idlePoll
 		}
-		busy, err := p.client.Busy(ctx, p.session, p.directory)
+		busy, err := p.busy(ctx)
 		switch {
 		case err == nil:
 			if !busy {
@@ -439,6 +470,9 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 // and of a version it supports — and for the session, whose directory it keeps
 // for the status reads. A transport error means the server is still away.
 func (p *Pump) attach(ctx context.Context) error {
+	if p.client2 != nil {
+		return p.attach2(ctx)
+	}
 	version, err := p.client.Health(ctx)
 	if err != nil {
 		return err
@@ -624,22 +658,32 @@ func (p *Pump) logf(format string, a ...any) {
 	fmt.Fprintf(p.log, "parley opencode: "+format+"\n", a...)
 }
 
-// CheckVersion refuses a server this front cannot speak to: one whose major
-// version is 2 or more, or whose version cannot be read. The front speaks
+// CheckVersion refuses a server this OpenCode 1 client cannot speak to: one whose
+// major version is 2 or more, or whose version cannot be read. The client speaks
 // OpenCode 1's HTTP API, whose prompt endpoint is prompt_async; OpenCode 2 has a
-// different one, and a front that guessed at it could deliver into the wrong
-// place or nowhere. The version comes from the server, so what is quoted of it is
-// bounded.
+// different one (CheckVersion2 and Client2 are for that), and a client that
+// guessed at it could deliver into the wrong place or nowhere. The version comes
+// from the server, so what is quoted of it is bounded.
 func CheckVersion(version string) error {
+	major, ok := majorVersion(version)
+	if !ok {
+		return fmt.Errorf("cannot read an OpenCode version from %s: this client speaks OpenCode 1's HTTP API and is not run against anything it cannot recognise as OpenCode 1; %s", quoteBounded(version), Install1Hint)
+	}
+	if major >= 2 {
+		return fmt.Errorf("the server reports OpenCode version %s, not OpenCode 1: this client speaks OpenCode 1's HTTP API (prompt_async), which OpenCode 2 does not have; start the pump again, which finds an OpenCode 2 server itself", quoteBounded(version))
+	}
+	return nil
+}
+
+// majorVersion is the number before the first dot of version, and false if there
+// is none: a sign or an empty head is not a version.
+func majorVersion(version string) (int, bool) {
 	head, _, _ := strings.Cut(version, ".")
 	major, err := strconv.Atoi(head)
 	if err != nil || head == "" || strings.HasPrefix(head, "+") || strings.HasPrefix(head, "-") {
-		return fmt.Errorf("cannot read an OpenCode version from %s: this front speaks OpenCode 1's HTTP API and is not supported on anything it cannot recognise as OpenCode 1; %s", quoteBounded(version), Install1Hint)
+		return 0, false
 	}
-	if major >= 2 {
-		return fmt.Errorf("OpenCode 2 is not supported yet: the server reports version %s, and this front speaks OpenCode 1's HTTP API (prompt_async), which OpenCode 2 does not have; %s", quoteBounded(version), Install1Hint)
-	}
-	return nil
+	return major, true
 }
 
 func quoteBounded(s string) string {

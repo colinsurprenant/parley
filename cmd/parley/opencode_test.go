@@ -24,7 +24,7 @@ const otherOCSession = "ses_ea8a722dcffeB5AVROj9ovn5Uq"
 func ocEnv(extra ...string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, opencodePasswordEnv+"=") && !strings.HasPrefix(kv, opencodeUserEnv+"=") {
+		if !strings.HasPrefix(kv, opencodePasswordEnv+"=") && !strings.HasPrefix(kv, opencodeUserEnv+"=") && !strings.HasPrefix(kv, opencodePassword2Env+"=") {
 			env = append(env, kv)
 		}
 	}
@@ -247,15 +247,15 @@ func TestOpencodeStartupProbeFailuresAreConfigurationErrors(t *testing.T) {
 	}{
 		"nothing listens": {
 			setup: func(*ocServer) int { return closed() },
-			want:  []string{"cannot reach OpenCode on 127.0.0.1:", "opencode --port ", "--session " + ocSession, "needs OpenCode 1.x", "opencode-ai", "opencode.ai/install"},
+			want:  []string{"cannot reach OpenCode on 127.0.0.1:", "opencode --port ", "--session " + ocSession, "opencode -s " + ocSession, "without --port"},
 		},
 		"OpenCode 2": {
 			setup: func(s *ocServer) int { s.set(func() { s.version = "2.0.32" }); return s.port() },
-			want:  []string{"OpenCode 2 is not supported yet", "2.0.32", "opencode-ai", "opencode.ai/install"},
+			want:  []string{"not OpenCode 1", "2.0.32"},
 		},
 		"OpenCode 2 serving its web page": {
 			setup: func(s *ocServer) int { s.set(func() { s.page = true }); return s.port() },
-			want:  []string{"OpenCode 2 is not supported yet", "GET /global/health", "text/html", "opencode-ai", "opencode.ai/install"},
+			want:  []string{"As OpenCode 1", "GET /global/health", "text/html", "As OpenCode 2", "GET /api/info", "404", "opencode -s " + ocSession},
 		},
 		"a version that cannot be read": {
 			setup: func(s *ocServer) int { s.set(func() { s.version = "dev" }); return s.port() },
@@ -437,7 +437,6 @@ func TestOpencodeRefusesABadInvocation(t *testing.T) {
 	}{
 		"no nick":               {[]string{"opencode", "--stream", spec, "--session", ocSession, "--port", port}, "--nick is required"},
 		"no stream":             {[]string{"opencode", "--nick", "oc-a", "--session", ocSession, "--port", port}, "--stream is required"},
-		"no port":               {[]string{"opencode", "--stream", spec, "--nick", "oc-a", "--session", ocSession}, "--port is required"},
 		"port zero":             {base("--port", "0"), "is not a port"},
 		"port too big":          {base("--port", "70000"), "is not a port"},
 		"no session":            {[]string{"opencode", "--stream", spec, "--nick", "oc-a", "--port", port}, "--session is required"},
@@ -535,11 +534,11 @@ func TestUsageDocumentsTheOpencodeFront(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	flat := strings.Join(strings.Fields(top), " ")
 	for _, want := range []string{
-		"parley opencode --stream <spec> --nick <nick> --session <ses_id>|auto --port <n> [--debounce 250ms] [--state-dir <dir>]",
+		"parley opencode --stream <spec> --nick <nick> --session <ses_id>|auto [--port <n>] [--debounce 250ms] [--state-dir <dir>]",
 		"opencode run in the foreground and deliver into a live OpenCode session",
-		"opencode --port <n> --session <id>",
-		"OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_USERNAME",
-		"OpenCode 2 is not supported yet",
+		"opencode --port <n> --session <id>", "opencode -s <id>", "service.json",
+		"OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_USERNAME", "OPENCODE_PASSWORD",
+		"2.0.32 is the 2.x it was verified against, in OpenCode's simulation mode and not yet on a live model",
 		"a message that renders to over 128 KiB, and every message once the delivery has 512 KiB, is replaced by a stub",
 		"is made again before every delivery",
 		"opencode-session",

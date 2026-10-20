@@ -44,7 +44,7 @@ func cmdLineAdd(args []string) error {
 		fs.PrintDefaults()
 	}
 	nick := fs.String("nick", "", "required: the session's nick; it must differ from the chair's and from every other session's, without regard to ASCII case")
-	harness := fs.String("harness", "", "required: claude, codex or opencode (OpenCode 1.x)")
+	harness := fs.String("harness", "", "required: claude, codex or opencode (OpenCode 1.x or 2.x)")
 	model := fs.String("model", "", "the model, at most 128 bytes of letters, digits and . _ - : / @ [ ] +; passed to codex exec -m for a Codex session, to opencode run -m (provider/model) for an OpenCode one, and printed as --model on a Claude one's launch line")
 	checkout := fs.String("checkout", "", "required: the absolute path of the session's own checkout, an existing directory; a Claude session gets .mcp.json there, a Codex session .codex/config.toml, unless this line already wrote that file for another session of the checkout; an OpenCode session gets no file there")
 	stateDir := fs.String("state-dir", "", "the state directory the line was set up under (default $XDG_STATE_HOME/parley)")
@@ -338,7 +338,7 @@ func (p *linePlan) bind() error {
 		p.openCodeBin = rec.OpenCodeBin
 		if p.openCodeBin == "" {
 			if p.openCodeBin, err = doctor.Resolve(doctor.DefaultOpenCodeBin); err != nil {
-				return cfgErrf("opencode: %v: %s, or make the line with `parley line new --opencode-bin <path>`", err, opencode.Install1Hint)
+				return cfgErrf("opencode: %v: %s, or make the line with `parley line new --opencode-bin <path>`", err, opencode.InstallHint)
 			}
 		}
 		if err := checkUTF8(pathField{"the opencode binary's path", p.openCodeBin}); err != nil {
@@ -499,12 +499,14 @@ type lineAddRun struct {
 	wrote       bool
 	excludeNote string
 	// thread is the Codex thread or the OpenCode session id; port is the loopback
-	// port an OpenCode session's runbook names for its TUI and its pump.
+	// port an OpenCode 1 session's runbook names for its TUI and its pump, and
+	// openCode2 is whether the session is OpenCode 2's, which has no port.
 	thread    string
 	answer    string
 	replyDir  string
 	replyFile string
 	port      int
+	openCode2 bool
 }
 
 // lockNick takes the session's nick lock without waiting, before anything is
@@ -786,9 +788,17 @@ func (r *lineAddRun) startCodex(ctx context.Context) error {
 
 // startOpenCode makes the session's reply directory and starts its OpenCode
 // session on the line's primer, recording the session for --session auto, and
-// picks the loopback port its runbook names.
+// for OpenCode 1 picks the loopback port its runbook names. Which OpenCode it is
+// comes from the binary: 1.x prints a bare version and 2.x "opencode v2.0.32",
+// and the two start a session differently (a 2.x run creates the session under
+// the id parley gives it) and are reached differently (a 2.x has no port).
 func (r *lineAddRun) startOpenCode(ctx context.Context) error {
 	p := r.plan
+	version, err := openCodeVersion(ctx, p.openCodeBin, p.checkout)
+	if err != nil {
+		return err
+	}
+	r.openCode2 = version.major == 2
 	if err := r.makeReplyDir(); err != nil {
 		return err
 	}
@@ -809,15 +819,24 @@ func (r *lineAddRun) startOpenCode(ctx context.Context) error {
 	// directories give their sessions different titles, so a session found by its
 	// title is this run's.
 	token := strings.TrimPrefix(filepath.Base(r.replyDir), lineReplyPrefix(p.id))
-	id, answer, err := startOpenCodeSession(ctx, r, openCodeSession{
+	session := openCodeSession{
 		nick: p.nick, model: p.model, dir: p.checkout,
 		bin: p.openCodeBin, name: p.openCodeName(), title: fmt.Sprintf("parley line %s %s %s", p.id, p.nick, token),
 		prompt: text, base: p.base, stream: p.rec.Stream,
-	})
+	}
+	if r.openCode2 {
+		if session.sid, err = opencode.NewSessionID(); err != nil {
+			return err
+		}
+	}
+	id, answer, err := startOpenCodeSession(ctx, r, session)
 	if err != nil {
 		return err
 	}
 	r.thread, r.answer = id, answer
+	if r.openCode2 {
+		return nil
+	}
 	// Picked after the turn, which is the long step, so that it is as fresh as it
 	// can be when the human uses it. Nothing holds the port: it is free now, and
 	// the TUI says if it is not any more.
@@ -981,6 +1000,9 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 // command line and nowhere else: it is not kept, and the pump takes it from the
 // human.
 func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
+	if r.openCode2 {
+		return p.openCodeRunbook2(r)
+	}
 	var b strings.Builder
 	step := 0
 	next := func(format string, a ...any) {
@@ -1004,6 +1026,49 @@ func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
 	b.WriteString("  The session was made by opencode run, which denies it OpenCode's question tool and plan mode for that session (a known limit of creating it that way).\n")
 	b.WriteString("  OPENCODE_SERVER_PASSWORD, if you use one, must be set for both commands, and OPENCODE_SERVER_USERNAME too if it is not opencode.\n")
 	b.WriteString("  Without it the server on --port answers any local process.\n")
+	fmt.Fprintf(&b, "\n   Session %s's answer to its primer (opencode run, session %s):\n\n", p.nick, r.thread)
+	answer := plainAnswer(r.answer)
+	if answer == "" {
+		answer = "(none: the turn ended without a final message)"
+	}
+	b.WriteString(indent(answer, "        ") + "\n")
+	return b.String()
+}
+
+// openCodeRunbook2 is openCodeRunbook for an OpenCode 2 session. OpenCode 2 has
+// no --port: its TUI, run and session commands reach one background service per
+// user, which the pump finds from the file the service writes. So the TUI
+// still comes first, as it is what starts the service, but there is no port to
+// share between the two commands and no password to carry: the service's own is
+// in that file.
+func (p *linePlan) openCodeRunbook2(r *lineAddRun) string {
+	var b strings.Builder
+	step := 0
+	next := func(format string, a ...any) {
+		step++
+		fmt.Fprintf(&b, "\n%d. "+format+"\n\n", append([]any{step}, a...)...)
+	}
+	cmd := func(line string) { fmt.Fprintf(&b, "    %s\n", line) }
+
+	fmt.Fprintf(&b, "OpenCode 2 session %s.\n", r.thread)
+	b.WriteString("\nWhat is left is yours, in this order:\n")
+	next("In one terminal, start OpenCode on its session, in its checkout. It comes first: it starts OpenCode 2's background\n   service if none runs, and the pump checks as it starts that the service answers and knows the session. There is no port\n   to choose: the pump finds the service from the file the service writes, service.json in $XDG_STATE_HOME/opencode\n   (~/.local/state/opencode if that is not set), so both commands need the same HOME and XDG_STATE_HOME.")
+	cmd("cd " + q(p.checkout))
+	cmd(fmt.Sprintf("%s -s %s", p.openCodeName(), q(r.thread)))
+	next("In another, start its pump:")
+	cmd(fmt.Sprintf("%s opencode --stream %s --nick %s --session auto --skill line --chair %s --cap %d --window %s --state-dir %s",
+		q(p.self), q(p.rec.Stream), p.nick, p.rec.Chair, p.rec.Cap, p.window, q(p.base)))
+	next("Check that the session has loaded the parley-line skill. OpenCode loads a skill with its skill tool and has no /parley-line\n   command; if its answer to the primer below does not show it did, ask it to load the skill.")
+	fmt.Fprintf(&b, "Notes:\n")
+	fmt.Fprintf(&b, "  The reply file, %s, is outside the session's checkout. OpenCode 2 allows external_directory by default,\n", q(r.replyFile))
+	b.WriteString("  so writing it asks nothing. To be asked, as OpenCode 1 asks, add this rule to your opencode.jsonc and answer for the\n  reply directory when it asks:\n")
+	b.WriteString("    { \"permissions\": [ { \"action\": \"external_directory\", \"resource\": \"*\", \"effect\": \"ask\" } ] }\n")
+	b.WriteString("  The session was made by opencode run --session, which adds no permission rules of its own to the session. A run has no one\n")
+	b.WriteString("  to ask, so during the primer turn it rejected any permission ask and cancelled any question; from here the session's agent\n  and your configuration decide.\n")
+	b.WriteString("  The service's password is in its service file (mode 600) and the pump reads it from there and sends it to the service's\n")
+	b.WriteString("  loopback address only; it is never printed. For an opencode serve of your own, run the pump with --port <n> and\n")
+	b.WriteString("  OPENCODE_PASSWORD (or OPENCODE_SERVER_PASSWORD) set to the password it was started with.\n")
+	b.WriteString("  OpenCode 2 support is verified against 2.0.32 in OpenCode's simulation mode, which blocks all model traffic, and\n  not yet on a live model.\n")
 	fmt.Fprintf(&b, "\n   Session %s's answer to its primer (opencode run, session %s):\n\n", p.nick, r.thread)
 	answer := plainAnswer(r.answer)
 	if answer == "" {

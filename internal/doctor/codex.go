@@ -104,13 +104,39 @@ func checkSurface(ctx context.Context, tool, bin string, s surface) Result {
 // the listing.
 func listsCommand(help string, command []string) bool {
 	re := regexp.MustCompile(`(?m)^\s+` + regexp.QuoteMeta(strings.Join(command, " ")) + `(?:\s|$)`)
-	return re.MatchString(help)
+	return re.MatchString(help) || listsSubcommand2(help, command[len(command)-1])
+}
+
+// listsSubcommand2 reports whether an OpenCode 2 help text lists sub in its
+// SUBCOMMANDS section: an indented line whose first column, before two spaces or
+// more, is the name, with aliases after a comma ("upgrade, update").
+func listsSubcommand2(help, sub string) bool {
+	in := false
+	for _, line := range strings.Split(help, "\n") {
+		switch {
+		case strings.TrimSpace(line) == "SUBCOMMANDS":
+			in = true
+		case in && (line == "" || line[0] != ' '):
+			in = false
+		case in:
+			names, _, _ := strings.Cut(strings.TrimSpace(line), "  ")
+			for _, n := range strings.Split(names, ", ") {
+				if n == sub {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // optionLineRE is the head of an option's definition line in clap's help:
 // indented, an optional short spelling, an optional long one. Prose that merely
 // mentions a flag is not at the head of a line, so it is not taken for the flag.
-var optionLineRE = regexp.MustCompile(`^\s+(-[A-Za-z0-9])?(?:, )?(--[A-Za-z0-9][A-Za-z0-9-]*)?(?:[\s=<\[]|$)`)
+//
+// OpenCode 2's help puts the short spelling after the long one, "--session, -s
+// string", and the pattern takes either order.
+var optionLineRE = regexp.MustCompile(`^\s+(-[A-Za-z0-9])?(?:, )?(--[A-Za-z0-9][A-Za-z0-9-]*)?(?:, (-[A-Za-z0-9]))?(?:[\s=<\[]|$)`)
 
 // flagSet is the option definitions in a help text, one entry per definition
 // line, each holding the spellings that line gives.
@@ -120,7 +146,7 @@ func helpFlags(help string) flagSet {
 	var set flagSet
 	for _, line := range strings.Split(help, "\n") {
 		m := optionLineRE.FindStringSubmatch(line)
-		if m == nil || (m[1] == "" && m[2] == "") {
+		if m == nil || (m[1] == "" && m[2] == "" && m[3] == "") {
 			continue
 		}
 		def := map[string]bool{}

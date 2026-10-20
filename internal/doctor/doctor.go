@@ -28,18 +28,23 @@ import (
 
 // The versions parley was last verified against, live, by a person: the Codex
 // CLI and ergo by `parley doctor --live`, Claude Code at a table (a live table
-// ran end to end on 2.1.296), OpenCode by hand against a live server and its
-// help texts (1.18.30). A different version is not a failure, except an
-// OpenCode 2, whose HTTP API parley does not speak: the report says it may work
-// and what to do if a table or a build misbehaves; to the maintainer it is the
-// cue to verify again, and then to move the constant.
+// ran end to end on 2.1.296), OpenCode 1 by hand against a live server and its
+// help texts (1.18.30), OpenCode 2 against its help texts and a server in the
+// simulation mode that blocks all model traffic (2.0.32; no model turn has run on
+// it yet). A different version is not a failure, except an OpenCode 3 or later,
+// whose HTTP API parley has not been written against: the report says it may
+// work and what to do if a table or a build misbehaves; to the maintainer it is
+// the cue to verify again, and then to move the constant.
 // ErgoVerified is the ergo the embedded configuration
 // (internal/ergoconf/ircd.yaml) was written for.
 const (
 	CodexVerified    = "0.161.0"
 	ClaudeVerified   = "2.1.296"
 	OpenCodeVerified = "1.18.30"
-	ErgoVerified     = "2.19.1"
+	// OpenCodeVerified2 is the OpenCode 2 beside it, which is checked against its
+	// own help texts: 2.x is a different CLI and a different HTTP API.
+	OpenCodeVerified2 = "2.0.32"
+	ErgoVerified      = "2.19.1"
 )
 
 // Where a person installs each of them, each the project's own install page

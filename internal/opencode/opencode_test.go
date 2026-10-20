@@ -754,8 +754,8 @@ func TestAServerThatComesBackAsOpenCode2StopsThePump(t *testing.T) {
 	f.start(addr)
 
 	err := h.join()
-	if err == nil || !strings.Contains(err.Error(), "OpenCode 2 is not supported yet") {
-		t.Fatalf("Run returned %v, want the OpenCode 2 refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "not OpenCode 1") || !strings.Contains(err.Error(), "start the pump again") {
+		t.Fatalf("Run returned %v, want the refusal of a server that is not OpenCode 1", err)
 	}
 	if n := len(f.postBodies()); n != 0 {
 		t.Fatalf("%d prompt(s) reached an OpenCode 2 server", n)
@@ -782,8 +782,8 @@ func TestAServerThatComesBackAsOpenCode2sPageStopsThePump(t *testing.T) {
 
 	err := h.join()
 	var us *UnsupportedServerError
-	if !errors.As(err, &us) || !strings.Contains(err.Error(), "OpenCode 2 is not supported yet") {
-		t.Fatalf("Run returned %v, want the OpenCode 2 refusal", err)
+	if !errors.As(err, &us) || !strings.Contains(err.Error(), "not the OpenCode 1 server") {
+		t.Fatalf("Run returned %v, want the refusal of a server that is not OpenCode 1", err)
 	}
 	if n := len(f.postBodies()); n != 0 {
 		t.Fatalf("%d prompt(s) reached an OpenCode 2 server", n)
@@ -939,8 +939,8 @@ func TestCheckVersion(t *testing.T) {
 	}
 	for _, v := range []string{"2.0.32", "2", "2.0.0-rc.1", "3.1.4", "10.0.0"} {
 		err := CheckVersion(v)
-		if err == nil || !strings.Contains(err.Error(), "OpenCode 2 is not supported yet") {
-			t.Errorf("CheckVersion(%q) = %v, want the OpenCode 2 refusal", v, err)
+		if err == nil || !strings.Contains(err.Error(), "not OpenCode 1") {
+			t.Errorf("CheckVersion(%q) = %v, want the refusal of a server that is not OpenCode 1", v, err)
 		}
 	}
 	for _, v := range []string{"", "latest", "v1.2.3", "dev", ".1.2", "+1.0.0", "-1.0.0", "99999999999999999999.0.0", "1 .0"} {
@@ -966,7 +966,7 @@ func TestProbe(t *testing.T) {
 		t.Fatalf("Probe of an unknown session = %v, want ErrSessionNotFound", err)
 	}
 	f.set(func() { f.version = "2.0.32" })
-	if _, err := Probe(ctx, f.client(), testSession); err == nil || !strings.Contains(err.Error(), "OpenCode 2 is not supported yet") {
+	if _, err := Probe(ctx, f.client(), testSession); err == nil || !strings.Contains(err.Error(), "not OpenCode 1") {
 		t.Fatalf("Probe of OpenCode 2 = %v", err)
 	}
 	f.set(func() { f.version, f.page = "1.18.30", true })

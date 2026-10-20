@@ -39,8 +39,8 @@ func OpenSessionRecord(base, nick, spec string) (*SessionRecord, error) {
 func (r *SessionRecord) Path() string { return r.path }
 
 // sessionIDLen is the length of an OpenCode session id: "ses_" and 26 more
-// characters, 12 hex digits of time and 14 base62 ones, as OpenCode 1.18 makes
-// them. The id travels in a URL path and in a log line, so the check is on the
+// characters, 12 hex digits of time and 14 base62 ones, as OpenCode 1.18 and 2.0
+// make them. The id travels in a URL path and in a log line, so the check is on the
 // shape alone and not on anything the server could be asked.
 const sessionIDLen = 30
 

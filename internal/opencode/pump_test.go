@@ -280,8 +280,8 @@ func TestEveryDeliveryIsPrecededByACheckOfTheServer(t *testing.T) {
 	f.set(func() { f.version = "2.0.32" })
 	h.peerSend(peerNick, "second")
 	err := h.join()
-	if err == nil || !strings.Contains(err.Error(), "OpenCode 2 is not supported yet") {
-		t.Fatalf("Run returned %v, want the OpenCode 2 refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "not OpenCode 1") {
+		t.Fatalf("Run returned %v, want the refusal of a server that is not OpenCode 1", err)
 	}
 	if n := len(f.postBodies()); n != 1 {
 		t.Fatalf("%d prompts, want only the first", n)
