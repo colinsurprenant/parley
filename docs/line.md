@@ -311,7 +311,8 @@ core now ships OpenCode 2, which parley does not support yet.
    `$TMPDIR`, outside the checkout, and "Allow once" asks again on the next reply
    (all 11 writes of a live run asked): answer **"Allow always"** for the reply
    directory in the TUI, where the ask appears, so that later replies do not stop
-   on one. That "always" holds for the later writes was not exercised live.
+   on one. On 1.18.30 "always" lasts as long as the TUI's server runs: after a
+   restart of the TUI, the next write asks once more (seen live).
    **`OPENCODE_SERVER_PASSWORD`**: the server `--port` opens answers any process on
    this machine unless you set a password, so set it (and
    `OPENCODE_SERVER_USERNAME` if you want a name other than `opencode`) in the

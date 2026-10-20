@@ -403,7 +403,7 @@ func TestLineAddOpenCodeSession(t *testing.T) {
 		pump,
 		"Notes:",
 		fmt.Sprintf("The reply file, '%s', is outside the session's checkout, so each write of it raises OpenCode's external_directory ask in the TUI:", filepath.Join(s.ReplyDir, "build.reply")),
-		`answer "Allow always" for the reply directory, since "Allow once" asks again on every reply.`,
+		`answer "Allow always" for the reply directory, since "Allow once" asks again on every reply; "always" asks once more after the TUI restarts.`,
 		"The session was made by opencode run, which denies it OpenCode's question tool and plan mode for that session (a known limit of creating it that way).",
 		"OPENCODE_SERVER_PASSWORD, if you use one, must be set for both commands, and OPENCODE_SERVER_USERNAME too if it is not opencode.",
 		fmt.Sprintf("Session build's answer to its primer (opencode run, session %s):", ocID(1)),

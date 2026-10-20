@@ -828,7 +828,8 @@ exit 2.
   skill, which OpenCode loads with its skill tool and has no slash command for,
   a note that each write of the reply file raises OpenCode's `external_directory`
   ask, which is answered in the TUI with "Allow always" for the reply directory
-  since "Allow once" asks again on every reply, a note that the session was made by
+  since "Allow once" asks again on every reply (and "always" asks once more after
+  the TUI restarts), a note that the session was made by
   `opencode run` and so has OpenCode's denies for the question tool and plan mode,
   and a note that `OPENCODE_SERVER_PASSWORD`, if used, is set for both commands).
 - `line drop <id> <nick> [--force] [--state-dir <dir>]` takes one session off. It
