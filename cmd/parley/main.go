@@ -1434,13 +1434,13 @@ func warnIfNotThePumpsThread(w io.Writer, stateDir, nick, canonical string) {
 		session, nick, canonical, recorded, rec.Path())
 }
 
-// codexReplyPlaceholder stands in for the reply file in a codex primer that
-// names none. It is never defaulted into the state directory: that holds the
+// replyFilePlaceholder stands in for the reply file in a codex or opencode
+// primer that names none. It is never defaulted into the state directory: that holds the
 // lock, the cursors and the IRC account password, and a reply body dropped
 // beside them is a peer's plaintext in the one directory that must not be
 // shared. Outside a live channel session there is no private directory to point
 // at either, so the human fills this in.
-const codexReplyPlaceholder = "<reply file path>"
+const replyFilePlaceholder = "<reply file path>"
 
 // cmdPrimer prints the framing a front gives the model: the reply command, then
 // what a delivery is and what it is worth. `parley channel` renders the same
@@ -1531,7 +1531,7 @@ func cmdPrimer(args []string) error {
 		if f == primer.Claude {
 			return cfgErrf("--reply-file is required for --front claude: the channel front names a file in the private directory it makes for a session, and there is none outside a live one")
 		}
-		reply = codexReplyPlaceholder
+		reply = replyFilePlaceholder
 	}
 	// Render ends the text with its own newline, so nothing is added here: the
 	// count a live session hands the client has to be the count printed here.

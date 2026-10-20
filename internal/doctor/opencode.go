@@ -12,10 +12,13 @@ const openCodeRemedy = "If an OpenCode session misbehaves, install OpenCode " + 
 // openCodeV2 is the report on an OpenCode 2. The front posts a delivery with
 // OpenCode 1's prompt_async route, which OpenCode 2 does not have (read from
 // the 2.0.32 source: its prompt route takes a delivery of queue or steer). The
-// way out is spelled out: opencode-ai is OpenCode's npm package, and @1 picks
-// the newest 1.x of it.
+// way out is spelled out, both ways to a 1.x: opencode-ai is OpenCode's npm
+// package, and @1 picks the newest 1.x of it; opencode.ai/install is a script
+// that installs 1.x only and refuses a 2. Homebrew core, where a person likely
+// got the 2, now ships OpenCode 2.
 const openCodeV2 = "OpenCode 2 is not supported yet: parley's front speaks OpenCode 1's HTTP API (prompt_async); " +
-	"install opencode 1.x, e.g. npm i -g opencode-ai@1"
+	"install opencode 1.x, e.g. npm i -g opencode-ai@1 or curl -fsSL https://opencode.ai/install | bash (1.x only); " +
+	"Homebrew core now ships OpenCode 2"
 
 // openCodeSurfaces are the flags and the subcommand of OpenCode's CLI that
 // parley uses or tells a human to use, read from the 1.18.30 help. The default
@@ -29,7 +32,9 @@ var openCodeSurfaces = []surface{
 	{cmd: []string{"session"}, subs: []string{"delete"}},
 }
 
-// checkOpenCode is the static OpenCode check: the binary, its version, and the
+// checkOpenCode is the static OpenCode check: the binary, its version (OpenCode
+// 1 prints it bare, "1.18.30", and 2 as "opencode v2.0.32"; versionRE finds
+// the number in either), and the
 // flags and subcommand of the commands parley uses. A 2.x is refused with the
 // one line above and nothing else, since its CLI may differ in ways that would
 // only bury it. There is no live half: the front is verified against a server by

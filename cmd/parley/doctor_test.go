@@ -440,7 +440,7 @@ func TestDoctorOpenCodeCanBeAddedToTheOthers(t *testing.T) {
 // TestDoctorOpenCodeTwoExits1: the front speaks OpenCode 1's HTTP API.
 func TestDoctorOpenCodeTwoExits1(t *testing.T) {
 	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
-	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "2.0.32")
+	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "opencode v2.0.32")
 	res := b.run(t, "--harness", "opencode")
 	fails := withLevel(reportLines(t, res.stdout), "FAIL")
 	if res.code != 1 || len(fails) != 1 || !strings.Contains(fails[0], "OpenCode 2 is not supported yet") || !strings.Contains(fails[0], "npm i -g opencode-ai@1") {

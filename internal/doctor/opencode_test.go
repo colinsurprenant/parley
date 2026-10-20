@@ -240,11 +240,47 @@ func TestOpenCodeTwoIsAFAILWithTheWayOut(t *testing.T) {
 		if !strings.Contains(rs[1].Detail, want) || !strings.Contains(rs[1].Detail, version) {
 			t.Errorf("%s: the FAIL does not say %q and name the version: %q", version, want, rs[1])
 		}
+		// Both ways to a 1.x, and where a 2 likely came from, on the one line.
+		for _, also := range []string{"curl -fsSL https://opencode.ai/install | bash (1.x only)", "Homebrew core now ships OpenCode 2"} {
+			if !strings.Contains(rs[1].Detail, also) {
+				t.Errorf("%s: the FAIL does not say %q: %q", version, also, rs[1])
+			}
+		}
+		if strings.Contains(rs[1].Detail, "\n") {
+			t.Errorf("%s: the FAIL is more than one line: %q", version, rs[1])
+		}
 		if !Failed(rs) {
 			t.Errorf("%s: Failed is false", version)
 		}
 		if got, _ := os.ReadFile(log); strings.Contains(string(got), "--help") {
 			t.Errorf("%s: the CLI's help was read though the version was refused:\n%s", version, got)
+		}
+	}
+}
+
+// TestOpenCodeVersionIsReadFromEitherPrintedForm: OpenCode 1 prints a bare
+// version, and OpenCode 2 prints "opencode v2.0.32" (as of the 2.0.32 binary), so
+// a 2.x install gets the refusal rather than an unreadable-version warning, and
+// a 1.x in the same form is read as the version it is.
+func TestOpenCodeVersionIsReadFromEitherPrintedForm(t *testing.T) {
+	for _, tc := range []struct {
+		out   string
+		level Level
+		want  string
+	}{
+		{"opencode v2.0.32", Fail, "OpenCode 2 is not supported yet"},
+		{"v2.0.32", Fail, "OpenCode 2 is not supported yet"},
+		{"opencode v1.18.30", OK, "the version last verified"},
+		{"v1.19.3", Warn, "newer than " + OpenCodeVerified},
+	} {
+		bin, _ := fakeOpenCode{version: tc.out}.install(t, t.TempDir())
+		rs := Check(context.Background(), Options{OpenCode: true, OpenCodeBin: bin})
+		r := find(t, rs, "opencode version")
+		if r.Level != tc.level || !strings.Contains(r.Detail, tc.want) {
+			t.Errorf("%q: got %q, want level %v with %q", tc.out, r, tc.level, tc.want)
+		}
+		if strings.Contains(r.Detail, "holds no version") {
+			t.Errorf("%q was taken for an unreadable version: %q", tc.out, r)
 		}
 	}
 }

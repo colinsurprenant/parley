@@ -100,7 +100,7 @@ type Result struct {
 
 // String is the report line: the level, the surface, the detail.
 func (r Result) String() string {
-	return fmt.Sprintf("%-4s %-14s %s", r.Level, r.Surface, r.Detail)
+	return fmt.Sprintf("%-4s %-16s %s", r.Level, r.Surface, r.Detail)
 }
 
 // Failed reports whether any check failed, which is what makes the exit status
