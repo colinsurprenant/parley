@@ -373,7 +373,7 @@ func TestResponseBodiesAreBounded(t *testing.T) {
 	}
 	huge := strings.Repeat("x", maxStatusBody+1)
 	c = serving(t, answering(200, `{"`+huge+`":{"type":"busy"}}`))
-	if _, err := c.Busy(context.Background(), testSession, testDir); err == nil || !strings.Contains(err.Error(), "longer than") {
+	if _, err := c.Busy(context.Background(), testSession, testDir); err == nil || !strings.Contains(err.Error(), "longer than") || !IsTooLong(err) {
 		t.Fatalf("Busy of a %d byte answer = %v, want the bound", len(huge), err)
 	}
 	// An error body is quoted bounded and printable.
@@ -381,6 +381,43 @@ func TestResponseBodiesAreBounded(t *testing.T) {
 	_, err := c.Health(context.Background())
 	if err == nil || len(err.Error()) > 600 || strings.ContainsAny(err.Error(), "\x00\xff\n") {
 		t.Fatalf("a 500 with a large body = %q", err)
+	}
+}
+
+// TestAHistoryReplyOverTheBoundIsATooLongError: the history read is the one that
+// can be heavy, and the pump asks again for less when it is, so the over-the-bound
+// answer is a type of its own that carries the bound.
+func TestAHistoryReplyOverTheBoundIsATooLongError(t *testing.T) {
+	c := serving(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("["))
+		chunk := []byte(strings.Repeat(" ", 1<<20))
+		for i := 0; i < maxMessageBody>>20+1; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+		_, _ = w.Write([]byte("]"))
+	})
+	_, err := c.Messages(context.Background(), testSession, 10)
+	var tl *TooLongError
+	if !errors.As(err, &tl) || !IsTooLong(err) || tl.Limit != maxMessageBody || IsTransport(err) {
+		t.Fatalf("Messages of a reply over the bound = %v, want a TooLongError for %d", err, maxMessageBody)
+	}
+	// It is not a general-purpose error: a reply that fits is read as before.
+	if msgs, err := serving(t, answering(200, `[]`)).Messages(context.Background(), testSession, 10); err != nil || len(msgs) != 0 {
+		t.Fatalf("Messages of an empty history = %v, %v", msgs, err)
+	}
+}
+
+func TestTheInstallHintSaysWhenHomebrewMoved(t *testing.T) {
+	for _, want := range []string{"npm package opencode-ai", "opencode.ai/install", "Homebrew core moved to OpenCode 2 on 2026-09-28"} {
+		if !strings.Contains(Install1Hint, want) {
+			t.Errorf("the install hint does not say %q: %s", want, Install1Hint)
+		}
+	}
+	if strings.Contains(Install1Hint, "may be") {
+		t.Errorf("the install hint still hedges: %s", Install1Hint)
 	}
 }
 

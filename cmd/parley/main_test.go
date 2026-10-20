@@ -1285,20 +1285,22 @@ func TestPrimerPrintsAWrapperAsTheWholeReplyCommand(t *testing.T) {
 // TestPrimerPrintsTheOpenCodeForm: the text that is an OpenCode session's first
 // message. It is the codex form's shape with the OpenCode front paragraph: the
 // facts as values, a reply file placeholder when none is named, the skill loaded
-// with the skill tool and never typed as a command, and no sandbox or stub
-// sentence. --reply-command is accepted here as on codex, since this text is a
+// with the skill tool and never typed as a command, and no sandbox sentence or
+// Codex's argument bound; it carries the bound and the stub of its own.
+// --reply-command is accepted here as on codex, since this text is a
 // first message too.
 func TestPrimerPrintsTheOpenCodeForm(t *testing.T) {
 	f := launchFacts(t)
 	res := mustRun(t, "", f.verb("primer", "--front", "opencode", "--stream", "irc://127.0.0.1:6667/parley",
 		"--nick", "oc-b", "--state-dir", "./state", "--command", "../../bin/parley")...)
 	for _, want := range []string{"your human partner's registered nick " + f.chair + ";", "target repo " + f.target + ";",
-		"your worktree " + f.worktree + ". The protocol is the parley-build skill, which you load with the skill tool."} {
+		"your worktree " + f.worktree + ". The protocol is the parley-build skill, which you load with the skill tool.",
+		"A delivery is posted whole up to about 512 KiB of rendered text", "arrives as a stub in its place"} {
 		if !strings.Contains(res.stdout, want) {
 			t.Fatalf("the opencode primer does not carry %q:\n%s", want, res.stdout)
 		}
 	}
-	for _, unwanted := range []string{"/parley-build", "$parley-build", "sandbox", "128 KiB", "stub", "Codex"} {
+	for _, unwanted := range []string{"/parley-build", "$parley-build", "sandbox", "one message per call", "one argument", "Codex"} {
 		if strings.Contains(res.stdout, unwanted) {
 			t.Fatalf("the opencode primer carries %q:\n%s", unwanted, res.stdout)
 		}

@@ -167,22 +167,28 @@ verbs:
            credentials. The message is the delivery exactly as "parley wait"
            would print it, peer header included, as the only text part of the
            request and with no system prompt of its own: the header is the only
-           mark OpenCode gets. OpenCode has no queue, and a message sent while
-           a turn runs would be folded into that turn, so the pump delivers
-           only into an idle session: if it had to wait, everything that came
-           meanwhile goes as one delivery. It counts a delivery as made once the
-           session's history shows a user message with exactly that text, and
-           commits only then, so a crash re-delivers and does not drop. A human
-           submitting in the TUI at the instant of the post is merged into the
-           human's own turn, which the server's API cannot prevent. Before it
-           opens anything, the pump checks that the server answers, is
-           OpenCode 1 (OpenCode 2 is not supported yet; the npm package
-           opencode-ai and opencode.ai/install give OpenCode 1.x), and knows
-           the session; a failure exits 2 and names the TUI command to run. A
-           server that goes away later (the TUI restarted) is waited for, with
-           the deliveries held in the stream, and checked again when it is
-           back. --session is the session id (ses_ and 26 letters or digits,
-           as "opencode session list" shows), or auto: the id recorded for this
+           mark OpenCode gets. A delivery is bounded, because the pump reads
+           the session's history back to confirm it: a message that renders to
+           over 128 KiB, and every message once the delivery has 512 KiB, is
+           replaced by a stub, its own header over one line naming its id, and
+           the full text stays in the stream. OpenCode has no queue, and a
+           message sent while a turn runs would be folded into that turn, so the
+           pump delivers only into an idle session: if it had to wait,
+           everything that came meanwhile goes as one delivery. It counts a
+           delivery as made once the session's history shows a user message
+           with exactly that text, and commits only then, so a crash
+           re-delivers and does not drop. A human submitting in the TUI at the
+           instant of the post is merged into the human's own turn, which the
+           server's API cannot prevent. Before it opens anything, the pump
+           checks that the server answers, is OpenCode 1 (OpenCode 2 is not
+           supported yet; the npm package opencode-ai and opencode.ai/install
+           give OpenCode 1.x), and knows the session; a failure exits 2 and
+           names the TUI command to run. The same check, which also reads the
+           session's directory, where the server keeps its status, is made
+           again before every delivery, and a server that goes away (the TUI
+           restarted) is waited for, with the deliveries held in the stream.
+           --session is the session id (ses_ and 26 letters or digits, as
+           "opencode session list" shows), or auto: the id recorded for this
            nick and stream in the opencode-session file beside the cursor;
            with no record it exits 2
   primer   print the framing a front gives the model — the reply command first,

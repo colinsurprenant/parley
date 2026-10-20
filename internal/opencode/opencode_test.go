@@ -77,17 +77,24 @@ func tuned(c *Config) {
 
 func newHarness(t *testing.T, f *fakeOpenCode, tune func(*Config)) *harness {
 	t.Helper()
+	return newGatedHarness(t, f, tune)
+}
+
+// newGatedHarness is newHarness for a pump whose Deliverer holds what a table or
+// a line holds back.
+func newGatedHarness(t *testing.T, f *fakeOpenCode, tune func(*Config), gate ...stream.Option) *harness {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "chat.ndjson")
 	dir, err := state.Open(t.TempDir(), selfNick, "file:"+path)
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	return newHarnessOn(t, f, path, dir, tune)
+	return newHarnessOn(t, f, path, dir, tune, gate...)
 }
 
 // newHarnessOn builds a pump over a stream and a state directory that already
 // exist, which is what a restart after a failure looks like.
-func newHarnessOn(t *testing.T, f *fakeOpenCode, path string, dir *state.Dir, tune func(*Config)) *harness {
+func newHarnessOn(t *testing.T, f *fakeOpenCode, path string, dir *state.Dir, tune func(*Config), gate ...stream.Option) *harness {
 	t.Helper()
 	s, err := file.Open(path, selfNick, file.WithPollInterval(pollInterval))
 	if err != nil {
@@ -95,7 +102,7 @@ func newHarnessOn(t *testing.T, f *fakeOpenCode, path string, dir *state.Dir, tu
 	}
 	h := &harness{t: t, path: path, dir: dir, logs: &syncBuffer{}, fake: f}
 	cfg := Config{
-		Deliverer: stream.NewDeliverer(s, selfNick),
+		Deliverer: stream.NewDeliverer(s, selfNick, gate...),
 		Cursors:   dir,
 		Session:   testSession,
 		Client:    f.client(),

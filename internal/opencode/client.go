@@ -130,8 +130,8 @@ func (e *StatusError) Error() string {
 // Install1Hint says how to get the server this front speaks to. It is part of
 // every refusal that means "this is not OpenCode 1", because the usual cause is
 // an install of OpenCode 2, which a package manager may hand out as the current
-// release.
-const Install1Hint = "this front needs OpenCode 1.x: install the npm package opencode-ai, or use the installer at opencode.ai/install (a Homebrew install may be OpenCode 2)"
+// release: Homebrew core did, from 2026-09-28.
+const Install1Hint = "this front needs OpenCode 1.x: install the npm package opencode-ai, or use the installer at opencode.ai/install (Homebrew core moved to OpenCode 2 on 2026-09-28)"
 
 // UnsupportedServerError is a server that answered the health check as something
 // other than OpenCode 1 does. OpenCode 2, which this front does not support yet,
@@ -272,9 +272,27 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, query url.Valu
 		return 0, nil, err
 	}
 	if r.tooLong {
-		return 0, nil, fmt.Errorf("opencode: %s %s: response is longer than the %d bytes this front reads", method, path, limit)
+		return 0, nil, &TooLongError{Op: method + " " + path, Limit: limit}
 	}
 	return r.code, r.body, nil
+}
+
+// TooLongError is an answer longer than the bound this front reads it under. It
+// is its own type because the one caller that can do something about it, the
+// history read, asks again for less.
+type TooLongError struct {
+	Op    string
+	Limit int64
+}
+
+func (e *TooLongError) Error() string {
+	return fmt.Sprintf("opencode: %s: response is longer than the %d bytes this front reads", e.Op, e.Limit)
+}
+
+// IsTooLong reports whether err is an answer over the bound.
+func IsTooLong(err error) bool {
+	var t *TooLongError
+	return errors.As(err, &t)
 }
 
 // exchange is do with the reply whole, for the caller that reads more than the

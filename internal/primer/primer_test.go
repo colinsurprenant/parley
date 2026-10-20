@@ -951,16 +951,19 @@ func TestTheOpenCodeFormEndsWithItsFrontParagraph(t *testing.T) {
 			"posts each delivery into this session as a user message", "the OpenCode server your human partner started with --port",
 			"only while the session is idle", "held and handed over as one delivery when the turn ends",
 			"a message your human partner did not type", "nothing about the turn itself says so",
-			"The header parley wrote is the only mark", "byte for byte what `parley wait` would have printed",
+			"The header parley wrote is the only mark", "byte for byte what `parley wait` would have printed, save for the stub below",
+			"A delivery is posted whole up to about 512 KiB of rendered text", "a message over about 128 KiB on its own, and every message past that bound, arrives as a stub",
+			"that message's header and a one-line notice naming its id", "the full text stays in the stream for your human partner to read",
 			"run it as written", "(external_directory)", "answers that ask in the TUI"} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("the opencode %s form lacks %q:\n%s", name, want, got)
 			}
 		}
 		// Nothing true only of Codex, and nothing of the claude form's channel: no
-		// sandbox or git paragraph, no bound and no stub (this front never splits a
-		// delivery or withholds a message), no command to type for a skill.
-		for _, unwanted := range []string{codexFrontText, codexBuildText, codexLineText, "128 KiB", "stub", "sandbox", "git commit",
+		// sandbox or git paragraph, none of the Codex bound (one message per call
+		// over an argument's size, a bound of the exec and not of this front), no
+		// command to type for a skill.
+		for _, unwanted := range []string{codexFrontText, codexBuildText, codexLineText, "one message per call", "one argument", "sandbox", "git commit",
 			"codex", "Codex", "queues", "/parley-" + name, "$parley-" + name, "<reply file path>"} {
 			if strings.Contains(got, unwanted) {
 				t.Fatalf("the opencode %s form carries %q:\n%s", name, unwanted, got)

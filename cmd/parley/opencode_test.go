@@ -540,6 +540,8 @@ func TestUsageDocumentsTheOpencodeFront(t *testing.T) {
 		"opencode --port <n> --session <id>",
 		"OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_USERNAME",
 		"OpenCode 2 is not supported yet",
+		"a message that renders to over 128 KiB, and every message once the delivery has 512 KiB, is replaced by a stub",
+		"is made again before every delivery",
 		"opencode-session",
 		"channel, codex and opencode take --chair <nick> --cap <n>",
 	} {

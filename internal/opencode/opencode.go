@@ -13,7 +13,13 @@
 // verbatim, as the one text part of the request, with no system field and no
 // other part. It never rewrites, re-prefixes, wraps, truncates or splits what
 // Render produced, and the delivery is not counted as made until the session's
-// own history shows a user message holding exactly those bytes.
+// own history shows a user message holding exactly those bytes. The one thing
+// that is done to a delivery before Render is bounding it (bound.go): a message
+// that renders to more than 128 KiB, and every message once the delivery has 512
+// KiB, is replaced by a stub, a copy of the message whose body is a notice, so
+// what is posted is still the rendering of a Delivery, the stub under the
+// message's own header. The read-back reads the history under a bound of its own,
+// and a delivery that passed it could never be confirmed.
 //
 // Threat model. The human, parley's own state records and the OpenCode server at
 // 127.0.0.1:<port> are trusted: the server is the human's own TUI, its JSON is
@@ -96,14 +102,21 @@ const (
 	// defaultMaxBackoff caps the wait between attempts at a server that is away.
 	defaultMaxBackoff = 5 * time.Second
 
-	// recentMessages is how much of the history is read for the note and the
+	// historyWindow is how much of the history is read for the note and the
 	// read-back: the newest this many messages by id. The message being looked
 	// for is among the newest of them, and at most a few assistant ones follow it
 	// in the seconds in which it is looked for. The same window serves both, which
 	// is what makes the set of ids noted before the post comparable with what the
 	// read-back sees: messages only ever join the window at its newest end, so one
-	// that was outside it when the note was taken cannot be inside it later.
-	recentMessages = 20
+	// that was outside it when the note was taken cannot be inside it later. Every
+	// message comes with all of its parts, tool output among them, so the window is
+	// kept small: ten of them is a lot to ask of a session that has been running
+	// tools, and is more than the read-back needs.
+	historyWindow = 10
+
+	// narrowWindow replaces historyWindow, for the delivery in hand, when a read
+	// of the newest historyWindow comes back over the bound a reply is read under.
+	narrowWindow = 3
 )
 
 // CursorStore persists the stream position between runs. *state.Dir implements
@@ -279,6 +292,12 @@ func (p *Pump) Run(ctx context.Context) error {
 // or has not within the bound; an error means nothing is known to have landed
 // that the stream will not deliver again.
 //
+// Every attempt starts with awaitIdle, which attaches to the server first: each
+// delivery is preceded by a check that the server is the OpenCode 1 it was and by
+// a fresh read of the session's directory, however long the pump sat in Wait
+// since, and an attempt that failed because the server went away starts over the
+// same way.
+//
 // A context canceled before the history shows the delivery is an error here and
 // the caller turns it into the shutdown. One canceled after is not: the message
 // is in the session, and reporting it as undelivered would send it a second time
@@ -304,14 +323,20 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 				return d, nil
 			}
 		}
-		// The one text this front sends, and the only place it is made.
-		text := d.Render()
+		// The one text this front sends, and the only place it is made: the
+		// rendering of a Delivery, which is d's own where it fits the bound of a
+		// delivery and otherwise d with stubs for the messages that do not.
+		posted, withheld := boundedDelivery(d)
+		text := posted.Render()
 		if text == "" {
 			return d, errors.New("a delivery with messages rendered to no text")
 		}
+		if withheld > 0 {
+			p.logf("%d of %d message(s) go over as stubs, past the %d byte bound of a message or the %d byte bound of a delivery; the text stays in the stream", withheld, len(d.Messages), maxMessageBytes, maxDeliveryBytes)
+		}
 		p.logf("delivering %d message(s), %d bytes, to session %s", len(d.Messages), len(text), p.session)
 
-		known, err := p.recentIDs(ctx)
+		known, window, err := p.recentIDs(ctx)
 		if err != nil {
 			if IsTransport(err) {
 				// The server went away between the idle check and here; nothing was
@@ -341,27 +366,28 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 			// bargain.
 			return d, fmt.Errorf("prompt session %s: %w", p.session, err)
 		}
-		userID, err := p.readBack(ctx, known, text)
+		userID, window, err := p.readBack(ctx, known, window, text)
 		if err != nil {
 			return d, err
 		}
-		p.settle(ctx, userID)
+		p.settle(ctx, userID, window)
 		return d, nil
 	}
 }
 
-// awaitIdle blocks until the session is idle and says whether it had to wait,
-// which tells the caller that its delivery may be stale. The first time, and
-// after the server was away, it attaches first: it asks the server its version
-// and the session's directory, which the status is read under. A server that is
-// away is waited for with a backoff that doubles up to the cap, with one line
-// logged when it goes and one when it is back; the stream keeps everything
-// meanwhile. A server that comes back is asked again, because it may not be the
-// one that went away: the human restarted the TUI, perhaps on another install.
-// Any failure of the server other than being away stops the pump.
+// awaitIdle attaches to the server, then blocks until the session is idle, and
+// says whether it had to wait, which tells the caller that its delivery may be
+// stale. It attaches on every call and not only the first: it asks the server its
+// version and the session's directory, which the status is read under, because
+// the server that answers now may not be the one that did when the pump last
+// looked, and the human can restart the TUI, perhaps on another install, at any
+// time, the long waits for a delivery included. A server that is away is waited
+// for with a backoff that doubles up to the cap, with one line logged when it
+// goes and one when it is back; the stream keeps everything meanwhile. Any
+// failure of the server other than being away stops the pump.
 func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 	backoff := p.idlePoll
-	away, outage := p.directory == "", false
+	away, outage := true, false
 	for {
 		if away {
 			if err := p.attach(ctx); err != nil {
@@ -429,65 +455,106 @@ func (p *Pump) attach(ctx context.Context) error {
 }
 
 // recentIDs returns the ids of the messages in the session's recent history, the
-// newest recentMessages of it. It is the note the read-back compares against: a
-// user message with the delivery's text that is in this set was there before the
-// post, however recently, and proves nothing about it. The set and not the
-// newest id, because ids are assigned by the server as it creates each message,
-// which is not the order the prompts were posted in: a delivery created next to
-// a human's own submit can get the lower of the two ids.
-func (p *Pump) recentIDs(ctx context.Context) (map[string]struct{}, error) {
-	msgs, err := p.client.Messages(ctx, p.session, recentMessages)
-	if err != nil {
-		return nil, fmt.Errorf("read the recent messages of session %s: %w", p.session, err)
+// newest historyWindow of it, and the window it read them with. It is the note
+// the read-back compares against: a user message with the delivery's text that is
+// in this set was there before the post, however recently, and proves nothing
+// about it. The set and not the newest id, because ids are assigned by the server
+// as it creates each message, which is not the order the prompts were posted in: a
+// delivery created next to a human's own submit can get the lower of the two ids.
+//
+// A history read carries every part of every message it returns, tool output
+// included, and a session whose recent turns are heavy can pass the bound this
+// front reads a reply under. The read is then made again for the newest
+// narrowWindow, and that is the window the read-back and the wait for the turn use
+// for this delivery. Heavy enough at that, the pump stops with the reason, since
+// nothing it could show of the history would confirm a delivery.
+func (p *Pump) recentIDs(ctx context.Context) (known map[string]struct{}, window int, err error) {
+	window = historyWindow
+	msgs, err := p.client.Messages(ctx, p.session, window)
+	if IsTooLong(err) {
+		p.logf("the newest %d messages of session %s are over the bound this front reads a reply under: reading the newest %d instead", window, p.session, narrowWindow)
+		window = narrowWindow
+		msgs, err = p.client.Messages(ctx, p.session, window)
+		if IsTooLong(err) {
+			return nil, 0, fmt.Errorf("the newest %d messages of session %s are still over the %d bytes this front reads a history reply under, after narrowing the read from %d messages: nothing was sent, and no delivery into the session could be confirmed until its recent history is smaller (compact the session in the TUI): %w", narrowWindow, p.session, tooLongLimit(err), historyWindow, err)
+		}
 	}
-	known := make(map[string]struct{}, len(msgs))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read the recent messages of session %s: %w", p.session, err)
+	}
+	known = make(map[string]struct{}, len(msgs))
 	for _, m := range msgs {
 		known[m.ID] = struct{}{}
 	}
-	return known, nil
+	return known, window, nil
 }
 
 // readBack polls the history until a user message that is not in known holds a
-// text part byte for byte equal to text, and returns its id. known is the set
-// recentIDs took before the post, over the same window of the newest
-// recentMessages, and messages only ever join that window at its newest end: one
+// text part byte for byte equal to text, and returns its id and the window it
+// read with. known is the set recentIDs took before the post, over the newest
+// window messages, and messages only ever join that window at its newest end: one
 // outside it then cannot be inside it now, so a message that is not in known is
 // one created since. Nothing is assumed of the order of ids. A delivery that is
 // already in the history, as the previous run's would be after a crash, is in
 // known and is told apart from the one just posted. A server that is away while
 // this runs is not a failure of it: the post was accepted, and the message may
 // yet show.
-func (p *Pump) readBack(ctx context.Context, known map[string]struct{}, text string) (string, error) {
-	deadline := time.Now().Add(p.readBackTimeout)
+//
+// The whole of it is bounded by readBackTimeout, by a deadline on the context of
+// every call and not by a look at the clock between them: a request that stalls
+// is cut at the deadline of the phase, not at its own, longer, one. A history that
+// grows past the bound a reply is read under while this waits is read again for
+// the newest narrowWindow, and past that it is an error, which with the message
+// already posted is the one that sends it twice at the next start; it is said so.
+func (p *Pump) readBack(ctx context.Context, known map[string]struct{}, window int, text string) (string, int, error) {
+	phase, cancel := context.WithTimeout(ctx, p.readBackTimeout)
+	defer cancel()
 	var last error
 	for {
-		msgs, err := p.client.Messages(ctx, p.session, recentMessages)
+		msgs, err := p.client.Messages(phase, p.session, window)
 		switch {
 		case err == nil:
 			last = nil
 			for _, m := range msgs {
 				if _, old := known[m.ID]; !old && m.Role == "user" && hasText(m, text) {
-					return m.ID, nil
+					return m.ID, window, nil
 				}
 			}
 		case ctx.Err() != nil:
-			return "", ctx.Err()
+			return "", window, ctx.Err()
+		case phase.Err() != nil:
+			// The deadline of the phase cut the call short; the timeout below says so.
+		case IsTooLong(err) && window > narrowWindow:
+			p.logf("the newest %d messages of session %s grew over the bound this front reads a reply under: reading the newest %d instead", window, p.session, narrowWindow)
+			window = narrowWindow
+			continue
+		case IsTooLong(err):
+			return "", window, fmt.Errorf("the delivery was posted to session %s, but the newest %d messages of it are over the %d bytes this front reads a history reply under, so it cannot be confirmed; nothing was committed, so it is delivered again at the next start: %w", p.session, window, tooLongLimit(err), err)
 		case IsTransport(err):
 			last = err
 		default:
-			return "", fmt.Errorf("read back the delivery from session %s: %w", p.session, err)
+			return "", window, fmt.Errorf("read back the delivery from session %s: %w", p.session, err)
 		}
-		if !time.Now().Before(deadline) {
+		if phase.Err() != nil || !p.sleep(phase, p.readBackPoll) {
+			if ctx.Err() != nil {
+				return "", window, ctx.Err()
+			}
 			detail := ""
 			if last != nil {
 				detail = " (the last read failed: " + last.Error() + ")"
 			}
-			return "", fmt.Errorf("the server accepted the delivery but no user message holding it appeared in session %s within %s%s; nothing was committed, so it is delivered again at the next start", p.session, p.readBackTimeout, detail)
-		}
-		if !p.sleep(ctx, p.readBackPoll) {
-			return "", ctx.Err()
+			return "", window, fmt.Errorf("the server accepted the delivery but no user message holding it appeared in session %s within %s%s; nothing was committed, so it is delivered again at the next start", p.session, p.readBackTimeout, detail)
 		}
 	}
+}
+
+// tooLongLimit is the bound a TooLongError says it was over.
+func tooLongLimit(err error) int64 {
+	var t *TooLongError
+	if errors.As(err, &t) {
+		return t.Limit
+	}
+	return 0
 }
 
 // hasText reports whether m carries a text part holding exactly text.
@@ -507,24 +574,29 @@ func hasText(m Message, text string) bool {
 // logged and passed over: a turn that began and ended inside the polls leaves the
 // second, and one that never began is not worth holding the stream for. Errors
 // from the server are passed over for the same reason.
-func (p *Pump) settle(ctx context.Context, userID string) {
-	deadline := time.Now().Add(p.settleTimeout)
+//
+// settleTimeout bounds the whole of it by a deadline on the context of every call,
+// as readBack's is, so a request that stalls does not stretch it by its own
+// timeout. A shutdown during it returns at once and says nothing, and the
+// delivery stands: it has been confirmed.
+func (p *Pump) settle(ctx context.Context, userID string, window int) {
+	phase, cancel := context.WithTimeout(ctx, p.settleTimeout)
+	defer cancel()
 	for {
-		if busy, err := p.client.Busy(ctx, p.session, p.directory); err == nil && busy {
+		if busy, err := p.client.Busy(phase, p.session, p.directory); err == nil && busy {
 			return
 		}
-		if msgs, err := p.client.Messages(ctx, p.session, recentMessages); err == nil {
+		if msgs, err := p.client.Messages(phase, p.session, window); err == nil {
 			for _, m := range msgs {
 				if m.Role == "assistant" && m.ParentID == userID {
 					return
 				}
 			}
 		}
-		if !time.Now().Before(deadline) {
-			p.logf("session %s did not go busy within %s of the delivery; carrying on", p.session, p.settleTimeout)
-			return
-		}
-		if !p.sleep(ctx, p.readBackPoll) {
+		if phase.Err() != nil || !p.sleep(phase, p.readBackPoll) {
+			if ctx.Err() == nil {
+				p.logf("session %s did not go busy within %s of the delivery; carrying on", p.session, p.settleTimeout)
+			}
 			return
 		}
 	}

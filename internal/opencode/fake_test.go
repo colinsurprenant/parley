@@ -69,6 +69,11 @@ type fakeOpenCode struct {
 	// instead of the next in sequence: the server assigns ids when it creates a
 	// message, which is not the order prompts were posted in.
 	nextUserID string
+	// stallMessages and stallStatus make those reads hang, once a prompt has been
+	// accepted, until the client gives up on the request: a server that has
+	// stopped answering without closing anything.
+	stallMessages bool
+	stallStatus   bool
 
 	// manualBusy is a turn the test holds open, as a human's own prompt would.
 	manualBusy bool
@@ -257,6 +262,18 @@ func (f *fakeOpenCode) waitPosts(n int) []fakePost {
 }
 
 func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
+	// A stall waits outside the lock, so that the other requests are answered
+	// while it hangs.
+	f.mu.Lock()
+	stall := len(f.posts) > 0 && ((f.stallMessages && strings.HasSuffix(r.URL.Path, "/message")) || (f.stallStatus && r.URL.Path == "/session/status"))
+	f.mu.Unlock()
+	if stall {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(30 * time.Second):
+		}
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.password != "" {

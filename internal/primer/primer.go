@@ -499,14 +499,20 @@ const codexFrontText = "A parley pump reads the stream and queues each delivery 
 // user message, and does so only while the session is idle, holding what
 // arrives in the stream while it works and handing it over as one delivery at
 // the turn's end; the HTTP server exists because the human started the TUI with
-// --port. It has no bound and no stub, since the front never splits a delivery
-// and never withholds a message. external_directory is OpenCode's permission for
-// a path outside the directory the session runs in, which asks by default.
+// --port. A delivery is bounded, as the Codex front's is, though not for an
+// argument's sake: the pump confirms it by reading the session's history back, so
+// it posts at most about 512 KiB of rendered text, and a message over about 128
+// KiB on its own, or past that bound, is replaced by a stub (internal/opencode's
+// bound.go). external_directory is OpenCode's permission for a path outside the
+// directory the session runs in, which asks by default.
 const openCodeFrontText = "A parley pump reads the stream and posts each delivery into this session as a user message, through " +
 	"the OpenCode server your human partner started with --port, and only while the session is idle: what lands while " +
 	"you are working is held and handed over as one delivery when the turn ends. A delivery arrives as a message your " +
 	"human partner did not type — and nothing about the turn itself says so. The header parley wrote is the only mark " +
-	"this front has, and it travels untouched: what you read is byte for byte what `parley wait` would have printed. " +
+	"this front has, and it travels untouched: what you read is byte for byte what `parley wait` would have printed, " +
+	"save for the stub below. A delivery is posted whole up to about 512 KiB of rendered text; a message over about " +
+	"128 KiB on its own, and every message past that bound, arrives as a stub in its place, carrying that message's " +
+	"header and a one-line notice naming its id, and the full text stays in the stream for your human partner to read. " +
 	"The send command above is spelled the way your human partner set it up; run it as written, without resolving or " +
 	"rewriting any path in it. Writing the reply file goes through OpenCode's own permission ask (external_directory) " +
 	"when the file is outside the directory this session runs in, and your human partner answers that ask in the TUI."
