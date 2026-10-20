@@ -88,8 +88,9 @@ func TestTheClaudeFormFitsUnderTheClientsCap(t *testing.T) {
 // the renders of sample(). A change to a shared block that moved one byte of
 // them is a change to a form this work was not asked to touch.
 func TestTheBuildFormIsByteForByteWhatItWas(t *testing.T) {
-	claude, codex := sample(), sample()
+	claude, codex, opencode := sample(), sample(), sample()
 	codex.Front = Codex
+	opencode.Front = OpenCode
 	wrapped := codex
 	wrapped.ReplyCommand = "./send.sh"
 	bare := sample()
@@ -100,6 +101,7 @@ func TestTheBuildFormIsByteForByteWhatItWas(t *testing.T) {
 	}{
 		{"build-claude", claude},
 		{"build-codex", codex},
+		{"build-opencode", opencode},
 		{"build-codex-wrapper", wrapped},
 		{"build-claude-nostate", bare},
 	} {
@@ -122,7 +124,7 @@ func TestTheBuildFormIsByteForByteWhatItWas(t *testing.T) {
 // and the session's worktree are launch-time facts in the build form as at a
 // table, printed as spelled, and nothing is left for a human to fill in.
 func TestTheBuildFormCarriesItsFactsAsValues(t *testing.T) {
-	for _, front := range []Front{Claude, Codex} {
+	for _, front := range []Front{Claude, Codex, OpenCode} {
 		p := sample()
 		p.Front = front
 		p.Chair = "colin"
@@ -130,7 +132,7 @@ func TestTheBuildFormCarriesItsFactsAsValues(t *testing.T) {
 		p.Worktree = "/with space/and 'quote'/wt"
 		got := Render(p)
 		want := "Set by your human partner at launch, not the channel: your human partner's registered nick colin; " +
-			"target repo ./a dir/../repo; your worktree /with space/and 'quote'/wt. The protocol is the parley-build skill, invoked as " +
+			"target repo ./a dir/../repo; your worktree /with space/and 'quote'/wt. The protocol is the parley-build skill, " +
 			invocation(front, "parley-build") + ".\n\n"
 		if !strings.Contains(got, want) {
 			t.Fatalf("the %s build form does not carry its facts as\n%s\n%s", front, want, got)
@@ -161,7 +163,7 @@ func TestTheBuildFormCarriesItsFactsAsValues(t *testing.T) {
 // only way to reach the peer has to be above everything that can be cut. This
 // is the order a live pass once failed on, with the recipe last.
 func TestTheReplyCommandComesBeforeTheFraming(t *testing.T) {
-	for _, front := range []Front{Claude, Codex} {
+	for _, front := range []Front{Claude, Codex, OpenCode} {
 		p := sample()
 		p.Front = front
 		got := Render(p)
@@ -180,7 +182,7 @@ func TestTheReplyCommandComesBeforeTheFraming(t *testing.T) {
 // for the form that moved the facts above the header rule: the reply command is
 // still the first thing, so a truncation cannot take it.
 func TestTheReplyCommandComesBeforeTheFramingInTheTableForm(t *testing.T) {
-	for _, front := range []Front{Claude, Codex} {
+	for _, front := range []Front{Claude, Codex, OpenCode} {
 		p := tableSample()
 		p.Front = front
 		got := Render(p)
@@ -244,6 +246,22 @@ func TestAWrapperReplacesTheWholeSendLine(t *testing.T) {
 	}
 }
 
+// TestAWrapperOnTheOpenCodeFormEndsWithTheFrontParagraph: the wrapper replaces
+// the send line on the other first-message front too, and changes nothing after
+// it.
+func TestAWrapperOnTheOpenCodeFormEndsWithTheFrontParagraph(t *testing.T) {
+	p := sample()
+	p.Front = OpenCode
+	p.ReplyCommand = "./send.sh"
+	got := Render(p)
+	if !strings.Contains(got, "2. Run this with Bash:\n\n./send.sh\n\n") || !strings.HasSuffix(got, openCodeFrontText+"\n") {
+		t.Fatalf("the opencode wrapper form is out of shape:\n%s", got)
+	}
+	if strings.Contains(got, "send --stream") {
+		t.Fatalf("the opencode wrapper form still carries the send line:\n%s", got)
+	}
+}
+
 // TestTheClaudeFormIgnoresAReplyCommand: the channel front renders the claude
 // form and has no flag to set this with, so a value that reached it there would
 // be a value nobody chose. The command line refuses one; this is the renderer
@@ -260,7 +278,7 @@ func TestTheClaudeFormIgnoresAReplyCommand(t *testing.T) {
 // of its own must not be told to name one, and must not be told what the flag
 // is for either — the sentence explaining it is the flag's, and goes with it.
 func TestNoStateDirectoryIsNamedWhenThereIsNone(t *testing.T) {
-	for _, front := range []Front{Claude, Codex} {
+	for _, front := range []Front{Claude, Codex, OpenCode} {
 		p := sample()
 		p.Front = front
 		p.StateDir = ""
@@ -270,21 +288,24 @@ func TestNoStateDirectoryIsNamedWhenThereIsNone(t *testing.T) {
 	}
 }
 
-// TestBothFormsCarryTheSameFraming: the two forms are assembled from one set of
-// blocks, so every paragraph of the claude form appears in the codex form word
-// for word. A paragraph that drifted would show up here as a missing one.
+// TestBothFormsCarryTheSameFraming: the forms are assembled from one set of
+// blocks, so every paragraph of the claude form appears in the codex and the
+// opencode form word for word. A paragraph that drifted would show up here as a
+// missing one.
 func TestBothFormsCarryTheSameFraming(t *testing.T) {
-	claude := sample()
-	codex := claude
-	codex.Front = Codex
-	got := Render(codex)
-	for _, para := range strings.Split(Render(claude), "\n\n") {
-		// The skill line is the one block the front chooses the wording of.
-		if strings.Contains(para, "invoked as /parley-build") {
-			para = strings.Replace(para, "invoked as /parley-build", "invoked as $parley-build", 1)
-		}
-		if !strings.Contains(got, para) {
-			t.Fatalf("the codex form does not carry this paragraph of the claude form:\n%s\n\ncodex form:\n%s", para, got)
+	for _, front := range []Front{Codex, OpenCode} {
+		claude := sample()
+		other := claude
+		other.Front = front
+		got := Render(other)
+		for _, para := range strings.Split(Render(claude), "\n\n") {
+			// The skill line is the one block the front chooses the wording of.
+			if strings.Contains(para, "invoked as /parley-build") {
+				para = strings.Replace(para, "invoked as /parley-build", invocation(front, "parley-build"), 1)
+			}
+			if !strings.Contains(got, para) {
+				t.Fatalf("the %s form does not carry this paragraph of the claude form:\n%s\n\n%s form:\n%s", front, para, front, got)
+			}
 		}
 	}
 }
@@ -398,21 +419,24 @@ func TestTheCodexLineFormTellsItsSessionToAskForGitEscalationDirectly(t *testing
 	}
 }
 
-// TestTheCodexOpeningIsTrueHoweverThePrimerArrives: the human pastes the primer
-// in, or parley starts the session with it as the first prompt, and the opening
-// may claim neither.
-func TestTheCodexOpeningIsTrueHoweverThePrimerArrives(t *testing.T) {
-	if strings.Contains(strings.ToLower(codexOpening), "paste") {
-		t.Fatalf("the codex opening claims the primer was pasted:\n%s", codexOpening)
+// TestTheFirstMessageOpeningIsTrueHoweverThePrimerArrives: the human pastes the
+// primer in, or parley starts the session with it as the first prompt, and the
+// opening may claim neither. Both fronts whose primer is a first message open
+// with it, and the claude form, which is handed over at connect time, does not.
+func TestTheFirstMessageOpeningIsTrueHoweverThePrimerArrives(t *testing.T) {
+	if strings.Contains(strings.ToLower(firstMessageOpening), "paste") {
+		t.Fatalf("the first-message opening claims the primer was pasted:\n%s", firstMessageOpening)
 	}
 	for _, p := range []Params{sample(), tableSample(), lineSample()} {
-		p.Front = Codex
-		if got := Render(p); !strings.HasPrefix(got, codexOpening) {
-			t.Fatalf("the codex form does not open with its opening:\n%s", got)
+		for _, front := range []Front{Codex, OpenCode} {
+			p.Front = front
+			if got := Render(p); !strings.HasPrefix(got, firstMessageOpening) {
+				t.Fatalf("the %s form does not open with its opening:\n%s", front, got)
+			}
 		}
 		p.Front = Claude
-		if got := Render(p); strings.Contains(got, codexOpening) {
-			t.Fatalf("the claude form carries the codex opening:\n%s", got)
+		if got := Render(p); strings.Contains(got, firstMessageOpening) {
+			t.Fatalf("the claude form carries the first-message opening:\n%s", got)
 		}
 	}
 }
@@ -421,15 +445,17 @@ func TestTheCodexOpeningIsTrueHoweverThePrimerArrives(t *testing.T) {
 // lock, the cursors and the IRC account password, and the primer has no live
 // session to have made a private directory in. The placeholder says so.
 func TestTheCodexReplyFileIsNeverInsideTheStateDirectory(t *testing.T) {
-	p := sample()
-	p.Front = Codex
-	p.ReplyPath = "<reply file path>"
-	got := Render(p)
-	if !strings.Contains(got, "--body-file "+ShellQuote("<reply file path>")) {
-		t.Fatalf("the codex form does not carry the reply-file placeholder:\n%s", got)
-	}
-	if strings.Contains(got, p.StateDir+"/reply") {
-		t.Fatalf("the codex form puts the reply file inside the state directory:\n%s", got)
+	for _, front := range []Front{Codex, OpenCode} {
+		p := sample()
+		p.Front = front
+		p.ReplyPath = "<reply file path>"
+		got := Render(p)
+		if !strings.Contains(got, "--body-file "+ShellQuote("<reply file path>")) {
+			t.Fatalf("the %s form does not carry the reply-file placeholder:\n%s", front, got)
+		}
+		if strings.Contains(got, p.StateDir+"/reply") {
+			t.Fatalf("the %s form puts the reply file inside the state directory:\n%s", front, got)
+		}
 	}
 }
 
@@ -443,6 +469,25 @@ func TestAnUnknownFrontRendersTheClaudeForm(t *testing.T) {
 	}
 }
 
+// TestNoNamedFrontRendersAnotherFrontsForm: a front Render knows is not the
+// fallback, so a front added to ParseFront and left out of renderForm would be
+// caught here as the claude form under another name.
+func TestNoNamedFrontRendersAnotherFrontsForm(t *testing.T) {
+	fronts := []Front{Claude, Codex, OpenCode}
+	for skill, base := range map[Skill]Params{SkillBuild: sample(), SkillTable: tableSample(), SkillLine: lineSample()} {
+		seen := map[string]Front{}
+		for _, front := range fronts {
+			p := base
+			p.Front = front
+			got := Render(p)
+			if other, dup := seen[got]; dup {
+				t.Fatalf("the %s form renders the same text on the %s and the %s front:\n%s", skill, other, front, got)
+			}
+			seen[got] = front
+		}
+	}
+}
+
 func TestParseFront(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
@@ -451,8 +496,11 @@ func TestParseFront(t *testing.T) {
 	}{
 		{"claude", Claude, true},
 		{"codex", Codex, true},
+		{"opencode", OpenCode, true},
 		{"", "", false},
 		{"Claude", "", false},
+		{"OpenCode", "", false},
+		{"open-code", "", false},
 		{"hal", "", false},
 	} {
 		got, err := ParseFront(tc.in)
@@ -464,6 +512,15 @@ func TestParseFront(t *testing.T) {
 		}
 		if err != nil && !strings.Contains(err.Error(), tc.in) {
 			t.Fatalf("ParseFront(%q) error %q does not name what was passed", tc.in, err)
+		}
+		// The error lists every front there is, so a caller's usage text cannot
+		// quietly leave one out.
+		if err != nil {
+			for _, name := range []string{"claude", "codex", "opencode"} {
+				if !strings.Contains(err.Error(), `"`+name+`"`) {
+					t.Fatalf("ParseFront(%q) error %q does not list %q", tc.in, err, name)
+				}
+			}
 		}
 	}
 }
@@ -502,7 +559,7 @@ func TestShellQuote(t *testing.T) {
 // TestEveryFormEndsWithOneNewline: `parley primer` prints what Render returns
 // and adds nothing, so the trailing newline is this package's to get right.
 func TestEveryFormEndsWithOneNewline(t *testing.T) {
-	for _, front := range []Front{Claude, Codex} {
+	for _, front := range []Front{Claude, Codex, OpenCode} {
 		for name, p := range map[string]Params{"build": sample(), "table": tableSample(), "line": lineSample()} {
 			p.Front = front
 			got := Render(p)
@@ -521,9 +578,13 @@ func TestTheTableFormIsFactsNotBlanks(t *testing.T) {
 	for _, tc := range []struct {
 		front Front
 		skill string
+		// others are the other fronts' ways of naming the skill, which this
+		// form must not carry.
+		others []string
 	}{
-		{Claude, "The protocol is the parley-table skill, invoked as /parley-table."},
-		{Codex, "The protocol is the parley-table skill, invoked as $parley-table."},
+		{Claude, "The protocol is the parley-table skill, invoked as /parley-table.", []string{"$parley-table", "skill tool"}},
+		{Codex, "The protocol is the parley-table skill, invoked as $parley-table.", []string{"/parley-table", "skill tool"}},
+		{OpenCode, "The protocol is the parley-table skill, which you load with the skill tool.", []string{"/parley-table", "$parley-table"}},
 	} {
 		p := tableSample()
 		p.Front = tc.front
@@ -541,13 +602,11 @@ func TestTheTableFormIsFactsNotBlanks(t *testing.T) {
 				t.Fatalf("the %s table form still carries %q:\n%s", tc.front, unwanted, got)
 			}
 		}
-		// The two skills' invocations are each other's absence.
-		other := "/parley-table"
-		if tc.front == Claude {
-			other = "$parley-table"
-		}
-		if strings.Contains(got, other) {
-			t.Fatalf("the %s table form carries the other front's invocation %q", tc.front, other)
+		// The fronts' invocations are each other's absence.
+		for _, other := range tc.others {
+			if strings.Contains(got, other) {
+				t.Fatalf("the %s table form carries the other front's invocation %q", tc.front, other)
+			}
 		}
 	}
 }
@@ -584,18 +643,20 @@ func TestEveryFormNamesTheReplyFileOnceInTheCommand(t *testing.T) {
 			t.Fatalf("the %s form does not use the short state-directory note:\n%s", name, got)
 		}
 
-		p.Front = Codex
-		p.ReplyCommand = "./send.sh"
-		got = Render(p)
-		if !strings.Contains(got, "1. Write the message to "+p.ReplyPath+" with your file-writing tool") {
-			t.Fatalf("a wrapper %s form's step 1 does not name the file the wrapper reads:\n%s", name, got)
-		}
-		if !strings.Contains(got, "2. Run this with Bash:\n\n./send.sh\n\n") || !strings.Contains(got, wrapperNote) {
-			t.Fatalf("the wrapper %s form does not stand alone with its note:\n%s", name, got)
-		}
-		for _, unwanted := range []string{"send --stream", "--state-dir", "--body-file", p.StateDir, p.Command} {
-			if strings.Contains(got, unwanted) {
-				t.Fatalf("the wrapper %s form still carries %q:\n%s", name, unwanted, got)
+		for _, front := range []Front{Codex, OpenCode} {
+			p.Front = front
+			p.ReplyCommand = "./send.sh"
+			got = Render(p)
+			if !strings.Contains(got, "1. Write the message to "+p.ReplyPath+" with your file-writing tool") {
+				t.Fatalf("a wrapper %s %s form's step 1 does not name the file the wrapper reads:\n%s", front, name, got)
+			}
+			if !strings.Contains(got, "2. Run this with Bash:\n\n./send.sh\n\n") || !strings.Contains(got, wrapperNote) {
+				t.Fatalf("the wrapper %s %s form does not stand alone with its note:\n%s", front, name, got)
+			}
+			for _, unwanted := range []string{"send --stream", "--state-dir", "--body-file", p.StateDir, p.Command} {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("the wrapper %s %s form still carries %q:\n%s", front, name, unwanted, got)
+				}
 			}
 		}
 
@@ -626,18 +687,20 @@ func TestTheTableReplyCommandIsTheSameLine(t *testing.T) {
 
 // TestBothTableFormsCarryTheSameFraming is TestBothFormsCarryTheSameFraming for
 // the table form: one set of blocks, so every paragraph of the claude form is in
-// the codex form word for word.
+// the codex and the opencode form word for word.
 func TestBothTableFormsCarryTheSameFraming(t *testing.T) {
-	claude := tableSample()
-	codex := claude
-	codex.Front = Codex
-	got := Render(codex)
-	for _, para := range strings.Split(Render(claude), "\n\n") {
-		if strings.Contains(para, "invoked as /parley-table") {
-			para = strings.Replace(para, "/parley-table", "$parley-table", 1)
-		}
-		if !strings.Contains(got, strings.TrimSuffix(para, "\n")) {
-			t.Fatalf("the codex table form does not carry this paragraph of the claude form:\n%s\n\ncodex form:\n%s", para, got)
+	for _, front := range []Front{Codex, OpenCode} {
+		claude := tableSample()
+		other := claude
+		other.Front = front
+		got := Render(other)
+		for _, para := range strings.Split(Render(claude), "\n\n") {
+			if strings.Contains(para, "invoked as /parley-table") {
+				para = strings.Replace(para, "invoked as /parley-table", invocation(front, "parley-table"), 1)
+			}
+			if !strings.Contains(got, strings.TrimSuffix(para, "\n")) {
+				t.Fatalf("the %s table form does not carry this paragraph of the claude form:\n%s\n\n%s form:\n%s", front, para, front, got)
+			}
 		}
 	}
 }
@@ -653,9 +716,11 @@ func TestTheTableFormsShareTheBuildFormsFraming(t *testing.T) {
 		}
 	}
 	for name, p := range map[string]Params{"table": tableSample(), "line": lineSample()} {
-		p.Front = Codex
-		if got := Render(p); !strings.Contains(got, codexOpening) || !strings.Contains(got, codexFrontText) {
-			t.Fatalf("the codex %s form lost its opening or its front paragraph:\n%s", name, got)
+		for front, paragraph := range map[Front]string{Codex: codexFrontText, OpenCode: openCodeFrontText} {
+			p.Front = front
+			if got := Render(p); !strings.Contains(got, firstMessageOpening) || !strings.Contains(got, paragraph) {
+				t.Fatalf("the %s %s form lost its opening or its front paragraph:\n%s", front, name, got)
+			}
 		}
 	}
 }
@@ -740,11 +805,13 @@ func TestRenderSwitchesOverEverySkill(t *testing.T) {
 // skill in the way the front invokes it.
 func TestTheLineFormIsFactsNotBlanks(t *testing.T) {
 	for _, tc := range []struct {
-		front Front
-		skill string
+		front  Front
+		skill  string
+		others []string
 	}{
-		{Claude, "The protocol is the parley-line skill, invoked as /parley-line."},
-		{Codex, "The protocol is the parley-line skill, invoked as $parley-line."},
+		{Claude, "The protocol is the parley-line skill, invoked as /parley-line.", []string{"$parley-line", "skill tool"}},
+		{Codex, "The protocol is the parley-line skill, invoked as $parley-line.", []string{"/parley-line", "skill tool"}},
+		{OpenCode, "The protocol is the parley-line skill, which you load with the skill tool.", []string{"/parley-line", "$parley-line"}},
 	} {
 		p := lineSample()
 		p.Front = tc.front
@@ -765,12 +832,10 @@ func TestTheLineFormIsFactsNotBlanks(t *testing.T) {
 				t.Fatalf("the %s line form still carries %q:\n%s", tc.front, unwanted, got)
 			}
 		}
-		other := "/parley-line"
-		if tc.front == Claude {
-			other = "$parley-line"
-		}
-		if strings.Contains(got, other) {
-			t.Fatalf("the %s line form carries the other front's invocation %q", tc.front, other)
+		for _, other := range tc.others {
+			if strings.Contains(got, other) {
+				t.Fatalf("the %s line form carries the other front's invocation %q", tc.front, other)
+			}
 		}
 		// The facts come ahead of the header rule, which the carve-out points back at.
 		if facts, header := strings.Index(got, "registered nick colin"), strings.Index(got, headerBlock); facts < 0 || facts > header {
@@ -822,16 +887,18 @@ func TestTheLineFormPrintsTheChairTheCapAndTheWindowAsSpelled(t *testing.T) {
 // TestBothLineFormsCarryTheSameFraming is TestBothFormsCarryTheSameFraming for
 // the line form.
 func TestBothLineFormsCarryTheSameFraming(t *testing.T) {
-	claude := lineSample()
-	codex := claude
-	codex.Front = Codex
-	got := Render(codex)
-	for _, para := range strings.Split(Render(claude), "\n\n") {
-		if strings.Contains(para, "invoked as /parley-line") {
-			para = strings.Replace(para, "/parley-line", "$parley-line", 1)
-		}
-		if !strings.Contains(got, strings.TrimSuffix(para, "\n")) {
-			t.Fatalf("the codex line form does not carry this paragraph of the claude form:\n%s\n\ncodex form:\n%s", para, got)
+	for _, front := range []Front{Codex, OpenCode} {
+		claude := lineSample()
+		other := claude
+		other.Front = front
+		got := Render(other)
+		for _, para := range strings.Split(Render(claude), "\n\n") {
+			if strings.Contains(para, "invoked as /parley-line") {
+				para = strings.Replace(para, "invoked as /parley-line", invocation(front, "parley-line"), 1)
+			}
+			if !strings.Contains(got, strings.TrimSuffix(para, "\n")) {
+				t.Fatalf("the %s line form does not carry this paragraph of the claude form:\n%s\n\n%s form:\n%s", front, para, front, got)
+			}
 		}
 	}
 }
@@ -839,14 +906,16 @@ func TestBothLineFormsCarryTheSameFraming(t *testing.T) {
 // TestTheLineFormGoldens locks the line form as the build form is locked: the
 // golden files are the renders of lineSample() on each front.
 func TestTheLineFormGoldens(t *testing.T) {
-	claude, codex := lineSample(), lineSample()
+	claude, codex, opencode := lineSample(), lineSample(), lineSample()
 	codex.Front = Codex
+	opencode.Front = OpenCode
 	for _, tc := range []struct {
 		golden string
 		p      Params
 	}{
 		{"line-claude", claude},
 		{"line-codex", codex},
+		{"line-opencode", opencode},
 	} {
 		want, err := os.ReadFile("testdata/" + tc.golden + ".golden")
 		if err != nil {
@@ -854,6 +923,58 @@ func TestTheLineFormGoldens(t *testing.T) {
 		}
 		if got := Render(tc.p); got != string(want) {
 			t.Fatalf("%s renders\n%s\nwant the golden render\n%s", tc.golden, got, want)
+		}
+	}
+}
+
+// TestTheOpenCodeFormEndsWithItsFrontParagraph: the opencode form is the
+// session's first message, opens as the codex one does, and ends with what is
+// true only of this front, on every skill.
+func TestTheOpenCodeFormEndsWithItsFrontParagraph(t *testing.T) {
+	for name, p := range map[string]Params{"build": sample(), "table": tableSample(), "line": lineSample()} {
+		p.Front = OpenCode
+		got := Render(p)
+		if !strings.HasPrefix(got, firstMessageOpening) {
+			t.Fatalf("the opencode %s form does not open with its opening:\n%s", name, got)
+		}
+		if !strings.HasSuffix(got, "\n\n"+openCodeFrontText+"\n") {
+			t.Fatalf("the opencode %s form does not end with the front paragraph:\n%s", name, got)
+		}
+		if n := strings.Count(got, openCodeFrontText); n != 1 {
+			t.Fatalf("the opencode %s form carries the front paragraph %d times, want once", name, n)
+		}
+		// The facts it states: a pump posting a user message through the server the
+		// human started with --port, only while idle, one held delivery after a busy
+		// turn, a message the human did not type, the header as the only mark, and
+		// the permission ask the reply file can raise.
+		for _, want := range []string{
+			"posts each delivery into this session as a user message", "the OpenCode server your human partner started with --port",
+			"only while the session is idle", "held and handed over as one delivery when the turn ends",
+			"a message your human partner did not type", "nothing about the turn itself says so",
+			"The header parley wrote is the only mark", "byte for byte what `parley wait` would have printed",
+			"run it as written", "(external_directory)", "answers that ask in the TUI"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("the opencode %s form lacks %q:\n%s", name, want, got)
+			}
+		}
+		// Nothing true only of Codex, and nothing of the claude form's channel: no
+		// sandbox or git paragraph, no bound and no stub (this front never splits a
+		// delivery or withholds a message), no command to type for a skill.
+		for _, unwanted := range []string{codexFrontText, codexBuildText, codexLineText, "128 KiB", "stub", "sandbox", "git commit",
+			"codex", "Codex", "queues", "/parley-" + name, "$parley-" + name, "<reply file path>"} {
+			if strings.Contains(got, unwanted) {
+				t.Fatalf("the opencode %s form carries %q:\n%s", name, unwanted, got)
+			}
+		}
+		if !strings.Contains(got, "the parley-"+name+" skill, which you load with the skill tool.") {
+			t.Fatalf("the opencode %s form does not say to load the skill with the skill tool:\n%s", name, got)
+		}
+		// The other fronts carry nothing of it.
+		for _, front := range []Front{Claude, Codex} {
+			p.Front = front
+			if got := Render(p); strings.Contains(got, openCodeFrontText) || strings.Contains(got, "skill tool") {
+				t.Fatalf("the %s %s form carries the opencode front paragraph:\n%s", front, name, got)
+			}
 		}
 	}
 }

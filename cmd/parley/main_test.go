@@ -1282,6 +1282,42 @@ func TestPrimerPrintsAWrapperAsTheWholeReplyCommand(t *testing.T) {
 	}
 }
 
+// TestPrimerPrintsTheOpenCodeForm: the text that is an OpenCode session's first
+// message. It is the codex form's shape with the OpenCode front paragraph: the
+// facts as values, a reply file placeholder when none is named, the skill loaded
+// with the skill tool and never typed as a command, and no sandbox or stub
+// sentence. --reply-command is accepted here as on codex, since this text is a
+// first message too.
+func TestPrimerPrintsTheOpenCodeForm(t *testing.T) {
+	f := launchFacts(t)
+	res := mustRun(t, "", f.verb("primer", "--front", "opencode", "--stream", "irc://127.0.0.1:6667/parley",
+		"--nick", "oc-b", "--state-dir", "./state", "--command", "../../bin/parley")...)
+	for _, want := range []string{"your human partner's registered nick " + f.chair + ";", "target repo " + f.target + ";",
+		"your worktree " + f.worktree + ". The protocol is the parley-build skill, which you load with the skill tool."} {
+		if !strings.Contains(res.stdout, want) {
+			t.Fatalf("the opencode primer does not carry %q:\n%s", want, res.stdout)
+		}
+	}
+	for _, unwanted := range []string{"/parley-build", "$parley-build", "sandbox", "128 KiB", "stub", "Codex"} {
+		if strings.Contains(res.stdout, unwanted) {
+			t.Fatalf("the opencode primer carries %q:\n%s", unwanted, res.stdout)
+		}
+	}
+	if !strings.HasPrefix(res.stdout, "This primer is your first message because") || !strings.HasSuffix(res.stdout, "answers that ask in the TUI.\n") {
+		t.Fatalf("the opencode primer does not open with its opening and end with its front paragraph:\n%s", res.stdout)
+	}
+	want := "'../../bin/parley' send --stream 'irc://127.0.0.1:6667/parley' --nick oc-b --state-dir './state' --body-file '<reply file path>'"
+	if got := replyCommandLine(t, res.stdout); got != want {
+		t.Fatalf("the reply command is\n%q\nwant\n%q", got, want)
+	}
+
+	wrapped := mustRun(t, "", f.verb("primer", "--front", "opencode", "--stream", "irc://127.0.0.1:6667/parley",
+		"--nick", "oc-b", "--reply-file", "./reply.txt", "--reply-command", "/opt/parley/send.sh")...)
+	if !strings.Contains(wrapped.stdout, "2. Run this with Bash:\n\n/opt/parley/send.sh\n\n") || strings.Contains(wrapped.stdout, "send --stream") {
+		t.Fatalf("the opencode wrapper primer does not run the wrapper alone:\n%s", wrapped.stdout)
+	}
+}
+
 // TestPrimerPrintsTheClaudeFormReplyFirst: the whole point of the ordering.
 // Claude Code truncates the tail of an instructions string, so the one way to
 // reach the peer stands above everything that can be cut.
@@ -1358,7 +1394,7 @@ func TestPrimerRejectsABadInvocation(t *testing.T) {
 		{"an empty command", []string{"primer", "--front", "codex", "--stream", spec, "--nick", "codex-b", "--command", ""}, "--command must not be empty"},
 		{"a stray argument", []string{"primer", "--front", "codex", "--stream", spec, "--nick", "codex-b", "extra"}, `unexpected argument "extra"`},
 		{"a reply command on the claude front", []string{"primer", "--front", "claude", "--stream", spec, "--nick", "claude-a",
-			"--reply-file", "/tmp/reply.txt", "--reply-command", "/opt/parley/send.sh"}, "--reply-command applies to the codex front only"},
+			"--reply-file", "/tmp/reply.txt", "--reply-command", "/opt/parley/send.sh"}, "--reply-command applies to the codex and opencode fronts only"},
 		{"an empty reply command", []string{"primer", "--front", "codex", "--stream", spec, "--nick", "codex-b",
 			"--reply-command", ""}, "--reply-command must not be empty"},
 		{"a reply command of two lines", []string{"primer", "--front", "codex", "--stream", spec, "--nick", "codex-b",

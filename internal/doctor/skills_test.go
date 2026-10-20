@@ -309,6 +309,176 @@ func TestLineSkillChecksOnlyTheLineLinkEachChosenHarnessReads(t *testing.T) {
 	}
 }
 
+// skillLines are the skill lines of a report.
+func skillLines(rs []Result) []Result {
+	var out []Result
+	for _, r := range rs {
+		if r.Surface == "skill" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// TestOpenCodeFindsASkillUnderEitherRoot: OpenCode 1.18.30 loads a SKILL.md
+// from ~/.claude/skills and from ~/.agents/skills, so one valid link of the two
+// is a skill it has, and a machine installed for one of the other harnesses is
+// installed for it.
+func TestOpenCodeFindsASkillUnderEitherRoot(t *testing.T) {
+	home, skills := skillHome(t)
+	opencode := Options{OpenCode: true, OpenCodeBin: "no-such-opencode", Skills: true}
+
+	// Both roots are there: each skill is one line, the first root's.
+	rs := skillLines(Check(context.Background(), opencode))
+	if len(rs) != 3 || len(lines(rs, OK)) != 3 {
+		t.Fatalf("want one ok line per skill:\n%s", render(rs))
+	}
+	for _, r := range rs {
+		if !strings.Contains(r.Detail, filepath.Join(home, ".claude", "skills")) {
+			t.Errorf("a skill line that is not the first root's: %q", r)
+		}
+	}
+
+	// Only the Codex root, then only the Claude one: still three ok lines.
+	for _, gone := range []string{".claude", ".agents"} {
+		kept := map[string]string{".claude": ".agents", ".agents": ".claude"}[gone]
+		bare := skillHomeWithout(t, skills, gone)
+		rs := skillLines(Check(context.Background(), opencode))
+		if len(rs) != 3 || len(lines(rs, OK)) != 3 {
+			t.Fatalf("with only %s:\n%s", kept, render(rs))
+		}
+		for _, r := range rs {
+			if !strings.Contains(r.Detail, filepath.Join(bare, kept, "skills")) {
+				t.Errorf("with only %s, a skill line elsewhere: %q", kept, r)
+			}
+		}
+	}
+}
+
+// skillHomeWithout is a home with every link under the other root and none
+// under root, set as $HOME.
+func skillHomeWithout(t *testing.T, skills, root string) string {
+	t.Helper()
+	home := t.TempDir()
+	for _, r := range skillRoots {
+		if r[0] == root {
+			continue
+		}
+		for _, name := range skillNames {
+			link := filepath.Join(home, filepath.Join(r...), name)
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(skills, name), link); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Setenv("HOME", home)
+	return home
+}
+
+// TestOpenCodeSkillIsAFAILOnlyWhenNeitherRootHasIt: a link that is gone, dangling
+// or not a skill under one root is no failure while the other root's is sound,
+// and when neither is, the one FAIL names both and says OpenCode needs only one.
+func TestOpenCodeSkillIsAFAILOnlyWhenNeitherRootHasIt(t *testing.T) {
+	home, skills := skillHome(t)
+	opencode := Options{OpenCode: true, OpenCodeBin: "no-such-opencode", Skills: true}
+	claudeBuild := filepath.Join(home, ".claude", "skills", "parley-build")
+	codexBuild := filepath.Join(home, ".agents", "skills", "parley-build")
+
+	// Missing under the first root.
+	if err := os.Remove(claudeBuild); err != nil {
+		t.Fatal(err)
+	}
+	rs := skillLines(Check(context.Background(), opencode))
+	if len(rs) != 3 || len(lines(rs, OK)) != 3 {
+		t.Fatalf("a link missing under one root only:\n%s", render(rs))
+	}
+	var viaCodexRoot bool
+	for _, r := range rs {
+		viaCodexRoot = viaCodexRoot || strings.Contains(r.Detail, codexBuild)
+	}
+	if !viaCodexRoot {
+		t.Errorf("parley-build was not found under the Codex root:\n%s", render(rs))
+	}
+
+	// Dangling under the second, missing under the first: neither.
+	if err := os.RemoveAll(filepath.Join(skills, "parley-build")); err != nil {
+		t.Fatal(err)
+	}
+	rs = skillLines(Check(context.Background(), opencode))
+	fails := lines(rs, Fail)
+	if len(rs) != 3 || len(fails) != 1 || len(lines(rs, OK)) != 2 {
+		t.Fatalf("want two ok lines and one FAIL:\n%s", render(rs))
+	}
+	for _, want := range []string{"OpenCode reads skills from either root", "parley-build is under neither", claudeBuild + " is missing",
+		codexBuild + " ->", "is dangling", "run sh skills/install.sh from a parley checkout"} {
+		if !strings.Contains(fails[0].Detail, want) {
+			t.Errorf("the FAIL does not say %q: %q", want, fails[0])
+		}
+	}
+	// The fix is said once, at the end.
+	if n := strings.Count(fails[0].Detail, "install.sh"); n != 1 {
+		t.Errorf("the FAIL says to run install.sh %d times: %q", n, fails[0])
+	}
+}
+
+// TestOpenCodeSkillChecksOnlyTheSkillAnEntryPointNeeds: a line of OpenCode
+// sessions needs the parley-line skill and nothing else, as every other harness
+// does.
+func TestOpenCodeSkillChecksOnlyTheSkillAnEntryPointNeeds(t *testing.T) {
+	home, _ := skillHome(t)
+	for _, name := range []string{"parley-table", "parley-build"} {
+		for _, root := range []string{".claude", ".agents"} {
+			if err := os.Remove(filepath.Join(home, root, "skills", name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for field, opts := range map[string]Options{
+		"LineSkill":  {OpenCode: true, OpenCodeBin: "no-such-opencode", LineSkill: true},
+		"Skills":     {OpenCode: true, OpenCodeBin: "no-such-opencode", Skills: true},
+		"TableSkill": {OpenCode: true, OpenCodeBin: "no-such-opencode", TableSkill: true},
+	} {
+		rs := skillLines(Check(context.Background(), opts))
+		wantFails := map[string]int{"LineSkill": 0, "Skills": 2, "TableSkill": 1}[field]
+		if got := len(lines(rs, Fail)); got != wantFails {
+			t.Errorf("%s: %d FAIL lines, want %d:\n%s", field, got, wantFails, render(rs))
+		}
+	}
+}
+
+// TestSkillLinesTwoHarnessesShareAreOneLine: Claude Code and OpenCode both read
+// ~/.claude/skills, and a link both read is not reported twice; a harness's own
+// root still FAILs for it when its link is gone.
+func TestSkillLinesTwoHarnessesShareAreOneLine(t *testing.T) {
+	home, _ := skillHome(t)
+	all := Options{Claude: true, Codex: true, OpenCode: true, ClaudeBin: "no-such-claude", CodexBin: "no-such-codex", OpenCodeBin: "no-such-opencode", Skills: true}
+	if rs := skillLines(Check(context.Background(), all)); len(rs) != 6 || len(lines(rs, OK)) != 6 {
+		t.Fatalf("want six ok lines for three skills under two roots, whoever reads them:\n%s", render(rs))
+	}
+
+	// Claude Code's link is gone: it FAILs, and OpenCode is served by the other.
+	gone := filepath.Join(home, ".claude", "skills", "parley-line")
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	rs := skillLines(Check(context.Background(), all))
+	fails := lines(rs, Fail)
+	if len(fails) != 1 || !strings.Contains(fails[0].Detail, gone) || strings.Contains(fails[0].Detail, "OpenCode") {
+		t.Fatalf("want one FAIL, Claude Code's, naming %s:\n%s", gone, render(rs))
+	}
+	if len(rs) != 6 {
+		t.Errorf("%d skill lines, want six (five ok, one FAIL):\n%s", len(rs), render(rs))
+	}
+
+	// OpenCode alone does not fail for it.
+	if fails := lines(skillLines(Check(context.Background(), Options{OpenCode: true, OpenCodeBin: "no-such-opencode", Skills: true})), Fail); len(fails) != 0 {
+		t.Errorf("OpenCode failed with the Codex root intact:\n%s", render(fails))
+	}
+}
+
 func TestAMissingSkillLinkIsAFAILNamingIt(t *testing.T) {
 	home, _ := skillHome(t)
 	gone := filepath.Join(home, ".agents", "skills", "parley-table")
