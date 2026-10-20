@@ -282,8 +282,11 @@ parley opencode --stream file:./chat.ndjson --nick oc-a --session <ses_id> --por
 below cannot be sent anywhere else. `--session` is the session id, as `opencode
 session list` shows it, or `auto`, which reads the id recorded for this nick and
 stream in `opencode-session`, under the state directory `--state-dir` names, by
-`parley line add`; with no record it exits 2, saying to run `parley line add` or
-pass `--session <id>`. `auto` is reserved, and no session id looks like it.
+`parley line add`; with no record it exits 2. Under `--skill line` it says to run
+`parley line add --harness opencode` or pass `--session <id>`; under `build` or
+`table`, which take no OpenCode seats yet and so have nothing that records one, it
+says so and to pass `--session <id>`. `auto` is reserved, and no session id looks
+like it.
 `--skill` is `build` by default and takes `table` and `line`, each with `--chair`
 and `--cap`, both required; `line` also takes `--window`, 10m by default. A line
 session is started with `--skill line` by `parley line add`, which prints the pump

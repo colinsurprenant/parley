@@ -429,7 +429,7 @@ func (s lineSession) check(r lineRecord) error {
 		}
 	default:
 		if s.Thread != "" {
-			return fmt.Errorf("thread %q is not a Codex session's UUID", s.Thread)
+			return fmt.Errorf("a Claude session holds no thread, and this one has %q", s.Thread)
 		}
 	}
 	if s.ReplyDir != "" {

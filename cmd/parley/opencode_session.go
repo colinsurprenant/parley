@@ -207,10 +207,14 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 		// The list is asked for it, from the checkout (1.18.30 lists the project of
 		// the directory it runs in) and by the title this run gave it, which no
 		// other run's has, and the directory and the time it was made.
-		ids, err := openCodeStrays(c.bin, c.title, c.dir, started)
+		ids, full, err := openCodeStrays(c.bin, c.title, c.dir, started)
 		switch {
 		case err != nil:
 			env.logf("session %s: could not look for a session the run may have left (%v): look for the title %s in opencode session list, run in %s", c.nick, err, clipQuoted(c.title), c.dir)
+		case len(ids) == 0 && full:
+			// A full page is only the newest part: not finding it there is not
+			// finding that there is none.
+			env.logf("session %s: the run named no session, and the newest %d sessions of opencode session list in %s hold none titled %s made since it began; an older one could exist: look for the title in opencode session list, run in %s, and delete what is yours", c.nick, openCodeListMax, c.dir, clipQuoted(c.title), c.dir)
 		case len(ids) == 0:
 			env.logf("session %s: the run named no session, and opencode session list in %s holds none titled %s made since it began, so there is nothing to delete", c.nick, c.dir, clipQuoted(c.title))
 		}
@@ -226,33 +230,41 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 
 	// A run that failed, or whose events carry an error, failed, whatever it
 	// exited with: the session would be started on a turn that never answered.
+	var runFailed string
 	if runErr != nil || turn.Failure != "" {
-		var detail string
 		switch {
 		case runErr != nil && turn.Failure != "":
-			detail = runErr.Error() + ": " + turn.Failure
+			runFailed = runErr.Error() + ": " + turn.Failure
 		case runErr != nil && stderr != "":
-			detail = runErr.Error() + ": " + codex.PlainLine(firstLine(stderr))
+			runFailed = runErr.Error() + ": " + codex.PlainLine(firstLine(stderr))
 		case runErr != nil:
-			detail = runErr.Error()
+			runFailed = runErr.Error()
 		default:
-			detail = "it exited 0, but the run reported an error: " + turn.Failure
+			runFailed = "it exited 0, but the run reported an error: " + turn.Failure
 		}
-		return "", "", fmt.Errorf("opencode run for session %s: %s", c.nick, detail)
+	}
+	// Events that name two sessions are reported whatever the run exited with: the
+	// human has to look in the checkout, and has to be told which ids and which title.
+	if len(turn.Others) > 0 {
+		seen := []string{clipQuoted(turn.SessionID)}
+		for _, o := range turn.Others {
+			seen = append(seen, clipQuoted(o))
+		}
+		also := ""
+		if runFailed != "" {
+			also = " (the run also failed: " + runFailed + ")"
+		}
+		return "", "", fmt.Errorf("opencode run for session %s: its events carry more than one session id (%s), so it is not known which the run made, and none is deleted: look with opencode session list, run in %s, for the title %s, and delete what is yours%s",
+			c.nick, strings.Join(seen, ", "), c.dir, clipQuoted(c.title), also)
+	}
+	if runFailed != "" {
+		return "", "", fmt.Errorf("opencode run for session %s: %s", c.nick, runFailed)
 	}
 	if turn.SessionID == "" {
 		return "", "", fmt.Errorf("opencode run for session %s: no event carries a sessionID, so the session is not known; the events were: %s", c.nick, eventList(turn.Events))
 	}
 	if !state.ValidSessionID(turn.SessionID) {
 		return "", "", fmt.Errorf("opencode run for session %s: the session id %s is not an OpenCode session id (ses_ and 26 letters or digits)", c.nick, clipQuoted(turn.SessionID))
-	}
-	if len(turn.Others) > 0 {
-		seen := []string{clipQuoted(turn.SessionID)}
-		for _, o := range turn.Others {
-			seen = append(seen, clipQuoted(o))
-		}
-		return "", "", fmt.Errorf("opencode run for session %s: its events carry more than one session id (%s), so it is not known which the run made, and none is deleted: look with opencode session list, run in %s, for the title %s, and delete what is yours",
-			c.nick, strings.Join(seen, ", "), c.dir, clipQuoted(c.title))
 	}
 	// An event that names no session is not shown to be this run's. The id the
 	// others announced is kept: it is registered above, and the rollback deletes it.
@@ -331,9 +343,10 @@ func runOpenCodeTurn(ctx context.Context, bin, dir string, args []string, stdin 
 // own), its directory, and a creation time at or after started (opencode stamps
 // it in milliseconds). opencode 1.18.30 lists the sessions of the project of the
 // directory it runs in, so it runs in dir, the checkout the run was made in. The
-// newest openCodeListMax sessions are asked for, and an id that does not have the
+// newest openCodeListMax sessions are asked for, and full says the page came back
+// that long, so that it is not taken for all of them; an id that does not have the
 // shape of one is never returned, for it goes to a command line.
-func openCodeStrays(bin, title, dir string, started time.Time) ([]string, error) {
+func openCodeStrays(bin, title, dir string, started time.Time) (ids []string, full bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), openCodeDeleteTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "session", "list", "--format", "json", "-n", strconv.Itoa(openCodeListMax))
@@ -343,10 +356,10 @@ func openCodeStrays(bin, title, dir string, started time.Time) ([]string, error)
 	cmd.Stdout, cmd.Stderr = out, errs
 	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("opencode session list: %w: %s", err, codex.PlainLine(firstLine(strings.TrimSpace(errs.String()))))
+		return nil, false, fmt.Errorf("opencode session list: %w: %s", err, codex.PlainLine(firstLine(strings.TrimSpace(errs.String()))))
 	}
 	if out.truncated {
-		return nil, fmt.Errorf("opencode session list: its output passed %d bytes", maxExecOutput)
+		return nil, false, fmt.Errorf("opencode session list: its output passed %d bytes", maxExecOutput)
 	}
 	var list []struct {
 		ID        string `json:"id"`
@@ -355,15 +368,16 @@ func openCodeStrays(bin, title, dir string, started time.Time) ([]string, error)
 		Created   int64  `json:"created"`
 	}
 	if err := json.Unmarshal([]byte(out.String()), &list); err != nil {
-		return nil, fmt.Errorf("opencode session list: not the JSON list of sessions: %w", err)
+		return nil, false, fmt.Errorf("opencode session list: not the JSON list of sessions: %w", err)
 	}
-	var ids []string
 	for _, s := range list {
 		if s.Title == title && s.Directory == dir && s.Created >= started.UnixMilli() && state.ValidSessionID(s.ID) {
 			ids = append(ids, s.ID)
 		}
 	}
-	return ids, nil
+	// A page as long as the one asked for may be only the newest part of the
+	// project's sessions: finding nothing in it does not show there is nothing.
+	return ids, len(list) >= openCodeListMax, nil
 }
 
 // existingDir is dir if it is a directory now, else "" (the caller's own): a

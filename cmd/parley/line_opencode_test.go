@@ -86,6 +86,10 @@ run)
 		start "$id"; text "$id" ready
 		finish "ses_$(printf '%026d' 99)" stop
 		exit 0 ;;
+	mismatchfail)
+		start "$id"; text "$id" ready
+		finish "ses_$(printf '%026d' 99)" stop
+		echo "bad turn" >&2; exit 1 ;;
 	mixednoid)
 		start "$id"; text "$id" ready
 		echo '{"type":"step_finish","timestamp":3,"part":{"reason":"stop"}}'
@@ -534,6 +538,16 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 			}
 			return b.ladd("demo", "build", "opencode", co), nil
 		}},
+		{"a nick with a Codex thread record, for an OpenCode session", 2, "already has a Codex thread record", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			tr, err := state.OpenThreadRecord(b.base, "build", b.stream("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tr.Write(fakeThread(9)); err != nil {
+				t.Fatal(err)
+			}
+			return b.ladd("demo", "build", "opencode", co), nil
+		}},
 		{"a nick that is already in the line", 2, "already session", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co-other"))...)
 			return b.ladd("demo", "BUILD", "opencode", co), nil
@@ -630,6 +644,7 @@ func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 		// Output that names two sessions does not say which the run made: none is
 		// deleted, and the error names both.
 		{"events that carry two session ids", "mismatch", "more than one session id", false, true},
+		{"events that carry two session ids, and the run fails", "mismatchfail", "more than one session id", false, true},
 		// A step_finish that names no session certifies nothing, but the id the other
 		// events announced is the run's and is deleted.
 		{"a step_finish that names no session, after others did", "mixednoid", "event(s) of type step_finish carry no sessionID", true, true},
@@ -704,25 +719,80 @@ func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 // do not say which one the run made, and nothing is deleted on a guess. The error
 // names both ids and where to look.
 func TestLineAddOpenCodeDeletesNothingOnConflictingIds(t *testing.T) {
-	b := newOCLineBench(t)
-	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
-	b.setMode(t, 1, "mismatch")
-	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
-	if res.code != 1 {
-		t.Fatalf("exit %d, want 1\n%s", res.code, res.stderr)
+	// The run exits 0 with the conflicting ids, and exits 1 with them: the error
+	// names the ids, the title and where to look either way, and the second says the
+	// run also failed.
+	for _, mode := range []string{"mismatch", "mismatchfail"} {
+		t.Run(mode, func(t *testing.T) {
+			b := newOCLineBench(t)
+			lineUp(t, b.lineBench, "demo")
+			co := b.gitCheckout(t, "co")
+			b.setMode(t, 1, mode)
+			res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
+			if res.code != 1 {
+				t.Fatalf("exit %d, want 1\n%s", res.code, res.stderr)
+			}
+			want := []string{ocID(1), ocID(99), "none is deleted", "opencode session list, run in " + co, `for the title "parley line demo build `}
+			if mode == "mismatchfail" {
+				want = append(want, "the run also failed: exit status 1: bad turn")
+			}
+			for _, w := range want {
+				if !strings.Contains(res.stderr, w) {
+					t.Errorf("stderr does not say %q:\n%s", w, res.stderr)
+				}
+			}
+			b.wantDeletes(t, 1)
+			if n := b.listCalls(t); n != 0 {
+				t.Errorf("sessions were listed %d times on output that named sessions", n)
+			}
+			if strings.Contains(res.stderr, "OpenCode session "+ocID(1)) {
+				t.Errorf("the rollback names a session it deleted:\n%s", res.stderr)
+			}
+		})
 	}
-	for _, want := range []string{ocID(1), ocID(99), "none is deleted", "opencode session list, run in " + co, `for the title "parley line demo build `} {
-		if !strings.Contains(res.stderr, want) {
-			t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+}
+
+// TestLineAddOpenCodeDoesNotTakeAFullPageForAll: a list as long as the page asked
+// for may be only the newest part of the project's sessions, so a run that named no
+// session and finds none in it says an older one could exist and where to look; a
+// short page is all of them, and says there is nothing to delete.
+func TestLineAddOpenCodeDoesNotTakeAFullPageForAll(t *testing.T) {
+	entries := func(co string, n int) string {
+		var b strings.Builder
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&b, `{"id":"ses_%026d","title":"other work %d","directory":%q,"projectId":%q,"created":4102444800000}`+"\n", 2000+i, i, co, co)
 		}
+		return b.String()
 	}
-	b.wantDeletes(t, 1)
-	if n := b.listCalls(t); n != 0 {
-		t.Errorf("sessions were listed %d times on output that named sessions", n)
-	}
-	if strings.Contains(res.stderr, "OpenCode session "+ocID(1)) {
-		t.Errorf("the rollback names a session it deleted:\n%s", res.stderr)
+	for _, c := range []struct {
+		name     string
+		sessions int
+		full     bool
+	}{{"a page as long as the one asked for", 200, true}, {"a page one short of it", 199, false}, {"no sessions at all", 0, false}} {
+		t.Run(c.name, func(t *testing.T) {
+			b := newOCLineBench(t)
+			lineUp(t, b.lineBench, "demo")
+			co := b.gitCheckout(t, "co")
+			b.write(t, "newer", entries(co, c.sessions))
+			b.setMode(t, 1, "fail")
+			res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
+			if res.code != 1 {
+				t.Fatalf("exit %d, want 1\n%s", res.code, res.stderr)
+			}
+			b.wantDeletes(t, 1)
+			if c.full {
+				for _, want := range []string{"the newest 200 sessions of opencode session list in " + co + " hold none titled", "an older one could exist", "run in " + co} {
+					if !strings.Contains(res.stderr, want) {
+						t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+					}
+				}
+				if strings.Contains(res.stderr, "nothing to delete") {
+					t.Errorf("a full page was taken for all the sessions:\n%s", res.stderr)
+				}
+			} else if !strings.Contains(res.stderr, "so there is nothing to delete") || strings.Contains(res.stderr, "an older one could exist") {
+				t.Errorf("a short page was not taken for all the sessions:\n%s", res.stderr)
+			}
+		})
 	}
 }
 
@@ -1075,7 +1145,7 @@ func TestLineSessionCheckForOpenCode(t *testing.T) {
 		{"a Codex thread as the id", func(r *lineRecord) { r.Sessions[2].Thread = fakeThread(1) }, "OpenCode session's id"},
 		{"an id that is not one", func(r *lineRecord) { r.Sessions[2].Thread = "ses_abc" }, "OpenCode session's id"},
 		{"a session id on a Codex session", func(r *lineRecord) { r.Sessions[1].Thread = ocID(1) }, "UUID"},
-		{"a session id on a Claude session", func(r *lineRecord) { r.Sessions[0].Thread = ocID(1) }, "UUID"},
+		{"a session id on a Claude session", func(r *lineRecord) { r.Sessions[0].Thread = ocID(1) }, "a Claude session holds no thread"},
 		{"a launch file", func(r *lineRecord) {
 			r.Sessions[2].Files = []lineFile{{Path: "/work/co/.mcp.json", SHA256: "sha256:" + strings.Repeat("a", 64)}}
 		}, "has none"},

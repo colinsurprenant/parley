@@ -322,14 +322,8 @@ func (p *linePlan) bind() error {
 		if err := checkUTF8(pathField{"the codex binary's path", p.codexBin}); err != nil {
 			return err
 		}
-		tr, err := state.OpenThreadRecord(p.base, p.nick, rec.Stream)
-		if err != nil {
-			return cfgErrf("--nick %q: %v", p.nick, err)
-		}
-		if _, err := os.Lstat(tr.Path()); err == nil {
-			return cfgErrf("--nick %q already has a Codex thread record for this line's stream, %s: a session that is not in line.json made it (a drop that did not finish, or a pump of your own); remove it, or give this session another nick", p.nick, tr.Path())
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("look for %s: %w", tr.Path(), err)
+		if err := p.checkNoStaleRecord(rec.Stream); err != nil {
+			return err
 		}
 	}
 
@@ -344,14 +338,8 @@ func (p *linePlan) bind() error {
 		if err := checkUTF8(pathField{"the opencode binary's path", p.openCodeBin}); err != nil {
 			return err
 		}
-		sr, err := state.OpenSessionRecord(p.base, p.nick, rec.Stream)
-		if err != nil {
-			return cfgErrf("--nick %q: %v", p.nick, err)
-		}
-		if _, err := os.Lstat(sr.Path()); err == nil {
-			return cfgErrf("--nick %q already has an OpenCode session record for this line's stream, %s: a session that is not in line.json made it (a drop that did not finish, or a pump of your own); remove it, or give this session another nick", p.nick, sr.Path())
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("look for %s: %w", sr.Path(), err)
+		if err := p.checkNoStaleRecord(rec.Stream); err != nil {
+			return err
 		}
 		// No launch file: nothing is looked for in the checkout, and nothing will
 		// be written there.
@@ -364,6 +352,40 @@ func (p *linePlan) bind() error {
 	if p.harness == harnessClaude && !p.reuse {
 		if p.data, err = p.mcpJSON(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkNoStaleRecord refuses a nick that already has a record, for the line's
+// stream, of the session the harness of this one makes, or of the other of the two
+// that keep one: a Codex thread's or an OpenCode session's. A record that no
+// session of line.json owns was left by a drop that did not finish, or is a pump's
+// own, and `--thread auto` or `--session auto` would deliver into whatever it
+// names. The harness's own kind is looked for first, so that it is the one named
+// when both are there.
+func (p *linePlan) checkNoStaleRecord(stream string) error {
+	tr, err := state.OpenThreadRecord(p.base, p.nick, stream)
+	if err != nil {
+		return cfgErrf("--nick %q: %v", p.nick, err)
+	}
+	sr, err := state.OpenSessionRecord(p.base, p.nick, stream)
+	if err != nil {
+		return cfgErrf("--nick %q: %v", p.nick, err)
+	}
+	records := []struct{ what, path string }{
+		{"a Codex thread", tr.Path()},
+		{"an OpenCode session", sr.Path()},
+	}
+	if p.harness == harnessOpenCode {
+		records[0], records[1] = records[1], records[0]
+	}
+	for _, r := range records {
+		if _, err := os.Lstat(r.path); err == nil {
+			return cfgErrf("--nick %q already has %s record for this line's stream, %s: a session that is not in line.json made it (a drop that did not finish, or a pump of your own); remove it, or give this session another nick",
+				p.nick, r.what, r.path)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("look for %s: %w", r.path, err)
 		}
 	}
 	return nil
