@@ -120,7 +120,8 @@ usage:
                  [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--writable-root <abs dir>]...
   parley build   end <id> [--force] [--state-dir <dir>]
   parley line    new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]
-  parley line    add <id> --nick <nick> --harness claude|codex [--model <model>] --checkout <absolute dir> [--state-dir <dir>]
+                 [--opencode-bin opencode]
+  parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout <absolute dir> [--state-dir <dir>]
   parley line    drop <id> <nick> [--force] [--state-dir <dir>]
   parley line    end <id> [--force] [--state-dir <dir>]
   parley version
@@ -261,7 +262,8 @@ verbs:
            HEAD tracks no .mcp.json of any kind, no .codex that is not a
            directory, no .codex/config.toml and no .parley-table; the seats'
            nicks are valid, distinct from each other and from the chair, none
-           of them "tables" or "builds", nor "lines"; no opencode seats yet; a model
+           of them "tables" or "builds", nor "lines"; no opencode seats yet (a line takes
+           OpenCode sessions, a table does not); a model
            of at most 128 bytes of letters, digits and . _ - : / @ [ ] + ;
            no '$' in the target, the worktree or
            this binary's path; no whitespace in the state directory, which
@@ -410,8 +412,9 @@ verbs:
            lines/<id>/line.json under the state base. new <id> checks its flags
            (the id as a table's, one namespace with the tables and the builds;
            --chair a valid nick; --cap required, 0 for no breaker; --window
-           above zero, 10m by default; --server a loopback IP:port; --codex-bin,
-           when given, resolved and recorded for the Codex sessions added later)
+           above zero, 10m by default; --server a loopback IP:port; --codex-bin
+           and --opencode-bin, when given, resolved and recorded for the Codex
+           and the OpenCode sessions added later)
            and runs parley doctor's static checks for the server and, when
            nothing answers there, ergo, a FAIL ending it before any change. It
            takes the id's lock (<state base>/.ids/<id>.lock, which every table,
@@ -432,13 +435,16 @@ verbs:
            a '$' or a control character, or is not UTF-8 (as is the binary,
            state and temp path; the checkout is resolved, links and all, and
            the resolved path is the one recorded and printed); a state directory
-           inside the checkout; a Claude session's .mcp.json that is in the
+           inside the checkout, and for a Codex or an OpenCode session $TMPDIR
+           inside it; an OpenCode model that is not provider/model; a Claude
+           session's .mcp.json that is in the
            checkout and is not the one this line wrote (the record holds the
            sha256 of its exact bytes), and a Codex session's
            .codex/config.toml likewise, or a .codex that is not a real
            directory; a Claude launch whose instructions are over
            Claude Code's cap, measured in process as channel --check does; a Codex
-           nick that already has a thread record for the stream. Exit 1, nothing
+           nick that already has a thread record, and an OpenCode nick that already
+           has a session record, for the stream. Exit 1, nothing
            changed: a machine on which doctor's static checks fail, the
            parley-line skill missing under the root the harness reads among them,
            and a nick whose lock a running session or pump holds. A Claude session
@@ -462,17 +468,34 @@ verbs:
            repository has none), unless the line is there already; the record
            says whether the line added it, and a line put there by another
            session of the line, as in another worktree of the repository, is
-           taken as the line's own. A failure
+           taken as the line's own. An OpenCode session (OpenCode 1.x) gets no
+           launch file and nothing else written in its checkout; it gets the
+           same kind of reply directory as a Codex one, and a session started by
+           opencode run --format json --title "parley line <id> <nick>" in the
+           checkout (-m provider/model when a model is given), with the primer
+           on stdin, so that it reaches the model as it is, stdin otherwise
+           closed, the environment passed on and a 5-minute limit, whose events
+           must all carry one session id of the shape OpenCode makes and end with
+           a step_finish whose reason is stop; the id is recorded in the
+           opencode-session file --session auto reads. A failure
            or an interrupt takes down what the run made, a started Codex thread
-           (codex delete --force) included. The output is what is left for that
+           (codex delete --force) or OpenCode session (opencode session delete)
+           included. The output is what is left for that
            session: for Claude the cd and the launch line (plus --model), the
            same plus --resume <session-id> for a conversation under way,
            /parley-line, the /mcp and Channels-notice checks; for Codex the
            network notice, the pump line with --thread auto, the codex resume
-           line, $parley-line and the /status check. drop <id> <nick> takes the
+           line, $parley-line and the /status check; for OpenCode the cd and the
+           opencode --port <free port> --session <id> line, which comes first
+           because the pump checks the server it serves, the pump line with
+           --session auto and the same port, the check that the session has
+           loaded the parley-line skill, a note that the first write of its reply
+           file raises OpenCode's external_directory ask, which is answered in
+           the TUI, and a note on OPENCODE_SERVER_PASSWORD. drop <id> <nick> takes the
            id's lock and the session's nick lock without waiting and refuses,
            exit 1, while either is held. It removes the session's thread record
-           (only if it holds the recorded thread), its reply directory (only if
+           or session record (only if it holds the recorded thread or session), its
+           reply directory (only if
            directly in $TMPDIR, named for the line, with the marker), and, when
            no other session of the line uses that checkout with that harness,
            the launch file (only if its bytes still hash to the recorded digest
@@ -486,7 +509,8 @@ verbs:
            its path any more, else it stays and the output says which file needs
            it; an exclude file that is a link is left alone and said). It
            prints a codex delete line for a
-           Codex session and never runs one. end <id> drops every session on
+           Codex session and an opencode session delete line for an OpenCode one,
+           and never runs one. end <id> drops every session on
            the same rules with every lock taken and every claim judged first,
            then removes the line's directory; a failure partway leaves
            line.json describing what is still there, so running it again

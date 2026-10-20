@@ -29,8 +29,9 @@ import (
 )
 
 const (
-	harnessClaude = "claude"
-	harnessCodex  = "codex"
+	harnessClaude   = "claude"
+	harnessCodex    = "codex"
+	harnessOpenCode = "opencode"
 
 	// seatTurnTimeout bounds one Codex seat's start: a primer is one short turn.
 	seatTurnTimeout = 5 * time.Minute
@@ -146,7 +147,7 @@ func cmdTableNew(args []string) error {
 	chair := fs.String("chair", "", "required: your registered nick on the server, the human who chairs the table")
 	rounds := fs.Int("rounds", 0, "required: rounds the table runs before a checkpoint; the gates' cap is rounds times the number of seats")
 	var seatArgs stringList
-	fs.Var(&seatArgs, "seat", "required, repeatable: a seat as <nick>=<claude|codex>[:<model>], e.g. --seat codex-a=codex:gpt-5 --seat claude-a=claude:opus; a model is at most 128 bytes of letters, digits and . _ - : / @ [ ] +; opencode seats are not supported yet")
+	fs.Var(&seatArgs, "seat", "required, repeatable: a seat as <nick>=<claude|codex>[:<model>], e.g. --seat codex-a=codex:gpt-5 --seat claude-a=claude:opus; a model is at most 128 bytes of letters, digits and . _ - : / @ [ ] +; OpenCode seats are not supported yet (a line takes OpenCode sessions, a table does not)")
 	worktree := fs.String("worktree", "", "the shared worktree to make, an absolute path that does not exist yet (default <state base>/tables/<id>/worktree)")
 	server := fs.String("server", defaultListen, "the loopback IP:port of the IRC server the table uses (a host name is refused)")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ and tables/ (default $XDG_STATE_HOME/parley)")
@@ -432,9 +433,10 @@ func (p *tablePlan) checkIDFree() error {
 }
 
 // parseMember parses one --seat or --peer value (flagName), <nick>=<harness>[:<model>].
-// The harness is claude or codex; OpenCode is not supported yet. The two
-// directories the state base keeps tables and builds in sit beside the per-nick
-// ones, so neither is a nick: stream.ValidNick refuses both.
+// The harness is claude or codex; OpenCode is not supported at a table or a
+// build yet, only on a line. The two directories the state base keeps tables
+// and builds in sit beside the per-nick ones, so neither is a nick:
+// stream.ValidNick refuses both.
 func parseMember(flagName, raw string) (*seatPlan, error) {
 	nick, spec, ok := strings.Cut(raw, "=")
 	if !ok {
@@ -446,8 +448,8 @@ func parseMember(flagName, raw string) (*seatPlan, error) {
 	harness, model, hasModel := strings.Cut(spec, ":")
 	switch harness {
 	case harnessClaude, harnessCodex:
-	case "opencode":
-		return nil, cfgErrf("%s %q: OpenCode %ss are not supported yet; the harnesses are claude and codex", flagName, raw, strings.TrimPrefix(flagName, "--"))
+	case harnessOpenCode:
+		return nil, cfgErrf("%s %q: OpenCode %ss are not supported yet: a line takes OpenCode sessions (parley line add --harness opencode), a table or a build does not; the harnesses here are claude and codex", flagName, raw, strings.TrimPrefix(flagName, "--"))
 	default:
 		return nil, cfgErrf("%s %q: unknown harness %q: the harnesses are claude and codex", flagName, raw, harness)
 	}
@@ -473,11 +475,11 @@ func checkModel(flagName, raw, model string) error {
 	case strings.HasPrefix(model, "-"):
 		return cfgErrf("%s %q: the model begins with '-', which a command line would take for a flag", flagName, raw)
 	case len(model) > modelMax:
-		return cfgErrf("%s: the model is %d bytes, over the %d bytes of the longest model id a harness takes (it is kept in the record, printed into commands and handed to `codex exec -m` and `claude --model`)", flagName, len(model), modelMax)
+		return cfgErrf("%s: the model is %d bytes, over the %d bytes of the longest model id a harness takes (it is kept in the record, printed into commands and handed to `codex exec -m`, `opencode run -m` and `claude --model`)", flagName, len(model), modelMax)
 	}
 	if i := strings.IndexFunc(model, func(r rune) bool { return !modelRune(r) }); i >= 0 {
 		bad, _ := utf8.DecodeRuneInString(model[i:])
-		return cfgErrf("%s %q: the model holds %q, which no model id of Claude Code or Codex has: a model is letters, digits and . _ - : / @ [ ] +", flagName, raw, bad)
+		return cfgErrf("%s %q: the model holds %q, which no model id of Claude Code, Codex or OpenCode has: a model is letters, digits and . _ - : / @ [ ] +", flagName, raw, bad)
 	}
 	return nil
 }

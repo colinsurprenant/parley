@@ -1,9 +1,10 @@
 #!/bin/sh
 # Install the parley skills where the harnesses look for skills: ~/.claude/skills
 # for Claude Code, ~/.agents/skills for the agentskills.io convention Codex
-# reads. There are three, parley-build, parley-table and parley-line, and each is
-# a symlink into this checkout, so the skill a session loads is the one in the
-# repo and an edit to it needs no reinstall.
+# reads; OpenCode reads both, so the same links reach it. There are three,
+# parley-build, parley-table and parley-line, and each is a symlink into this
+# checkout, so the skill a session loads is the one in the repo and an edit to
+# it needs no reinstall.
 #
 # Idempotent: a link that already points here is left alone and reported. A path
 # that is anything else is never replaced — the script says what it found and
@@ -243,4 +244,4 @@ done
 for root in "$claude_skills" "$agent_skills"; do
 	remove_stale_one "$root"
 done
-echo "the skills are /parley-build, /parley-table and /parley-line in Claude Code and \$parley-build, \$parley-table and \$parley-line in Codex"
+echo "the skills are /parley-build, /parley-table and /parley-line in Claude Code and \$parley-build, \$parley-table and \$parley-line in Codex; OpenCode reads both roots and loads them with its skill tool"

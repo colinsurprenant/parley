@@ -25,13 +25,15 @@ What you can count on:
   sessions after a burst of posts, or a long run of them without you, until you
   write again.
 - **Nothing types into your terminal.** Each harness receives messages through
-  its own push path: a Claude Code channel, `codex queue` for Codex.
+  its own push path: a Claude Code channel, `codex queue` for Codex, the HTTP API
+  of the TUI for OpenCode.
 - **No lead, no record.** Parley has no lead session and no task queue, and it
   keeps no stream content beyond the chat server's own history. The work and its
   records stay where they live.
 
-Parley works across harnesses: Claude Code and Codex today, OpenCode next on the
-list. If every session is Claude Code and one-to-one messages are all you need,
+Parley works across harnesses: Claude Code and Codex, and a line takes OpenCode
+1.x sessions too; table seats and build peers on OpenCode, and OpenCode 2, are
+next on the list. If every session is Claude Code and one-to-one messages are all you need,
 Claude Code's own
 [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
 does that natively. If you want one agent handing work to the others, you want an
@@ -58,8 +60,11 @@ How it works:
 - **Go** 1.25 or newer, to build it.
 - **ergo**, the IRC server `parley server` runs, at the version `parley doctor`
   names as last verified. `contrib/ergo/README.md` installs it.
-- **Claude Code** and/or **Codex CLI**, at the versions `parley doctor` names as
-  last verified. A different version is a warning from `doctor`, not a failure.
+- **Claude Code**, **Codex CLI** and/or **OpenCode**, at the versions `parley
+  doctor` names as last verified. A different version is a warning from
+  `doctor`, not a failure. OpenCode must be 1.x, and only a line takes it: npm's
+  `opencode-ai` and the installer at opencode.ai/install give 1.x, while
+  Homebrew core now ships OpenCode 2, which parley does not support yet.
   Claude Code has prerequisites of its own for
   [channels](https://code.claude.com/docs/en/channels):
   - a claude.ai login or a Console API key, not Amazon Bedrock, Google Cloud's
@@ -98,9 +103,9 @@ links the three protocol skills, `parley-build`, `parley-table` and
 symlinks into the checkout, so keep it. `parley doctor` checks ergo, the
 harnesses, the server and those links against the versions on your machine and
 says what to fix. Bare, it checks
-both harnesses, so on a machine with only one, run
+Claude Code and Codex, so on a machine with only one, run
 `bin/parley doctor --harness claude` (or `--harness codex`) to check just that
-one.
+one. OpenCode is checked only when named: `--harness opencode`.
 
 If you want only the binary, `go install
 github.com/colinsurprenant/parley/cmd/parley@latest` builds it, but the skills
@@ -121,8 +126,9 @@ sharing one, and a nick for yourself.
 
    Join `#demo` from your IRC client as `yournick` and, once, register that nick
    with NickServ, as it prints.
-3. Add each session. Each `line add` writes the launch config into the session's
-   checkout, hidden from `git status`, and prints how to launch it:
+3. Add each session. A Claude Code or Codex `line add` writes the launch config
+   into the session's checkout, hidden from `git status`, and prints how to
+   launch it:
 
    ```
    parley line add demo --nick plan --harness claude --checkout /path/to/repo
@@ -133,7 +139,10 @@ sharing one, and a nick for yourself.
    A Claude Code conversation that is already under way joins with the same launch
    plus `--resume <session-id>` and keeps its history. A Codex session is
    `--harness codex`: `line add` starts a new thread for it and prints its pump
-   and `codex resume` lines, so run those, and type `$parley-line` there.
+   and `codex resume` lines, so run those, and type `$parley-line` there. An
+   OpenCode session is `--harness opencode`: `line add` starts a new session for
+   it, writes nothing in the checkout, and prints the `opencode --port` line to
+   start in that checkout and the `parley opencode` pump line, in that order.
 4. Give each session its role, one line each, in the channel:
 
    ```
@@ -144,8 +153,9 @@ sharing one, and a nick for yourself.
 5. Work as usual. The sessions poke each other when something changes for the
    other's job, and ask you or each other when a choice comes up. Say in the
    channel when you want them to discuss something together.
-6. When the work is over, close the sessions, and Ctrl-C each Codex session's
-   `parley codex` pump, which runs on its own and holds the nick until it stops.
+6. When the work is over, close the sessions, and Ctrl-C each Codex or OpenCode
+   session's pump (`parley codex`, `parley opencode`), which runs on its own and
+   holds the nick until it stops.
    Then `parley line end demo`.
 
 `docs/line.md` has the rest: the breaker, adding and dropping sessions later,

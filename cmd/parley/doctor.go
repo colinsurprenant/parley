@@ -107,10 +107,10 @@ func chosenHarnesses(named []string) (harnessSet, error) {
 			use.claude = true
 		case harnessCodex:
 			use.codex = true
-		case "opencode":
+		case harnessOpenCode:
 			use.openCode = true
 		default:
-			return harnessSet{}, cfgErrf("--harness %q: want %s, %s or opencode", h, harnessClaude, harnessCodex)
+			return harnessSet{}, cfgErrf("--harness %q: want %s, %s or %s", h, harnessClaude, harnessCodex, harnessOpenCode)
 		}
 	}
 	return use, nil

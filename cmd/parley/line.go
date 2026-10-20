@@ -24,8 +24,9 @@ import (
 // <state base>/lines/<id>/line.json, the record `line add`, `line drop` and `line
 // end` read and write; the rest is elsewhere: each session's launch file in its
 // checkout (.mcp.json or .codex/config.toml, and a line in the checkout's
-// info/exclude), a Codex session's thread record under its own nick's directory
-// of the base, its reply directory under $TMPDIR, and the id's lock
+// info/exclude; an OpenCode session has none), a Codex session's thread record or
+// an OpenCode session's session record under its own nick's directory of the
+// base, its reply directory under $TMPDIR, and the id's lock
 // <base>/.ids/<id>.lock. "lines" sits beside the per-nick directories of the
 // same base, as "tables" and "builds" do, which is why no participant may be
 // called any of the three.
@@ -42,7 +43,13 @@ import (
 //     only that proof lets `line drop` delete it. Nothing in a checkout is
 //     overwritten, written through a link or removed on any other ground.
 //   - Untrusted: Codex's output and the thread id it announces (checked to be a
-//     UUID), git's output, and what a session wrote in its checkout.
+//     UUID), OpenCode's output and the session id it announces (checked to have
+//     the shape of one, and to be the one every event of the turn carries),
+//     git's output, and what a session wrote in its checkout.
+//   - Not parley's to police: what an OpenCode session does with its harness's
+//     permissions. Its bash tool runs without approval by default, and its
+//     file tools ask only before writing outside the checkout; parley is not a
+//     sandbox, and `line add` writes nothing in an OpenCode session's checkout.
 const (
 	linesDirName    = state.LinesDir
 	lineRecordName  = "line.json"
@@ -62,8 +69,8 @@ const lineRecordMax = 64 << 10
 
 func lineDirOf(base, id string) string { return filepath.Join(base, linesDirName, id) }
 
-// lineReplyPrefix is the name of a Codex session's reply directory up to the
-// random string os.MkdirTemp adds.
+// lineReplyPrefix is the name of a Codex or OpenCode session's reply directory
+// up to the random string os.MkdirTemp adds.
 func lineReplyPrefix(id string) string { return "parley-line-" + id + "-" }
 
 func checkLineID(id string) error {
@@ -114,8 +121,8 @@ func lineUsage(w io.Writer) {
 }
 
 const (
-	lineUsageNew  = "usage: parley line new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]"
-	lineUsageAdd  = "usage: parley line add <id> --nick <nick> --harness claude|codex [--model <model>] --checkout <absolute dir> [--state-dir <dir>]"
+	lineUsageNew  = "usage: parley line new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]"
+	lineUsageAdd  = "usage: parley line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout <absolute dir> [--state-dir <dir>]"
 	lineUsageDrop = "usage: parley line drop <id> <nick> [--force] [--state-dir <dir>]"
 	lineUsageEnd  = "usage: parley line end <id> [--force] [--state-dir <dir>]"
 )
@@ -154,13 +161,17 @@ type lineRecord struct {
 	Window string `json:"window"`
 	// CodexBin is the resolved codex when --codex-bin was given to `line new`, and
 	// empty when plain codex on the PATH is meant.
-	CodexBin string        `json:"codex_bin,omitempty"`
-	Created  string        `json:"created"`
-	Sessions []lineSession `json:"sessions"`
+	CodexBin string `json:"codex_bin,omitempty"`
+	// OpenCodeBin is CodexBin's counterpart for --opencode-bin.
+	OpenCodeBin string        `json:"opencode_bin,omitempty"`
+	Created     string        `json:"created"`
+	Sessions    []lineSession `json:"sessions"`
 }
 
-// lineSession is one session of the line. Thread and ReplyDir are a Codex
-// session's.
+// lineSession is one session of the line. Thread and ReplyDir are a Codex or an
+// OpenCode session's; Thread is the Codex thread's UUID or the OpenCode session's
+// id. Files is the one launch file of a Claude or Codex session, and empty for an
+// OpenCode session, which has none.
 type lineSession struct {
 	Nick     string     `json:"nick"`
 	Harness  string     `json:"harness"`
@@ -213,8 +224,12 @@ func (r lineRecord) session(nick string) (int, bool) {
 }
 
 // sharing is the sessions of the record, but skip (an index, or -1), that use the
-// launch file harness has in checkout: the same harness, the same directory.
+// launch file harness has in checkout: the same harness, the same directory. A
+// harness with no launch file shares nothing.
 func (r lineRecord) sharing(harness, checkout string, skip int) []lineSession {
+	if !hasLaunchFile(harness) {
+		return nil
+	}
 	var out []lineSession
 	for i, s := range r.Sessions {
 		if i != skip && s.Harness == harness && sameDir(s.Checkout, checkout) {
@@ -228,13 +243,23 @@ func (r lineRecord) sharing(harness, checkout string, skip int) []lineSession {
 // they exist.
 func sameDir(a, b string) bool { return resolveExisting(a) == resolveExisting(b) }
 
+// hasLaunchFile is whether a session of this harness has a launch file in its
+// checkout. An OpenCode session has none: nothing like .mcp.json or
+// .codex/config.toml is written for it, so there is no file for the verbs to
+// share, to prove by its digest, to exclude from git or to remove.
+func hasLaunchFile(harness string) bool { return harness == harnessClaude || harness == harnessCodex }
+
 // launchFileOf is the launch file a session of this harness has in checkout, and
-// the line `line add` appends to the exclude file for it.
+// the line `line add` appends to the exclude file for it; both are empty for a
+// harness with none.
 func launchFileOf(harness, checkout string) (path, excludeLine string) {
-	if harness == harnessCodex {
+	switch harness {
+	case harnessCodex:
 		return filepath.Join(checkout, lineCodexDirName, "config.toml"), "/" + lineCodexConfigName
+	case harnessClaude:
+		return filepath.Join(checkout, lineMCPName), "/" + lineMCPName
 	}
-	return filepath.Join(checkout, lineMCPName), "/" + lineMCPName
+	return "", ""
 }
 
 func noLineErr(base, id string) error {
@@ -349,6 +374,9 @@ func (r lineRecord) check(id, base string) error {
 	if r.CodexBin != "" && !filepath.IsAbs(r.CodexBin) {
 		return fmt.Errorf("codex_bin %q is not an absolute path", r.CodexBin)
 	}
+	if r.OpenCodeBin != "" && !filepath.IsAbs(r.OpenCodeBin) {
+		return fmt.Errorf("opencode_bin %q is not an absolute path", r.OpenCodeBin)
+	}
 	for i, s := range r.Sessions {
 		if err := s.check(r); err != nil {
 			return fmt.Errorf("session %d (%q): %w", i+1, s.Nick, err)
@@ -372,9 +400,9 @@ func (s lineSession) check(r lineRecord) error {
 		return fmt.Errorf("nick %v", err)
 	}
 	switch s.Harness {
-	case harnessClaude, harnessCodex:
+	case harnessClaude, harnessCodex, harnessOpenCode:
 	default:
-		return fmt.Errorf("harness %q is neither claude nor codex", s.Harness)
+		return fmt.Errorf("harness %q is none of claude, codex and opencode", s.Harness)
 	}
 	if s.Model != "" {
 		if err := checkModel("model", s.Model, s.Model); err != nil {
@@ -384,16 +412,36 @@ func (s lineSession) check(r lineRecord) error {
 	if !filepath.IsAbs(s.Checkout) {
 		return fmt.Errorf("checkout %q is not an absolute path", s.Checkout)
 	}
-	if s.Thread != "" && (s.Harness != harnessCodex || !state.ValidThreadID(s.Thread)) {
-		return fmt.Errorf("thread %q is not a Codex session's UUID", s.Thread)
-	}
-	if s.Harness == harnessCodex && s.Thread == "" {
-		return errors.New("a Codex session has no thread")
+	switch s.Harness {
+	case harnessOpenCode:
+		if s.Thread == "" {
+			return errors.New("an OpenCode session has no session id")
+		}
+		if !state.ValidSessionID(s.Thread) {
+			return fmt.Errorf("thread %q is not an OpenCode session's id", s.Thread)
+		}
+	case harnessCodex:
+		if s.Thread == "" {
+			return errors.New("a Codex session has no thread")
+		}
+		if !state.ValidThreadID(s.Thread) {
+			return fmt.Errorf("thread %q is not a Codex session's UUID", s.Thread)
+		}
+	default:
+		if s.Thread != "" {
+			return fmt.Errorf("thread %q is not a Codex session's UUID", s.Thread)
+		}
 	}
 	if s.ReplyDir != "" {
-		if s.Harness != harnessCodex || !filepath.IsAbs(s.ReplyDir) || !strings.HasPrefix(filepath.Base(s.ReplyDir), lineReplyPrefix(r.ID)) {
+		if s.Harness == harnessClaude || !filepath.IsAbs(s.ReplyDir) || !strings.HasPrefix(filepath.Base(s.ReplyDir), lineReplyPrefix(r.ID)) {
 			return fmt.Errorf("reply_dir %q is not a reply directory of line %q", s.ReplyDir, r.ID)
 		}
+	}
+	if !hasLaunchFile(s.Harness) {
+		if len(s.Files) != 0 {
+			return fmt.Errorf("it lists %d launch files, and an OpenCode session has none", len(s.Files))
+		}
+		return nil
 	}
 	if len(s.Files) != 1 {
 		return fmt.Errorf("it lists %d launch files, and a session of the line has exactly one", len(s.Files))

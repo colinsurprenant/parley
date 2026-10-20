@@ -68,11 +68,17 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 		{"no harness", "--harness is required", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--checkout", co, "--state-dir", b.base}}
 		}},
-		{"an unknown harness", "the harnesses are claude and codex", func(t *testing.T, b *lineBench, co string) env {
+		{"an unknown harness", "the harnesses are claude, codex and opencode", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "gemini", co)}
 		}},
-		{"opencode", "not supported yet", func(t *testing.T, b *lineBench, co string) env {
-			return env{args: b.ladd("demo", "plan", "opencode", co)}
+		{"an OpenCode model that is not provider/model", "provider/model", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: b.ladd("demo", "plan", "opencode", co, "--model", "gpt-5")}
+		}},
+		{"an OpenCode model with an empty provider", "provider/model", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: b.ladd("demo", "plan", "opencode", co, "--model", "/gpt-5")}
+		}},
+		{"an OpenCode model with an empty name", "provider/model", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: b.ladd("demo", "plan", "opencode", co, "--model", "openai/")}
 		}},
 		{"an empty model", "--model is empty", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "claude", co, "--model", "")}

@@ -404,7 +404,7 @@ func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{
 		"parley line    new <id> --chair <nick> --cap <n> [--window 10m]",
-		"parley line    add <id> --nick <nick> --harness claude|codex [--model <model>] --checkout <absolute dir>",
+		"parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout <absolute dir>",
 		"parley line    drop <id> <nick> [--force]",
 		"parley line    end <id> [--force]",
 		"line     set up a line, put sessions on it, take them off and take it down",

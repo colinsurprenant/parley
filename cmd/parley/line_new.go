@@ -34,6 +34,7 @@ func cmdLineNew(args []string) error {
 	server := fs.String("server", defaultListen, "the loopback IP:port of the IRC server the line uses (a host name is refused)")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ and lines/ (default $XDG_STATE_HOME/parley)")
 	codexBin := fs.String("codex-bin", codex.DefaultBin, "the codex CLI the line's Codex sessions run, resolved on PATH unless it holds a separator; recorded, so line add and the lines it prints use it")
+	openCodeBin := fs.String("opencode-bin", doctor.DefaultOpenCodeBin, "the opencode CLI the line's OpenCode sessions run, resolved on PATH unless it holds a separator; recorded, so line add, line drop and the lines they print use it")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -88,6 +89,20 @@ func cmdLineNew(args []string) error {
 			return cfgErrf("--codex-bin %q: %v", *codexBin, err)
 		}
 		if err := checkUTF8(pathField{"--codex-bin, resolved,", rec.CodexBin}); err != nil {
+			return err
+		}
+	}
+	if given(fs, "opencode-bin") {
+		if *openCodeBin == "" {
+			return cfgErrf("--opencode-bin must not be empty")
+		}
+		if err := checkUTF8(pathField{"--opencode-bin", *openCodeBin}); err != nil {
+			return err
+		}
+		if rec.OpenCodeBin, err = doctor.Resolve(*openCodeBin); err != nil {
+			return cfgErrf("--opencode-bin %q: %v", *openCodeBin, err)
+		}
+		if err := checkUTF8(pathField{"--opencode-bin, resolved,", rec.OpenCodeBin}); err != nil {
 			return err
 		}
 	}
@@ -254,7 +269,7 @@ func lineRunbook(rec lineRecord, serverDown bool, self string) string {
 	b.WriteString("\n   An unregistered chair nick could be taken by a session's process, and the breaker would then\n   release on that session's posts as if they were yours.\n")
 
 	next("Add each session, one `parley line add` per session, then launch it as that command prints:")
-	cmd(fmt.Sprintf("%s line add %s --nick <nick> --harness <claude|codex> [--model <model>] --checkout <absolute dir> --state-dir %s", q(self), rec.ID, q(rec.StateDir)))
+	cmd(fmt.Sprintf("%s line add %s --nick <nick> --harness <claude|codex|opencode> [--model <model>] --checkout <absolute dir> --state-dir %s", q(self), rec.ID, q(rec.StateDir)))
 
 	fmt.Fprintf(&b, "\nWhen it is over: %s line end %s --state-dir %s\n", q(self), rec.ID, q(rec.StateDir))
 	return b.String()
