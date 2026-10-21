@@ -32,6 +32,32 @@ type UserMessage struct {
 	Text string
 }
 
+// The kinds of message in a session's history that the front tells apart. The
+// server holds others (a skill, a shell, a compaction); they are read past.
+const (
+	KindUser      = "user"
+	KindAssistant = "assistant"
+	KindIdle      = "idle"
+)
+
+// The outcomes of an idle marker, which the server writes when a session's turn
+// ends: it went through, it failed, or the human interrupted it.
+const (
+	OutcomeSucceeded   = "succeeded"
+	OutcomeFailed      = "failed"
+	OutcomeInterrupted = "interrupted"
+)
+
+// HistoryMessage is one message of a session's history as much as the front reads
+// of it: what kind it is, the outcome of an idle marker, and how an assistant
+// message finished ("stop" when the model was done, "tool-calls" when it went on).
+type HistoryMessage struct {
+	ID      string
+	Kind    string
+	Outcome string // an idle marker's
+	Finish  string // an assistant message's, "" while it is still being written
+}
+
 // InboxItem is one entry of a session's inbox: input the server has accepted
 // and not yet turned into a message. Delivery is "queue" or "steer".
 type InboxItem struct {
@@ -75,6 +101,9 @@ type Client interface {
 	Message(ctx context.Context, session, id string) (msg UserMessage, found bool, err error)
 	// Inbox returns the session's inbox, oldest first.
 	Inbox(ctx context.Context, session string) ([]InboxItem, error)
+	// Recent returns the newest messages of the session's history, newest first and
+	// at most limit of them, whatever their kind.
+	Recent(ctx context.Context, session string, limit int) ([]HistoryMessage, error)
 }
 
 // ErrConflict is the server's 409: the request names something that is not in
@@ -650,6 +679,73 @@ func (c *HTTPClient) Inbox(ctx context.Context, session string) ([]InboxItem, er
 			return nil, fmt.Errorf("opencode: %s: entry %d has no id and delivery", op, i)
 		}
 		out = append(out, InboxItem{ID: *it.ID, Delivery: *it.Delivery})
+	}
+	return out, nil
+}
+
+// Recent implements Client: GET /api/session/{id}/message?order=desc&limit=n,
+// which answers {"data":[...],"cursor":{...}} with the newest messages first. Only
+// what the front decides on is read, and read strictly: every entry has an id and a
+// kind, an idle marker has an outcome that is one of the three there are, and an
+// assistant message has a finish that is text when it has one.
+func (c *HTTPClient) Recent(ctx context.Context, session string, limit int) ([]HistoryMessage, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("opencode: a read of the history asks for at least one message, not %d", limit)
+	}
+	path := sessionPath(session, "/message")
+	op := "GET " + path
+	q := url.Values{"order": {"desc"}, "limit": {strconv.Itoa(limit)}}
+	code, body, err := c.do(ctx, http.MethodGet, path, q, nil, maxMessageBody)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case code == http.StatusOK:
+	case code == http.StatusNotFound && notFoundTag(body) == "SessionNotFoundError":
+		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, session)
+	default:
+		return nil, statusError(op, code, body)
+	}
+	var in struct {
+		Data []*struct {
+			ID      *string `json:"id"`
+			Type    *string `json:"type"`
+			Outcome *string `json:"outcome"`
+			Finish  *string `json:"finish"`
+		} `json:"data"`
+	}
+	if err := decode(op, body, &in); err != nil {
+		return nil, err
+	}
+	if in.Data == nil {
+		return nil, fmt.Errorf("opencode: %s: the answer is not a list", op)
+	}
+	if len(in.Data) > limit {
+		return nil, fmt.Errorf("opencode: %s: the answer holds %d messages for a limit of %d", op, len(in.Data), limit)
+	}
+	out := make([]HistoryMessage, 0, len(in.Data))
+	for i, m := range in.Data {
+		if m == nil || m.ID == nil || *m.ID == "" || m.Type == nil || *m.Type == "" {
+			return nil, fmt.Errorf("opencode: %s: message %d has no id and type", op, i)
+		}
+		h := HistoryMessage{ID: *m.ID, Kind: *m.Type}
+		switch h.Kind {
+		case KindIdle:
+			if m.Outcome == nil {
+				return nil, fmt.Errorf("opencode: %s: idle marker %s has no outcome", op, h.ID)
+			}
+			switch *m.Outcome {
+			case OutcomeSucceeded, OutcomeFailed, OutcomeInterrupted:
+				h.Outcome = *m.Outcome
+			default:
+				return nil, fmt.Errorf("opencode: %s: idle marker %s has the outcome %s, which is not one of the three there are", op, h.ID, strconv.Quote(*m.Outcome))
+			}
+		case KindAssistant:
+			if m.Finish != nil {
+				h.Finish = *m.Finish
+			}
+		}
+		out = append(out, h)
 	}
 	return out, nil
 }

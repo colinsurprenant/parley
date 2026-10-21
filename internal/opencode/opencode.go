@@ -329,9 +329,15 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 // doubles up to the cap, with one line logged when it goes and one when it is back;
 // the stream keeps everything meanwhile. Any failure of the server other than being
 // away stops the pump.
+//
+// A session the human interrupted is not idle for this purpose: if the newest idle
+// marker of its history says interrupted and no user message is newer, the human
+// stopped it and has sent it nothing since, and a delivery would start it again over
+// their stop. The pump holds, says so once, and goes on looking at the idle backoff
+// until the human sends the session something (humanStopped).
 func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 	backoff := p.idlePoll
-	away, outage := true, false
+	away, outage, held := true, false, false
 	for {
 		if away {
 			if err := p.attach(ctx); err != nil {
@@ -359,10 +365,21 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 			away, backoff = false, p.idlePoll
 		}
 		busy, err := p.client.Busy(ctx, p.session)
+		stopped := false
+		if err == nil && !busy {
+			// Idle is not yet free to post into: the human may have stopped the
+			// session, and a delivery now would start it again over their stop.
+			var recent []HistoryMessage
+			recent, err = p.client.Recent(ctx, p.session, recentWindow)
+			stopped = err == nil && humanStopped(recent)
+		}
 		switch {
+		case err == nil && !busy && !stopped:
+			return waited, nil
 		case err == nil:
-			if !busy {
-				return waited, nil
+			if stopped && !held {
+				p.logf("the session was interrupted; holding deliveries until you send it something")
+				held = true
 			}
 			waited = true
 			if !p.sleep(ctx, p.idlePoll) {
@@ -370,7 +387,7 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 			}
 		case ctx.Err() != nil:
 			return waited, ctx.Err()
-		case IsTransport(err):
+		case IsTransport(err), IsServerError(err):
 			p.logf("OpenCode is not answering (%v): holding deliveries in the stream and retrying", err)
 			waited, away, outage = true, true, true
 		default:

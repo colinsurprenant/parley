@@ -3,10 +3,12 @@ package opencode
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,10 +23,14 @@ const (
 	fakePID = 4242
 )
 
-// fakeMsg is a user message the fake's session holds, in the order it was
-// promoted.
+// fakeMsg is a message the fake's session holds, in the order it was added: a user
+// message promoted from the inbox (kind ""), or, added by a test, an assistant
+// message that finished as finish, or an idle marker with an outcome.
 type fakeMsg struct {
 	id, text string
+	kind     string
+	finish   string
+	outcome  string
 }
 
 // fakeItem is an entry of the fake's inbox.
@@ -230,7 +236,9 @@ func (f *fakeOpenCode) userTexts() []string {
 	defer f.mu.Unlock()
 	var out []string
 	for _, m := range f.msgs {
-		out = append(out, m.text)
+		if m.kind == "" {
+			out = append(out, m.text)
+		}
 	}
 	return out
 }
@@ -380,6 +388,12 @@ func (f *fakeOpenCode) sessionLocked(w http.ResponseWriter, r *http.Request, tai
 			out = append(out, inboxJSON(it))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": out})
+	case tail == "message" && r.Method == http.MethodGet:
+		f.reads["recent"]++
+		if f.failedLocked(w, "recent") {
+			return
+		}
+		f.recentLocked(w, r)
 	case strings.HasPrefix(tail, "message/") && r.Method == http.MethodGet:
 		f.reads["message"]++
 		if f.failedLocked(w, "message") {
@@ -407,13 +421,62 @@ func (f *fakeOpenCode) failedLocked(w http.ResponseWriter, route string) bool {
 	return true
 }
 
+// recentLocked answers the list of the newest messages: only the one query the
+// front is allowed to make, order=desc and a limit, and newest first.
+func (f *fakeOpenCode) recentLocked(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, err := strconv.Atoi(q.Get("limit"))
+	if q.Get("order") != "desc" || err != nil || limit < 1 || len(q) != 2 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"_tag": "InvalidRequestError", "message": "bad query"})
+		return
+	}
+	out := []map[string]any{}
+	for i := len(f.msgs) - 1; i >= 0 && len(out) < limit; i-- {
+		m := f.msgs[i]
+		e := map[string]any{"id": m.id, "time": map[string]any{"created": i + 1}, "metadata": map[string]any{}}
+		switch m.kind {
+		case "":
+			e["type"], e["text"], e["files"] = "user", m.text, []any{}
+		case "assistant":
+			e["type"], e["agent"], e["content"], e["finish"] = "assistant", "build", []any{}, m.finish
+		case "idle":
+			e["type"], e["outcome"] = "idle", m.outcome
+		}
+		out = append(out, e)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": out, "cursor": map[string]any{}})
+}
+
+// addAssistant puts an assistant message that finished as finish into the history,
+// as a step of a turn does.
+func (f *fakeOpenCode) addAssistant(finish string) {
+	f.set(func() {
+		f.msgs = append(f.msgs, fakeMsg{id: fmt.Sprintf("msg_a%d", len(f.msgs)), kind: "assistant", finish: finish})
+	})
+}
+
+// addIdle puts an idle marker with outcome into the history, as the end of a turn
+// does.
+func (f *fakeOpenCode) addIdle(outcome string) {
+	f.set(func() {
+		f.msgs = append(f.msgs, fakeMsg{id: fmt.Sprintf("msg_i%d", len(f.msgs)), kind: "idle", outcome: outcome})
+	})
+}
+
+// addUser puts a user message into the history, the human's own prompt.
+func (f *fakeOpenCode) addUser(text string) {
+	f.set(func() {
+		f.msgs = append(f.msgs, fakeMsg{id: fmt.Sprintf("msg_u%d", len(f.msgs)), text: text})
+	})
+}
+
 func inboxJSON(it fakeItem) map[string]any {
 	return map[string]any{"id": it.id, "sessionID": testSession, "time": map[string]any{"created": 1}, "type": "user", "payload": map[string]any{"text": it.text}, "delivery": it.delivery}
 }
 
 func (f *fakeOpenCode) messageLocked(w http.ResponseWriter, id string) {
 	for _, m := range f.msgs {
-		if m.id == id {
+		if m.id == id && m.kind == "" {
 			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": m.id, "time": map[string]any{"created": 1}, "text": m.text, "type": "user"}})
 			return
 		}
@@ -453,7 +516,7 @@ func (f *fakeOpenCode) promptLocked(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, m := range f.msgs {
-		if m.id == req.ID {
+		if m.id == req.ID && m.kind == "" {
 			item, known = fakeItem{id: m.id, text: m.text, delivery: "queue"}, true
 		}
 	}

@@ -32,10 +32,9 @@ What you can count on:
   records stay where they live.
 
 Parley works across harnesses: Claude Code and Codex, and a line takes OpenCode 2
-sessions too, last verified against OpenCode 2.0.32 in OpenCode's simulation mode
-(which blocks all model traffic) and not yet on a live model; table seats and build
-peers on OpenCode are not supported for now, and open to explore. If every session
-is Claude Code and one-to-one messages are all you need, Claude Code's own
+sessions too, last verified against OpenCode 2.1.0 on a live model; table seats and
+build peers on OpenCode are not supported for now, and open to explore. If every
+session is Claude Code and one-to-one messages are all you need, Claude Code's own
 [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
 does that natively. If you want one agent handing work to the others, you want an
 orchestrator. [Related projects](#related-projects) names tools of both kinds.
@@ -67,8 +66,7 @@ How it works:
   `brew install opencode` (Homebrew core) or `npm i -g @opencode/cli`. The legacy
   1.x (npm's `opencode-ai`, the installer at opencode.ai/install) has no API
   parley can speak to, and `doctor` fails it. Parley was last verified against
-  OpenCode 2.0.32 in OpenCode's simulation mode, which blocks all model traffic,
-  and not yet on a live model; a newer 2.x is expected to work.
+  OpenCode 2.1.0 on a live model; a newer 2.x is expected to work.
   Claude Code has prerequisites of its own for
   [channels](https://code.claude.com/docs/en/channels):
   - a claude.ai login or a Console API key, not Amazon Bedrock, Google Cloud's

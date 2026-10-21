@@ -1009,6 +1009,7 @@ func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
 	b.WriteString("  The service's password is in its service file (mode 600) and the pump reads it from there and sends it to the service's\n")
 	b.WriteString("  loopback address only; it is never printed. For an opencode serve of your own, run the pump with --port <n> and\n")
 	b.WriteString("  OPENCODE_PASSWORD (or OPENCODE_SERVER_PASSWORD) set to the password it was started with.\n")
+	b.WriteString("  If you interrupt the session, the pump holds deliveries until you send it something.\n")
 	fmt.Fprintf(&b, "  Parley was %s.\n", doctor.OpenCodeVerifiedNote)
 	fmt.Fprintf(&b, "\n   Session %s's answer to its primer (opencode run, session %s):\n\n", p.nick, r.thread)
 	answer := plainAnswer(r.answer)

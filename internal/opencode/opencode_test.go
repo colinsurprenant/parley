@@ -369,6 +369,8 @@ func TestARefusedPostStopsThePumpAndIsNotRetried(t *testing.T) {
 			writeJSON(w, 200, map[string]any{"version": "2.0.32", "pid": 7})
 		case r.URL.Path == "/api/session/active":
 			writeJSON(w, 200, map[string]any{"data": map[string]any{}})
+		case strings.HasSuffix(r.URL.Path, "/message"):
+			writeJSON(w, 200, map[string]any{"data": []any{}, "cursor": map[string]any{}})
 		case strings.HasSuffix(r.URL.Path, "/prompt"):
 			writeJSON(w, 500, map[string]any{"_tag": "Boom"})
 		default:

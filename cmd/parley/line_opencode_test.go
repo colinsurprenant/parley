@@ -55,6 +55,7 @@ prev=; for a in "$@"; do [ "$prev" = --session ] && id=$a; prev=$a; done
 start() { printf '{"type":"step_start","timestamp":1,"sessionID":"%s","part":{"id":"prt_1","type":"step-start"}}\n' "$1"; }
 text() { printf '{"type":"text","timestamp":2,"sessionID":"%s","part":{"id":"prt_2","type":"text","text":"%s"}}\n' "$1" "$2"; }
 finish() { printf '{"type":"step_finish","timestamp":3,"sessionID":"%s","part":{"id":"prt_3","type":"step-finish","reason":"%s"}}\n' "$1" "$2"; }
+tool() { printf '{"type":"tool_use","timestamp":2,"sessionID":"%s","part":{"partID":"prt_t","sessionID":"%s","type":"tool","id":"tool_1","tool":"skill","state":{"status":"completed","input":{"id":"parley-line"}}}}\n' "$1" "$1"; }
 err() { printf '{"type":"error","timestamp":4,"sessionID":"%s","error":{"name":"UnknownError","data":{"message":"%s"}}}\n' "$1" "$2"; }
 case "$1" in
 run)
@@ -72,9 +73,11 @@ run)
 		start "$id"; text "$id" ready
 		finish "ses_$(printf '%026d' 99)" stop
 		exit 0 ;;
-	unfinished)
-		start "$id"; text "$id" ready; finish "$id" stop
-		start "$id"
+	dropped)
+		# What a real 2.1 primer turn prints when the run loses the race with the
+		# session going idle: the last step's finish is never printed.
+		start "$id"; tool "$id"; finish "$id" tool-calls
+		start "$id"; text "$id" "ready, waiting for the first delivery"
 		exit 0 ;;
 	orphan)
 		# The launcher ends the turn and exits at once, leaving a child that holds
@@ -108,8 +111,6 @@ run)
 		start "$id"
 		printf '%s\n' '{"type":"error","sessionID":"'"$id"'","error":{"name":"UnknownError","data":{"message":"quota\u001b[31m exceeded\u0007"}}}'
 		echo "bad" >&2; exit 1 ;;
-	nostop) start "$id"; text "$id" ready; finish "$id" tool-calls; exit 0 ;;
-	nostep) start "$id"; text "$id" ready; exit 0 ;;
 	multistep)
 		start "$id"; text "$id" "let me look"; finish "$id" tool-calls
 		start "$id"; text "$id" "ready, waiting"; finish "$id" stop
@@ -154,6 +155,10 @@ exit 0
 type ocLineBench struct {
 	*lineBench
 	oc string
+	// svc is OpenCode's service as line add finds it, from the registration file in
+	// the bench's state home: it knows every session and shows the history of a
+	// real turn that went through, until a test says otherwise.
+	svc *ocServer
 }
 
 func newOCLineBench(t *testing.T) *ocLineBench {
@@ -173,6 +178,12 @@ func newOCLineBench(t *testing.T) *ocLineBench {
 	if err := os.WriteFile(b.db.opencode, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	b.svc = newOCServiceServer(t)
+	b.svc.set(func() {
+		b.svc.anySession = true
+		b.svc.history = append([]ocHist(nil), ocLiveTurn...)
+	})
+	writeService(t, filepath.Join(b.root, "xdg"), b.svc.url(), ocPID, 0o600)
 	return b
 }
 
@@ -347,6 +358,7 @@ func TestLineAddOpenCodeSession(t *testing.T) {
 		"it rejected any permission ask and cancelled any question",
 		"The service's password is in its service file (mode 600)",
 		"sends it to the service's loopback address only; it is never printed",
+		"If you interrupt the session, the pump holds deliveries until you send it something.",
 		"Parley was " + doctor.OpenCodeVerifiedNote,
 	} {
 		if !strings.Contains(flat, want) {
@@ -532,7 +544,7 @@ func TestParseOpenCodeTurnReadsOpenCodeEvents(t *testing.T) {
 {"type":"error","timestamp":1792473995534,"sessionID":"` + id + `","error":{"type":"provider.transport","message":"Transport: Simulation denied unregistered network destination: POST https://opencode.ai/inference/openai/v1/chat/completions (POST https://opencode.ai/inference/openai/v1/chat/completions)"}}
 `
 	got := parseOpenCodeTurn(failed)
-	if got.SessionID != id || len(got.Others) != 0 || len(got.NoID) != 0 || got.Steps != 0 || !strings.HasPrefix(got.Failure, "Transport: Simulation denied unregistered network destination") {
+	if got.SessionID != id || len(got.Others) != 0 || len(got.NoID) != 0 || got.Answer != "" || !strings.HasPrefix(got.Failure, "Transport: Simulation denied unregistered network destination") {
 		t.Errorf("a failed 2.x turn parsed as %+v", got)
 	}
 
@@ -541,8 +553,22 @@ func TestParseOpenCodeTurnReadsOpenCodeEvents(t *testing.T) {
 {"type":"step_finish","timestamp":3,"sessionID":"` + id + `","part":{"id":"prt_3","sessionID":"` + id + `","messageID":"msg_1","type":"step-finish","reason":"stop","snapshot":"4b82","cost":0,"tokens":{"input":1,"output":1}}}
 `
 	got = parseOpenCodeTurn(done)
-	if got.SessionID != id || got.Steps != 1 || got.LastReason != "stop" || got.Answer != "ready, waiting" || got.Failure != "" || len(got.NoID) != 0 {
+	if got.SessionID != id || got.Answer != "ready, waiting" || got.Failure != "" || len(got.NoID) != 0 {
 		t.Errorf("a completed 2.x turn parsed as %+v", got)
+	}
+
+	// What a real primer turn printed on 2.1.0, which lost the race with the session
+	// going idle: the last step_finish is not there, and the answer is the text after
+	// the last step began.
+	dropped := `{"type":"step_start","timestamp":1,"sessionID":"` + id + `","part":{"id":"prt_1","sessionID":"` + id + `","messageID":"msg_1","type":"step-start","snapshot":"29cd"}}
+{"type":"tool_use","timestamp":2,"sessionID":"` + id + `","part":{"partID":"prt_2","sessionID":"` + id + `","messageID":"msg_1","type":"tool","id":"tool_1","tool":"skill","state":{"status":"completed","input":{"id":"parley-line"}}}}
+{"type":"step_finish","timestamp":3,"sessionID":"` + id + `","part":{"id":"prt_3","sessionID":"` + id + `","messageID":"msg_1","type":"step-finish","reason":"tool-calls","snapshot":"29cd"}}
+{"type":"step_start","timestamp":4,"sessionID":"` + id + `","part":{"id":"prt_4","sessionID":"` + id + `","messageID":"msg_2","type":"step-start","snapshot":"29cd"}}
+{"type":"text","timestamp":5,"sessionID":"` + id + `","part":{"id":"prt_5","sessionID":"` + id + `","messageID":"msg_2","type":"text","text":"Line protocol loaded.","time":{"start":4,"end":5}}}
+`
+	got = parseOpenCodeTurn(dropped)
+	if got.SessionID != id || got.Answer != "Line protocol loaded." || got.Failure != "" || len(got.NoID) != 0 || strings.Join(got.Events, ",") != "step_start,tool_use,step_finish,text" {
+		t.Errorf("a 2.1 turn without its last step_finish parsed as %+v", got)
 	}
 }
 
@@ -757,6 +783,108 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 	}
 }
 
+// TestLineAddOpenCodeAcceptsATurnWhoseFinalStepWasNeverPrinted: a real 2.1 run can
+// end, exit 0, before it has printed the finish of its last step, while the server
+// holds the turn as finished. The server, which line add asks, is what says the turn
+// completed, and the session is started with the answer the events carried.
+func TestLineAddOpenCodeAcceptsATurnWhoseFinalStepWasNeverPrinted(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	b.setMode(t, 1, "dropped")
+	res := mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
+	if !strings.Contains(res.stdout, "ready, waiting for the first delivery") {
+		t.Errorf("stdout does not carry the answer of the last step:\n%s", res.stdout)
+	}
+	b.wantDeletes(t, 1)
+	b.svc.mu.Lock()
+	reads := b.svc.historyReads
+	b.svc.mu.Unlock()
+	if reads == 0 {
+		t.Error("the history of the session was never asked for: the turn was taken on the run's word")
+	}
+	if strings.Contains(res.stdout+res.stderr, ocPassword) {
+		t.Errorf("the service's password is in the output:\n%s\n%s", res.stdout, res.stderr)
+	}
+}
+
+// TestLineAddOpenCodeTurnTheServiceDoesNotCertifyRollsBack: the run exited 0 and its
+// events are clean, but the server does not show the turn to have completed: the
+// session was interrupted or failed, its last step went on, or the service cannot be
+// asked at all. The add fails and undoes itself, the session deleted.
+func TestLineAddOpenCodeTurnTheServiceDoesNotCertifyRollsBack(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(b *ocLineBench)
+		want  string
+	}{
+		{"the session was interrupted", func(b *ocLineBench) {
+			b.svc.set(func() {
+				b.svc.history = []ocHist{{kind: "user"}, {kind: "assistant", finish: "error"}, {kind: "idle", outcome: "interrupted"}}
+			})
+		}, `outcome "interrupted"`},
+		{"the session failed", func(b *ocLineBench) {
+			b.svc.set(func() {
+				b.svc.history = []ocHist{{kind: "user"}, {kind: "assistant", finish: "error"}, {kind: "idle", outcome: "failed"}}
+			})
+		}, `outcome "failed"`},
+		{"the last step went on", func(b *ocLineBench) {
+			b.svc.set(func() {
+				b.svc.history = []ocHist{{kind: "user"}, {kind: "assistant", finish: "tool-calls"}, {kind: "idle", outcome: "succeeded"}}
+			})
+		}, `finished with "tool-calls"`},
+		{"the service answers 500", func(b *ocLineBench) { b.svc.set(func() { b.svc.down = true }) }, "500"},
+		{"the service is gone", func(b *ocLineBench) { b.svc.srv.Close() }, "could not be found to ask it"},
+		{"the service left no file", func(b *ocLineBench) {
+			if err := os.Remove(filepath.Join(b.root, "xdg", "opencode", "service.json")); err != nil {
+				t.Fatal(err)
+			}
+		}, "no OpenCode 2 service is registered"},
+		{"the service does not know the session", func(b *ocLineBench) { b.svc.set(func() { b.svc.anySession = false }) }, "not found"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := newOCLineBench(t)
+			lineUp(t, b.lineBench, "demo")
+			co := b.gitCheckout(t, "co")
+			c.setup(b)
+			before := b.snap(t, co)
+			res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
+			if res.code != 1 {
+				t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+			}
+			for _, want := range []string{c.want, "the turn is not shown to have completed", "rolled back"} {
+				if !strings.Contains(res.stderr, want) {
+					t.Errorf("stderr does not say %q:\n%s", want, res.stderr)
+				}
+			}
+			// The nick's directory stays, its lock file being kept on purpose, and the
+			// rollback says it left it and does not say it removed it.
+			nickDir := filepath.Join(b.base, "build")
+			if _, err := os.Stat(nickDir); err != nil {
+				t.Errorf("the nick's directory is gone: %v", err)
+			}
+			for _, line := range strings.Split(res.stderr, "\n") {
+				if strings.Contains(line, "rolled back:") && strings.Contains(line, "directory "+nickDir) {
+					t.Errorf("the rollback says it removed the nick's directory, which stays:\n%s", line)
+				}
+			}
+			if !strings.Contains(res.stderr, "left directory "+nickDir+" as it is") {
+				t.Errorf("the rollback does not say it left the nick's directory:\n%s", res.stderr)
+			}
+			if strings.Contains(res.stdout+res.stderr, ocPassword) {
+				t.Errorf("the service's password is in the output:\n%s\n%s", res.stdout, res.stderr)
+			}
+			if res.stdout != "" {
+				t.Errorf("a failed run printed on stdout: %q", res.stdout)
+			}
+			b.wantDeletes(t, 1, idOfRun(t, b))
+			if got := b.snap(t, co); got != before {
+				t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
+			}
+		})
+	}
+}
+
 // TestLineAddOpenCodeFailureRollsEverythingBack: an opencode that fails, names a
 // session other than the one it was given or none, or ends without a completed
 // turn is exit 1 and a machine as it was, the checkout, the record and $TMPDIR
@@ -780,11 +908,6 @@ func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 		{"a step_start that names no session, before others did", "noidfirst", "event(s) of type step_start carry no sessionID"},
 		{"the run fails after the session exists", "failafter", "the model went away"},
 		{"exit 0 but an error event", "errorzero", "stream broke"},
-		// A step_finish(stop) followed by a step that began and never finished: the
-		// last step is not done.
-		{"a last step that never finished", "unfinished", "never finished"},
-		{"a last step that is not a stop", "nostop", `reason "tool-calls"`},
-		{"no step_finish at all", "nostep", "no step_finish event"},
 		{"stdout past the cap", "overflow", "cut off"},
 		{"control characters in the error", "ctrlerror", "UnknownError: quota[31m exceeded"},
 	}
@@ -1013,7 +1136,7 @@ func TestParseOpenCodeTurn(t *testing.T) {
 		ev("step_finish", id, `{"reason":"stop"}`),
 	}, "\n")
 	got := parseOpenCodeTurn(out)
-	if got.SessionID != id || len(got.Others) != 0 || got.Steps != 2 || got.LastReason != "stop" || got.Answer != "two\nthree" || got.Failure != "" {
+	if got.SessionID != id || len(got.Others) != 0 || got.Answer != "two\nthree" || got.Failure != "" {
 		t.Errorf("parsed %+v", got)
 	}
 	if want := "step_start,text,step_finish"; strings.Join(got.Events, ",") != want {
@@ -1033,31 +1156,16 @@ func TestParseOpenCodeTurn(t *testing.T) {
 	if want := `an error event: "{\"x\":1}"`; got.Failure != want {
 		t.Errorf("failure = %q, want %s", got.Failure, want)
 	}
-	// A step that began after the last finish is open, and has no reason of its own.
-	got = parseOpenCodeTurn(strings.Join([]string{
-		ev("step_start", id, `{}`), ev("step_finish", id, `{"reason":"stop"}`), ev("step_start", id, `{}`),
-	}, "\n"))
-	if !got.Open || got.LastReason != "" || got.Steps != 1 {
-		t.Errorf("a step_finish(stop) then an unfinished step_start parsed as %+v, want an open step with no reason", got)
-	}
-	got = parseOpenCodeTurn(strings.Join([]string{ev("step_start", id, `{}`), ev("step_finish", id, `{"reason":"stop"}`)}, "\n"))
-	if got.Open || got.LastReason != "stop" {
-		t.Errorf("a finished step parsed as %+v", got)
-	}
-	// An event that names no session certifies nothing: it is not a step, an
-	// answer or a reason, and its type is kept for the error.
+	// An event that names no session certifies nothing: it is not an answer, and its
+	// type is kept for the error.
 	got = parseOpenCodeTurn(strings.Join([]string{
 		ev("step_start", id, `{}`),
 		ev("text", id, `{"text":"x"}`),
 		`{"type":"step_finish","timestamp":3,"part":{"reason":"stop"}}`,
 		`{"type":"text","part":{"text":"unnamed"}}`,
 	}, "\n"))
-	if got.SessionID != id || got.Steps != 0 || got.LastReason != "" || got.Answer != "x" || strings.Join(got.NoID, ",") != "step_finish,text" {
+	if got.SessionID != id || got.Answer != "x" || strings.Join(got.NoID, ",") != "step_finish,text" {
 		t.Errorf("an event with no session parsed as %+v", got)
-	}
-	got = parseOpenCodeTurn(`{"type":"step_finish","sessionID":"` + id + `","part":"not an object"}`)
-	if got.Steps != 0 {
-		t.Errorf("a step_finish whose part is no object counted: %+v", got)
 	}
 }
 

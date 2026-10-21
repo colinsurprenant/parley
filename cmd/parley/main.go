@@ -194,7 +194,11 @@ verbs:
            with no deadline behind a turn that is not its own, or for the human
            to resume a session an interrupt parked (it never steers an entry),
            and treating an entry the human cancelled as handed over; it commits
-           only then, so a crash re-delivers and does not drop. Before it opens
+           only then, so a crash re-delivers and does not drop. An interrupt
+           holds everything: before it posts, the pump reads the newest messages,
+           and while the newest idle marker says the human interrupted the
+           session and no user message is newer, it holds (saying so once) until
+           the human sends the session something. Before it opens
            anything, the pump checks that the server answers, is OpenCode 2
            (parley was {{opencode-verified}}; a 1 is refused with the way to
            OpenCode 2), and knows the session; a failure exits 2 and
@@ -497,8 +501,12 @@ verbs:
            and the run creates the session under, with the primer on stdin, so
            that it reaches the model as it is, stdin otherwise closed, the
            environment passed on and a 5-minute limit. Every event of the run
-           must carry that id (an event with none fails the turn) and the events
-           must end with a step_finish whose reason is stop; the id is recorded
+           must carry that id (an event with none fails the turn) and none may be
+           an error. The events cannot show that the turn completed (the run can
+           end before it has printed its last step_finish), so OpenCode's service,
+           found from its file as the pump finds it, is asked: the session's
+           history must end in an idle marker with the outcome succeeded after an
+           assistant message that finished with stop. The id is recorded
            in the opencode-session file --session auto reads. A failure or an
            interrupt takes down what the run made, a started Codex thread
            (codex delete --force) or the OpenCode session (opencode session

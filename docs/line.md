@@ -43,9 +43,8 @@ skill tool. `parley doctor` checks the links with the rest. A line takes OpenCod
 sessions, on OpenCode 2: install it with `brew install opencode` (Homebrew core) or
 `npm i -g @opencode/cli`. The legacy 1.x (npm's `opencode-ai`, the installer at
 `opencode.ai/install`) has no API parley can speak to, and `parley doctor` fails
-it. Parley was last verified against OpenCode 2.0.32 in OpenCode's simulation mode,
-which blocks all model traffic, and **not yet on a live model**: run one line live
-before relying on it; a newer 2.x is expected to work.
+it. Parley was last verified against OpenCode 2.1.0 on a live model; a newer 2.x is
+expected to work.
 
 ## Per line
 
@@ -255,12 +254,18 @@ before relying on it; a newer 2.x is expected to work.
      and a five-minute limit. The primer goes in on stdin, because `opencode run`
      wraps a message argument that holds spaces in double quotes and escapes the
      quotes in it, and the session's first message should be the primer as it is.
-     Your environment is passed on as it is. The turn must have completed: every
-     event of the run must carry that id (an event with none fails the turn), and
-     the last step must end with `stop`. A step that began and never finished fails
-     the turn too. If the turn did not complete, or did not end within the limit, or
-     you interrupt the add, `opencode session delete <id>` is run from the checkout
-     and the add fails and undoes itself. The id is known before the run, so that
+     Your environment is passed on as it is. The run must exit 0, every event of it
+     must carry that id (an event with none fails the turn), and none may be an
+     error. The events do not say the turn completed: `opencode run --format json`
+     can end before it has printed the finish of its last step, while the server
+     holds the turn as finished. So `line add` asks the server, which it finds the
+     way the pump does (from the service file): the newest message of the session's
+     history must be an idle marker with the outcome `succeeded`, after an assistant
+     message that finished with `stop`. A turn that was interrupted or failed, a
+     last step that went on, or a service that cannot be reached or does not know the
+     session, fails the turn. If the turn did not complete, or did not end within the
+     limit, or you interrupt the add, `opencode session delete <id>` is run from the
+     checkout and the add fails and undoes itself. The id is known before the run, so that
      delete is made whatever the run did; an answer of "Session not found", for a
      run that failed before it made the session, is not a failure. The id is
      recorded for `--session auto`, and printed with the session's answer to the
@@ -319,10 +324,15 @@ before relying on it; a newer 2.x is expected to work.
    under way, and never merges it into a turn that runs. A delivery counts as made
    once the message the pump posted under its own id holds exactly those bytes, and
    a crash delivers again rather than drop (`docs/reference.md`, "opencode: the
-   OpenCode front"). If you interrupt the session while a delivery waits in its
-   inbox, the delivery stays parked there and the pump says so once and waits: it
-   goes over when you resume the session, and the pump never steers it, which would
-   put it into whatever turn runs next. If you delete a queued delivery in the TUI,
+   OpenCode front"). **An interrupt holds everything.** If you interrupt the session
+   (Esc in the TUI), the pump does not post into it until you send it something: it
+   says "the session was interrupted; holding deliveries until you send it
+   something" once, keeps what arrives in the stream, and delivers when you have
+   sent the session a prompt, or a turn that is not interrupted has ended. If a
+   delivery was already waiting in the session's inbox when you interrupted it, it
+   stays parked there and the pump says so once and waits: after you resume the
+   session it runs right after your turn, as its own user message, and the pump
+   never steers it, which would put it into whatever turn runs next. If you delete a queued delivery in the TUI,
    the pump counts it as handed over and does not send it again. A delivery is
    posted whole, with one bound: a message whose rendering is over 128 KiB, and a
    message that would take one delivery past 512 KiB, is not posted, and a stub
@@ -330,7 +340,8 @@ before relying on it; a newer 2.x is expected to work.
    text stays in the stream for you to read.
 
    Two residual cases are documented and not closed. A prompt you submit as a steer
-   while a delivery's turn runs is folded into that turn, as any steer is. And a post
+   while a delivery's turn runs is folded into that turn, as any steer is; it waits
+   for the next step boundary and does not cut a tool that is running short. And a post
    whose answer is lost is posted again under the same id; if you deleted the
    admitted entry in that instant, the second post admits it once more, since
    OpenCode keeps no tombstone of a cancelled id, and the delivery goes over,
@@ -492,9 +503,12 @@ before it has read the others', run a table instead: a line has no seal.
   (the `external_directory` one, if you restored it) or on any other question to
   you in the TUI holds every delivery behind it until you answer. A TUI that is closed or restarted
   stops nothing: the service outlives the TUI. A service that is stopped is waited
-  for: the pump holds the deliveries, tries again and delivers once it answers, and
-  when it comes back, at another address or not, the pump finds it again from its
-  file.
+  for: `opencode service stop` removes `service.json`, and the service comes back
+  with a new pid, address and password while the sessions persist; the pump holds
+  the deliveries, finds it again from its file and delivers once it answers.
+- **A pump for a nick with no cursor starts from the channel's backlog.** The first
+  delivery of a nick that has not been on the channel before is what the channel
+  already held, in one delivery, and not only what is posted after the pump starts.
 - **A front restart loses what it held.** Held posts live in the front's memory
   only. A restarted session hears everything new, but not the posts the breaker
   was holding for it, so ask the others to repeat what it missed; your client's

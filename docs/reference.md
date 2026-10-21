@@ -265,8 +265,7 @@ hands each delivery to the live session as one user message, over the HTTP API o
 the OpenCode 2 server the session runs on: the background service that `opencode -s
 <ses_id>` starts in the session's checkout, or a server started with `opencode serve
 --port <port>`. The legacy OpenCode 1.x has no such API and is refused. Parley was
-last verified against OpenCode 2.0.32 in OpenCode's simulation mode, which blocks all
-model traffic, and **not yet on a live model**; a newer 2.x is expected to work.
+last verified against OpenCode 2.1.0 on a live model; a newer 2.x is expected to work.
 OpenCode has no channel of its own — a prompt posted to a
 session is a user message, and nothing about it tells the model that the text was
 not typed by its human — so the `[parley]` peer header is the only mark this front
@@ -274,7 +273,9 @@ has, and it is mandatory: the message is exactly what `wait` would have printed,
 header first and byte for byte, as the text of the request, with no system prompt
 and no other part. The pump never rewrites, re-prefixes, wraps or splits
 it. It takes the same single-process lock and keeps the same per-stream cursor as
-`wait`. Nothing is printed on stdout; the log is on stderr.
+`wait`. A pump for a nick with no cursor starts from the channel's backlog: its first
+delivery is what the channel already held. Nothing is printed on stdout; the log is
+on stderr.
 
 ```
 parley opencode --stream file:./chat.ndjson --nick oc-a --session <ses_id>
@@ -313,7 +314,9 @@ an address something else now has, is not taken for it. `XDG_STATE_HOME` must be
 absolute when set. The password is never logged, printed or put in an error, and a
 URL is printed without any userinfo. The file is read when the pump starts and again
 every time it attaches, which is before each delivery and after every outage: a
-restarted service has a new address, password and process id. While the file is
+restarted service has a new address, password and process id (`opencode service
+stop` removes the file, and the service that comes back writes a new one while the
+sessions persist). While the file is
 absent, or does not describe the server that answers (a stale file, or one written a
 moment before the service is up), or the server answers a 5xx (starting), the pump
 holds with its backoff and says so once; a 401 after the file was read again is the
@@ -348,7 +351,19 @@ seconds. A post that fails to connect is nothing delivered, and goes back to wai
 pump still waits for an idle session before it posts (`GET /api/session/active`
 lists the sessions in a turn; one it does not list is idle), so that what arrived
 meanwhile goes over as one delivery, but a post that lands in a turn nobody
-expected is not folded into it. The pump makes the message id itself
+expected is not folded into it. An idle session is not yet free to post into: an
+interrupt holds everything. Before each post the pump reads the newest messages
+(`GET /api/session/<id>/message?order=desc&limit=4`), and if the newest idle marker
+has the outcome `interrupted` and no user message is newer than it, the human
+stopped the session and has sent it nothing since; a post would start it again over
+their stop. The pump holds, logs once "the session was interrupted; holding
+deliveries until you send it something", and goes on checking at the idle backoff,
+keeping what arrives in the stream. The hold ends when the human sends the session
+something: a user message newer than the marker, or a newer idle marker whose
+outcome is not `interrupted`. A history that cannot be read is the server being
+away (a transport failure or a 5xx is held for), and one that is not the shape
+this front reads stops the pump. The wait for an entry already in the inbox, below,
+is not changed by this. The pump makes the message id itself
 (`msg_` and 26 characters, the way OpenCode's `identifier.ts` does) and posts
 `POST /api/session/<id>/prompt` with exactly `{"id", "text", "delivery":"queue"}`,
 the text being the delivery's rendering, verbatim, with no file, agent, skill or
@@ -380,11 +395,13 @@ a turn that is not its own, and goes over when that turn ends; the pump logs it 
 parked, as it is after an interrupt (a turn that begins after one is steer-scoped, so
 entries queued during it wait at its end; a failed turn alone does not park the
 queue). The pump logs once "parked after an interrupt; it goes over when the session
-takes it up" and goes on waiting for the human to resume the session. It **never
+takes it up" and goes on waiting for the human to resume the session; when they
+do, the entry runs right after their turn, as its own user message. It **never
 steers** the entry: a `PATCH` to steer has no idle precondition and is promoted at
 the next step of whatever turn runs (so into a turn the human starts at that
 instant), and it wakes execution, which releases the prompts the human parked by
-interrupting. Waiting respects their interrupt. (3) **Not in the inbox and not a
+interrupting. Waiting respects their interrupt. (A steer the human submits waits for
+the next step boundary of the turn that runs and does not cut a running tool short.) (3) **Not in the inbox and not a
 message:** the human cancelled it, which only a human does, on purpose; the pump
 reads the message once more (the entry leaves the inbox and becomes a message in
 one step, so a message is there if that is what happened), logs the cancel, counts
@@ -866,11 +883,21 @@ exit 2.
   left running on a session about to be deleted. The primer is on stdin and not an
   argument: `opencode run` wraps an argument that holds spaces in double quotes and
   escapes the quotes in it, and the first message should be the primer as it is. The
-  turn must have completed: its stdout must carry JSON events that all name the id
-  parley chose (an event with none fails the turn, and counts for nothing), at least
-  one `step_finish`, the last with the reason `stop`, no step that began and never
-  finished, no `error` event and an end not cut off at 1 MiB, whatever the exit status; a run that does not end within the
-  bound is stopped. The session is registered for deletion (`opencode session
+  run must exit 0 with JSON events that all name the id parley chose (an event with
+  none fails the turn, and counts for nothing), no `error` event, and an end not cut
+  off at 1 MiB; a run that does not end within the bound is stopped. The events do
+  not say the turn completed: `opencode run --format json` stops printing steps once
+  the session has gone idle, and loses that race on real turns, so the last
+  `step_finish` may never be printed (the turn is `step_start`, `tool_use`,
+  `step_finish`, `step_start`, `text`, and exit 0). The server says. `line add` finds
+  the service the way the pump does (from its file, held to the same checks) and
+  asks `GET /api/session/<id>/message?order=desc&limit=4`: the newest message must
+  be an idle marker with the outcome `succeeded`, and the nearest assistant message
+  before it must have finished with `stop`. While the history does not yet end in an
+  idle marker it is read again, for up to 15 seconds. An outcome of `interrupted` or
+  `failed`, a last step that went on, a service that cannot be found or reached or
+  does not know the session, or an answer that is not the shape this front reads,
+  fails the add, with the reads bounded and the password in no message. The session is registered for deletion (`opencode session
   delete`, run from the checkout) as soon as the run returns, whatever it did: the id
   is known before the run. A delete answered "Session not found", for a run that
   failed before it made the session, found nothing to remove and is not a failure.
@@ -969,10 +996,9 @@ for lacking it; the server and ergo are checked either way. OpenCode must be a 2
 (the legacy 1.x is a `FAIL` that says where OpenCode 2 comes from, and so is any
 other major version or a version that cannot be read, since the pump refuses a
 server of it); its version is read
-against the one last verified (2.0.32), a different 2.x is a `warn` that says
-parley was last verified against that one in simulation mode and not yet on a live
-model, that a newer 2.x is expected to work, and what to do if a session
-misbehaves. An OpenCode skill link under either root passes. The Claude Code line says that a launch needs
+against the one last verified (2.1.0), a different 2.x is a `warn` that says
+parley was last verified against that one on a live model, that a newer 2.x is
+expected to work, and what to do if a session misbehaves. An OpenCode skill link under either root passes. The Claude Code line says that a launch needs
 `--dangerously-load-development-channels`, which doctor cannot check.
 `--server` names a server other than `127.0.0.1:6667`, and `--codex-bin`,
 `--claude-bin`, `--opencode-bin` and `--ergo-bin` name a binary that is not on the

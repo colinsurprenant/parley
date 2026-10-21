@@ -396,3 +396,59 @@ func TestACanceledContextIsNotATransportError(t *testing.T) {
 		}
 	}
 }
+
+// TestRecent: the newest messages of the history are asked for newest first with a
+// limit, and read strictly for what the front decides on.
+func TestRecent(t *testing.T) {
+	var query string
+	c := serving(t, func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Path + "?" + r.URL.RawQuery
+		writeJSON(w, 200, map[string]any{"data": []any{
+			map[string]any{"id": "msg_i", "time": map[string]any{"created": 3}, "type": "idle", "outcome": "succeeded"},
+			map[string]any{"id": "msg_a", "time": map[string]any{"created": 2}, "type": "assistant", "agent": "build", "content": []any{}, "finish": "stop"},
+			map[string]any{"id": "msg_s", "time": map[string]any{"created": 1}, "type": "skill", "anything": []any{1, 2}},
+		}, "cursor": map[string]any{"previous": nil, "next": nil}})
+	})
+	got, err := c.Recent(context.Background(), testSession, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/api/session/" + testSession + "/message?limit=4&order=desc"; query != want {
+		t.Errorf("the request was %q, want %q", query, want)
+	}
+	want := []HistoryMessage{{ID: "msg_i", Kind: KindIdle, Outcome: OutcomeSucceeded}, {ID: "msg_a", Kind: KindAssistant, Finish: "stop"}, {ID: "msg_s", Kind: "skill"}}
+	if len(got) != len(want) {
+		t.Fatalf("Recent = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("message %d is %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	for name, body := range map[string]string{
+		"not json":                     `ok`,
+		"not a list":                   `{"data":{}}`,
+		"no data":                      `{}`,
+		"no id":                        `{"data":[{"type":"user"}]}`,
+		"no type":                      `{"data":[{"id":"msg_x"}]}`,
+		"a null entry":                 `{"data":[null]}`,
+		"an idle with no outcome":      `{"data":[{"id":"msg_x","type":"idle"}]}`,
+		"an idle with another outcome": `{"data":[{"id":"msg_x","type":"idle","outcome":"done"}]}`,
+		"more than asked for":          `{"data":[{"id":"1","type":"user"},{"id":"2","type":"user"},{"id":"3","type":"user"},{"id":"4","type":"user"},{"id":"5","type":"user"}]}`,
+		"a finish that is not text":    `{"data":[{"id":"msg_x","type":"assistant","finish":5}]}`,
+	} {
+		if got, err := serving(t, answering(200, body)).Recent(context.Background(), testSession, 4); err == nil {
+			t.Errorf("Recent of %s = %+v, want an error", name, got)
+		}
+	}
+	if _, err := serving(t, answering(404, `{"_tag":"SessionNotFoundError"}`)).Recent(context.Background(), testSession, 4); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Recent of an unknown session = %v", err)
+	}
+	if _, err := serving(t, answering(503, `{}`)).Recent(context.Background(), testSession, 4); !IsServerError(err) {
+		t.Errorf("Recent of a 503 = %v, want a server error", err)
+	}
+	if _, err := c.Recent(context.Background(), testSession, 0); err == nil {
+		t.Error("Recent with no limit returned no error")
+	}
+}

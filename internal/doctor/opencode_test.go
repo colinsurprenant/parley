@@ -222,7 +222,7 @@ func TestOpenCodeOtherThanTheVerifiedOneWarns(t *testing.T) {
 		if r.Level != Warn || !strings.Contains(r.Detail, tc.want) {
 			t.Errorf("%q: got %q, want a warning with %q", tc.out, r, tc.want)
 		}
-		for _, want := range []string{"It may work as it is", "Parley was " + OpenCodeVerifiedNote, "a newer 2.x is expected to work", "simulation mode"} {
+		for _, want := range []string{"It may work as it is", "Parley was " + OpenCodeVerifiedNote, "a newer 2.x is expected to work", "on a live model"} {
 			if !strings.Contains(r.Detail, want) {
 				t.Errorf("%q: %q does not say %q", tc.out, r, want)
 			}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/colinsurprenant/parley/internal/codex"
+	"github.com/colinsurprenant/parley/internal/opencode"
 	"github.com/colinsurprenant/parley/internal/state"
 )
 
@@ -27,13 +28,20 @@ import (
 // and the one thing the rollback deletes.
 //
 // What parley trusts here: opencode run is the human's own binary, but its output
-// is read as untrusted. A turn counts as done only on its own events, every one of
-// which must carry the id parley chose, never on an exit status alone.
+// is read as untrusted. Every event must carry the id parley chose and none may be
+// an error, and the run must exit 0. Whether the turn completed is not read from the
+// output: `opencode run --format json` can end before its last step_finish is
+// printed (it stops printing the steps once the session has gone idle, and loses
+// that race on real turns), so the server is asked, the way the pump finds it
+// (certifyTurn).
 
 const (
 	// openCodeTurnTimeout bounds the primer turn, as seatTurnTimeout bounds a
 	// Codex seat's: a primer is one short turn.
 	openCodeTurnTimeout = seatTurnTimeout
+	// openCodeCertifyPoll is how often the history is read again while the turn's
+	// idle marker is not there yet.
+	openCodeCertifyPoll = 250 * time.Millisecond
 	// maxOpenCodeEvents bounds the event types a refusal lists.
 	maxOpenCodeEvents = 12
 )
@@ -41,6 +49,11 @@ const (
 // openCodeDeleteTimeout bounds one `opencode session delete`; a variable only so
 // that a test can shorten it.
 var openCodeDeleteTimeout = time.Minute
+
+// openCodeCertifyTimeout bounds the wait for the server to show that the turn is
+// over, once the run has ended: the idle marker is written when the session goes
+// idle, which the run waited for. A variable only so that a test can shorten it.
+var openCodeCertifyTimeout = 15 * time.Second
 
 // openCodeSession is one OpenCode session to start on its primer.
 type openCodeSession struct {
@@ -59,9 +72,9 @@ type openCodeSession struct {
 
 // openCodeTurn is what a run's `--format json` events say. Every event is one
 // line, {"type":..,"sessionID":..,"part":{..}}: step_start and step_finish
-// bracket each model step (the finish carries a reason, "stop" when the model is
-// done and "tool-calls" when it goes on), text carries a message part, and error
-// carries an error object.
+// bracket each model step, text carries a message part, and error carries an error
+// object. The last step's finish may be missing (see the top of this file), so the
+// steps say nothing of whether the turn completed.
 type openCodeTurn struct {
 	// SessionID is the first id an event carried; Others are any different ones.
 	// NoID are the types of the events that carried none: such an event certifies
@@ -69,13 +82,7 @@ type openCodeTurn struct {
 	SessionID string
 	Others    []string
 	NoID      []string
-	// Steps is the number of step_finish events and LastReason the reason of the
-	// last of them; Open is whether a step has begun since the last one finished,
-	// which then has no reason: a turn whose last step never finished is not done.
-	Steps      int
-	LastReason string
-	Open       bool
-	// Answer is the text of the last step: what the session said last.
+	// Answer is the text after the last step began: what the session said last.
 	Answer string
 	// Failure is the first error event's message.
 	Failure   string
@@ -99,8 +106,7 @@ func parseOpenCodeTurn(out string) openCodeTurn {
 			Type      string `json:"type"`
 			SessionID string `json:"sessionID"`
 			Part      struct {
-				Text   string `json:"text"`
-				Reason string `json:"reason"`
+				Text string `json:"text"`
 			} `json:"part"`
 			Error json.RawMessage `json:"error"`
 		}
@@ -126,16 +132,10 @@ func parseOpenCodeTurn(out string) openCodeTurn {
 		switch ev.Type {
 		case "step_start":
 			answer = nil
-			t.LastReason = ""
-			t.Open = true
 		case "text":
 			if ev.Part.Text != "" {
 				answer = append(answer, ev.Part.Text)
 			}
-		case "step_finish":
-			t.Steps++
-			t.LastReason = ev.Part.Reason
-			t.Open = false
 		case "error":
 			if t.Failure == "" {
 				t.Failure = openCodeErrorText(ev.Error)
@@ -144,6 +144,31 @@ func parseOpenCodeTurn(out string) openCodeTurn {
 	}
 	t.Answer = strings.Join(answer, "\n")
 	return t
+}
+
+// certifyTurn asks OpenCode's service whether the session's turn completed. The
+// service is found the way the pump finds it, from its registration file, and its
+// history must show the turn ended in an idle marker with the outcome succeeded,
+// after an assistant message that finished with "stop". The service starts with
+// the run, so a service that is not there, or does not answer, or does not know the
+// session is a turn that is not shown to have completed. The password in the file
+// goes to the loopback address in it alone and is in no error.
+func certifyTurn(ctx context.Context, sid string) error {
+	path, err := opencode.ServicePath(os.Getenv)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, openCodeCertifyTimeout)
+	defer cancel()
+	d := opencode.Discovery{Path: path}
+	svc, c, _, err := d.Find(ctx)
+	if err != nil {
+		return fmt.Errorf("OpenCode's service could not be found to ask it (looked for %s): %w", path, err)
+	}
+	if err := opencode.CertifyTurn(ctx, c, sid, openCodeCertifyTimeout, openCodeCertifyPoll); err != nil {
+		return fmt.Errorf("OpenCode's service at %s: %w", opencode.RedactURL(svc.URL), err)
+	}
+	return nil
 }
 
 // openCodeErrorText is the message of an error event's error object, {"name":..,
@@ -236,20 +261,15 @@ func startOpenCodeSession(ctx context.Context, env setupEnv, c openCodeSession) 
 		return "", "", fmt.Errorf("opencode run for session %s: event(s) of type %s carry no sessionID, so the turn is not shown to be session %s's and not shown to have completed",
 			c.nick, strings.Join(turn.NoID, ", "), c.sid)
 	}
-	// A session is started on one whose first turn demonstrably completed. An exit
-	// 0 says opencode ended, not that the turn did: the events may have stopped
-	// short, or their end may be past the cap the output was read through.
+	// An output cut off at the cap may have cut off an error event with it.
 	if turn.Truncated {
 		return "", "", fmt.Errorf("opencode run for session %s: its output passed %d bytes and was cut off, so the turn is not shown to have completed", c.nick, maxExecOutput)
 	}
-	if turn.Steps == 0 {
-		return "", "", fmt.Errorf("opencode run for session %s: it exited 0, but its output has no step_finish event, so the turn is not shown to have completed; the events were: %s", c.nick, eventList(turn.Events))
-	}
-	if turn.Open {
-		return "", "", fmt.Errorf("opencode run for session %s: it exited 0, but its last step began and never finished (no step_finish follows the last step_start), so the turn is not shown to have completed", c.nick)
-	}
-	if turn.LastReason != "stop" {
-		return "", "", fmt.Errorf("opencode run for session %s: it exited 0, but its last step ended with reason %s and not \"stop\", so the turn is not shown to have completed", c.nick, clipQuoted(turn.LastReason))
+	// A session is started on one whose first turn demonstrably completed. An exit
+	// 0 and events without an error say opencode ended, not that the turn
+	// completed: the server's history does.
+	if err := certifyTurn(ctx, c.sid); err != nil {
+		return "", "", fmt.Errorf("opencode run for session %s: it exited 0 without an error event, but the turn is not shown to have completed: %w", c.nick, err)
 	}
 
 	rec, err := state.OpenSessionRecord(c.base, c.nick, c.stream)

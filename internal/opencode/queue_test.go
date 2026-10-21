@@ -1050,3 +1050,115 @@ func TestA4xxOtherThanA404DuringTheWaitStillStopsThePump(t *testing.T) {
 		t.Fatalf("a cursor %q was saved", c)
 	}
 }
+
+const interruptedLog = "the session was interrupted; holding deliveries until you send it something"
+
+// interruptedSession is the history of a session whose turn the human stopped: the
+// step the model was in is aborted, and the idle marker says interrupted.
+func interruptedSession(f *fakeOpenCode) {
+	f.addUser("the delivery the human interrupted")
+	f.addAssistant("error")
+	f.addIdle("interrupted")
+}
+
+// holding starts a pump over a session the human interrupted, with a delivery
+// waiting in the stream, and returns once the pump has said it is holding and has
+// looked again at the history a few times.
+func holding(t *testing.T, f *fakeOpenCode) *harness {
+	t.Helper()
+	interruptedSession(f)
+	h := newHarness(t, f, nil)
+	h.start()
+	h.peerSend(peerNick, "held behind the human's interrupt")
+	h.waitLog(interruptedLog)
+	reads := f.read("recent")
+	f.waitReads("recent", reads+3)
+	return h
+}
+
+// TestAnInterruptHoldsEveryDelivery: the session is idle on the list of active
+// sessions, but the human stopped it and has sent it nothing since, so a post would
+// start it again over their stop. Nothing is posted, the pump says so once however
+// long it holds, and keeps looking.
+func TestAnInterruptHoldsEveryDelivery(t *testing.T) {
+	f := newFake(t)
+	h := holding(t, f)
+	if n := len(f.postBodies()); n != 0 {
+		t.Fatalf("%d prompt(s) posted into a session the human interrupted", n)
+	}
+	if n := strings.Count(h.logs.String(), interruptedLog); n != 1 {
+		t.Fatalf("the hold was said %d times, want once:\n%s", n, h.logs.String())
+	}
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved by a pump that delivered nothing", c)
+	}
+}
+
+// TestAHumanPromptAndTheTurnThatEndedLetTheDeliveryGo: the human sends the session
+// something, it runs, and its idle marker says succeeded: the interrupt is behind it.
+func TestAHumanPromptAndTheTurnThatEndedLetTheDeliveryGo(t *testing.T) {
+	f := newFake(t)
+	h := holding(t, f)
+	f.set(func() {
+		f.msgs = append(f.msgs,
+			fakeMsg{id: "msg_u_human", text: "carry on"},
+			fakeMsg{id: "msg_a_human", kind: "assistant", finish: "stop"},
+			fakeMsg{id: "msg_i_human", kind: "idle", outcome: "succeeded"})
+	})
+	posts := f.waitPosts(1)
+	h.cursorPast("")
+	if !strings.Contains(postedText(t, posts[0].Body), "held behind the human's interrupt") {
+		t.Fatalf("the delivery is %q", postedText(t, posts[0].Body))
+	}
+	if n := strings.Count(h.logs.String(), interruptedLog); n != 1 {
+		t.Fatalf("the hold was said %d times, want once", n)
+	}
+}
+
+// TestANewerUserMessageAloneEndsTheHold: the human sent the session something and it
+// has not finished (or has not yet begun) its turn: the stop is no longer the last
+// word, whatever the marker before it says.
+func TestANewerUserMessageAloneEndsTheHold(t *testing.T) {
+	f := newFake(t)
+	h := holding(t, f)
+	f.addUser("carry on")
+	f.waitPosts(1)
+	h.cursorPast("")
+}
+
+// TestAnInterruptedMarkerBehindATurnThatWentThroughHoldsNothing: a marker that is
+// not the newest one is history.
+func TestAnInterruptedMarkerBehindATurnThatWentThroughHoldsNothing(t *testing.T) {
+	f := newFake(t)
+	interruptedSession(f)
+	f.addUser("the human, after the interrupt")
+	f.addAssistant("stop")
+	f.addIdle("succeeded")
+	h := newHarness(t, f, nil)
+	h.start()
+	h.peerSend(peerNick, "not held")
+	f.waitPosts(1)
+	h.cursorPast("")
+	if strings.Contains(h.logs.String(), interruptedLog) {
+		t.Fatalf("the pump held for a marker that was not the newest:\n%s", h.logs.String())
+	}
+}
+
+// TestAServiceInTroubleDuringTheCheckForAnInterruptIsHeldFor: a 503 on the read of
+// the history is the service starting, held for as a read of the idle wait is; the
+// delivery goes once it is well, and nothing was posted meanwhile.
+func TestAServiceInTroubleDuringTheCheckForAnInterruptIsHeldFor(t *testing.T) {
+	f := newFake(t)
+	f.set(func() { f.failNext = map[string][]int{"recent": {503, 500}} })
+	h := newHarness(t, f, nil)
+	h.start()
+	h.peerSend(peerNick, "sent as the service came up")
+	f.waitPosts(1)
+	h.cursorPast("")
+	if n := len(f.postBodies()); n != 1 {
+		t.Fatalf("%d posts, want the one", n)
+	}
+	if !strings.Contains(h.logs.String(), "OpenCode is not answering") {
+		t.Fatalf("the outage was not logged:\n%s", h.logs.String())
+	}
+}

@@ -135,9 +135,23 @@ func mkdirAllWith(dir string, push func(what string, do func() error)) error {
 			}
 			return fmt.Errorf("create %s: %w", d, err)
 		}
-		push("directory "+d, func() error { return removeEmptyDir(d) })
+		push("directory "+d, func() error { return removeMadeDir(d) })
 	}
 	return nil
+}
+
+// removeMadeDir is removeEmptyDir for a directory this run made, which says so when
+// the directory stays: a nick's directory keeps its lock file on purpose (see
+// lineAddRun.lockNick), so the rollback leaves it and must not report it removed.
+func removeMadeDir(d string) error {
+	err := os.Remove(d)
+	switch {
+	case err == nil, errors.Is(err, fs.ErrNotExist):
+		return nil
+	case errors.Is(err, syscall.ENOTEMPTY):
+		return leftAlone("it is not empty: it holds a lock file that is kept on purpose, or files that are not this run's")
+	}
+	return err
 }
 
 // removeEmptyDir removes a directory this run made if it is still empty; one

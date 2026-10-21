@@ -52,9 +52,25 @@ type ocServer struct {
 	// down makes every request be answered with a 500, a service that is up and
 	// broken.
 	down bool
+	// anySession makes every session id known, for the tests of `line add`, whose
+	// session id is parley's own and is not known to the test ahead of the run.
+	anySession bool
+	// history is the session's history the message list answers from, oldest first;
+	// historyReads is how many times it was asked for.
+	history      []ocHist
+	historyReads int
 }
 
 type ocMsg struct{ id, text string }
+
+// ocHist is one message of the history the fake lists: a user message, an assistant
+// message that finished as finish, or an idle marker with an outcome.
+type ocHist struct{ kind, finish, outcome string }
+
+// ocLiveTurn is the history of a real primer turn on OpenCode 2.1.0: the primer, two
+// steps of the assistant (the first went on to a tool, the last stopped), and the
+// idle marker with the outcome succeeded.
+var ocLiveTurn = []ocHist{{kind: "user"}, {kind: "assistant", finish: "tool-calls"}, {kind: "assistant", finish: "stop"}, {kind: "idle", outcome: "succeeded"}}
 
 // newOCServer is a server that wants no password, as a test of --port, or of a
 // recorded session, has no use for one.
@@ -173,7 +189,7 @@ func (s *ocServer) serve(w http.ResponseWriter, r *http.Request) {
 		ocJSON(w, http.StatusOK, map[string]any{"data": data})
 	case strings.HasPrefix(path, "/api/session/"):
 		id, tail, _ := strings.Cut(strings.TrimPrefix(path, "/api/session/"), "/")
-		if !s.known[id] {
+		if !s.known[id] && !s.anySession {
 			ocJSON(w, http.StatusNotFound, map[string]any{"_tag": "SessionNotFoundError", "sessionID": id, "message": "Session not found: " + id})
 			return
 		}
@@ -182,6 +198,8 @@ func (s *ocServer) serve(w http.ResponseWriter, r *http.Request) {
 			ocJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": id, "location": map[string]any{"directory": ocDir}}})
 		case tail == "prompt" && r.Method == http.MethodPost:
 			s.promptLocked(w, r, id)
+		case tail == "message" && r.Method == http.MethodGet:
+			s.historyLocked(w, r)
 		case strings.HasPrefix(tail, "message/") && r.Method == http.MethodGet:
 			mid := strings.TrimPrefix(tail, "message/")
 			for _, m := range s.msgs {
@@ -199,6 +217,33 @@ func (s *ocServer) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// historyLocked answers the list of the newest messages, newest first, for the one
+// query the front is allowed to make: order=desc and a limit.
+func (s *ocServer) historyLocked(w http.ResponseWriter, r *http.Request) {
+	s.historyReads++
+	q := r.URL.Query()
+	limit, err := strconv.Atoi(q.Get("limit"))
+	if q.Get("order") != "desc" || err != nil || limit < 1 || len(q) != 2 {
+		ocJSON(w, http.StatusBadRequest, map[string]any{"_tag": "InvalidRequestError", "message": "bad query"})
+		return
+	}
+	out := []map[string]any{}
+	for i := len(s.history) - 1; i >= 0 && len(out) < limit; i-- {
+		h := s.history[i]
+		e := map[string]any{"id": "msg_h" + strconv.Itoa(i), "time": map[string]any{"created": i + 1}}
+		switch h.kind {
+		case "user":
+			e["type"], e["text"], e["files"] = "user", "the primer", []any{}
+		case "assistant":
+			e["type"], e["agent"], e["content"], e["finish"] = "assistant", "build", []any{}, h.finish
+		case "idle":
+			e["type"], e["outcome"] = "idle", h.outcome
+		}
+		out = append(out, e)
+	}
+	ocJSON(w, http.StatusOK, map[string]any{"data": out, "cursor": map[string]any{}})
 }
 
 func (s *ocServer) promptLocked(w http.ResponseWriter, r *http.Request, session string) {
