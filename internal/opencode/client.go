@@ -156,6 +156,13 @@ func IsServerError(err error) bool {
 	return errors.As(err, &se) && se.Code >= http.StatusInternalServerError
 }
 
+// IsUnauthorized reports whether err is the server's 401: it refused the password the
+// request carried.
+func IsUnauthorized(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code == http.StatusUnauthorized
+}
+
 // IsDial reports whether err is a request that never reached the server.
 func IsDial(err error) bool {
 	var t *TransportError

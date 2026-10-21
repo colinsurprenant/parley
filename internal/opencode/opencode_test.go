@@ -358,9 +358,10 @@ func TestAnUnknownSessionStopsThePump(t *testing.T) {
 	}
 }
 
-// TestARefusedPostStopsThePumpAndIsNotRetried: a status the server answers a post
-// with other than 200 is not a post that got no answer, and sending it again would
-// not mend it.
+// TestARefusedPostStopsThePumpAndIsNotRetried: a refusal of the post (a 4xx other
+// than the 401 of a password that may have changed) is not a post that got no answer,
+// and sending it again would not mend it. A 5xx is not a refusal: it is the service
+// in trouble, and is held for (TestA5xxToThePostIsPostedAgainUnderTheSameID).
 func TestARefusedPostStopsThePumpAndIsNotRetried(t *testing.T) {
 	f := newFake(t)
 	srv := serving(t, func(w http.ResponseWriter, r *http.Request) {
@@ -372,7 +373,7 @@ func TestARefusedPostStopsThePumpAndIsNotRetried(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/message"):
 			writeJSON(w, 200, map[string]any{"data": []any{}, "cursor": map[string]any{}})
 		case strings.HasSuffix(r.URL.Path, "/prompt"):
-			writeJSON(w, 500, map[string]any{"_tag": "Boom"})
+			writeJSON(w, 400, map[string]any{"_tag": "InvalidRequestError"})
 		default:
 			writeJSON(w, 200, map[string]any{"data": map[string]any{"id": testSession, "location": map[string]any{"directory": testDir}}})
 		}
@@ -389,8 +390,8 @@ func TestARefusedPostStopsThePumpAndIsNotRetried(t *testing.T) {
 	h.peerSend(peerNick, "refused")
 	err = h.join()
 	var se *StatusError
-	if !errors.As(err, &se) || se.Code != 500 {
-		t.Fatalf("Run returned %v, want a 500 StatusError", err)
+	if !errors.As(err, &se) || se.Code != 400 {
+		t.Fatalf("Run returned %v, want a 400 StatusError", err)
 	}
 	if c := h.savedCursor(); c != "" {
 		t.Fatalf("a cursor %q was saved", c)

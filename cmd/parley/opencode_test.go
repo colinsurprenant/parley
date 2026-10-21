@@ -653,14 +653,19 @@ func TestOpencodeWithAPortThatNothingListensOnSaysWhatToRun(t *testing.T) {
 }
 
 // TestOpencodeWithAPortOfAServerThatDoesNotKnowTheSession: a server that answers,
-// and does not have the session, is told as that.
+// and does not have the session, is told as that, and the command that starts the
+// session is the TUI pointed at that server: a plain `opencode -s` would open it on
+// the background service, which is not the server the pump uses.
 func TestOpencodeWithAPortOfAServerThatDoesNotKnowTheSession(t *testing.T) {
 	srv := newOCServiceServer(t)
 	srv.set(func() { srv.password, srv.known = "", map[string]bool{} })
 	spec := "file:" + filepath.Join(resolvedTempDir(t), "chat.ndjson")
 	res := runParleyEnv(t, ocStateEnv(t, t.TempDir()), "", append([]string{"opencode"}, ocArgs(spec, "oc-a", srv.port(), ocSession, t.TempDir())...)...)
-	if res.code != 2 || !strings.Contains(res.stderr, "OpenCode on 127.0.0.1:") || !strings.Contains(res.stderr, "does not know session "+ocSession) || !strings.Contains(res.stderr, "opencode -s "+ocSession) {
+	if res.code != 2 || !strings.Contains(res.stderr, "OpenCode on 127.0.0.1:") || !strings.Contains(res.stderr, "does not know session "+ocSession) {
 		t.Fatalf("exit %d, stderr: %s", res.code, res.stderr)
+	}
+	if want := fmt.Sprintf("opencode --server http://127.0.0.1:%d -s %s", srv.port(), ocSession); !strings.Contains(res.stderr, want) || strings.Contains(res.stderr, "`opencode -s ") {
+		t.Fatalf("stderr does not name the TUI pointed at the server (%q), or names the one on the background service:\n%s", want, res.stderr)
 	}
 }
 

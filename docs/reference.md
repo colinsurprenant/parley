@@ -320,12 +320,19 @@ sessions persist). While the file is
 absent, or does not describe the server that answers (a stale file, or one written a
 moment before the service is up), or the server answers a 5xx (starting), the pump
 holds with its backoff and says so once; a 401 after the file was read again is the
-end of the pump, since the password is the service's own. The server is asked who it
+end of the pump, since the password is the service's own. A 401 on the client the
+pump already holds is not that: the service has probably restarted at the same
+address with a new password, so the file is read again and a client made of it (at
+most three times in a row), and only a 401 from the password just read ends the
+pump. The server is asked who it
 is, and held against the file, before the session is asked for, so a stale file
 reads as stale. With `--port` there is no file to read: the pump asks `GET /api/info`
 of `127.0.0.1:<port>` with the password from `OPENCODE_PASSWORD`, else
 `OPENCODE_SERVER_PASSWORD`, under the user `opencode`, and the failures are the
-server's own.
+server's own, except that a 5xx from `GET /api/info` or the session lookup is held
+for as a server that is starting. The session's TUI on such a server is `opencode
+--server http://127.0.0.1:<port> -s <ses_id>`, with `OPENCODE_PASSWORD` set to the
+password the server was started with.
 
 **Startup.** Before the stream is opened (so a refused start costs the nick no IRC
 account, no connection and no lock), the pump asks the server whether it is there,
@@ -360,7 +367,8 @@ their stop. The pump holds, logs once "the session was interrupted; holding
 deliveries until you send it something", and goes on checking at the idle backoff,
 keeping what arrives in the stream. The hold ends when the human sends the session
 something: a user message newer than the marker, or a newer idle marker whose
-outcome is not `interrupted`. A history that cannot be read is the server being
+outcome is not `interrupted`; the pump then logs "the session was sent something;
+delivering again". A history that cannot be read is the server being
 away (a transport failure or a 5xx is held for), and one that is not the shape
 this front reads stops the pump. The wait for an entry already in the inbox, below,
 is not changed by this. The pump makes the message id itself
@@ -379,8 +387,12 @@ under an id of its own next time. The delivery counts as
 made when `GET /api/session/<id>/message/<msg id>` answers 200 with a user message
 holding exactly those bytes, and only then is it committed and the cursor saved.
 The 30-second bound is the bound of this post: it ends when the server has admitted
-the prompt and its answer has been read, with the text that was posted. A 409 on the
-post is the server saying the id is in use for something else, and stops the pump.
+the prompt and its answer has been read, with the text that was posted. A 5xx to the post is
+the service in trouble, which may have admitted the entry before it failed: the post
+is repeated under the same id, after the attach, within the same bound. A 409 on the
+post is the server saying the id is in use for something else, and stops the pump,
+as does any other refusal that is a 4xx (a 401 from the password just found, a
+deleted session).
 If the answer holds other text than was posted (a plugin that rewrites prompts), the
 entry was admitted and will probably be taken up as the server holds it: the pump
 stops, commits nothing, and says so, and a restart sends the delivery again under a
@@ -409,7 +421,10 @@ the delivery as handed over and does not send it again. If the inbox is too larg
 read (it carries every queued entry's payload, attachments included, and the human's
 own large queued prompt can pass the 16 MiB bound), cancelled cannot be told from
 queued, so the pump says so once, names the attachments as the likely cause, and goes
-on asking for the message: it neither stops nor commits on it. A server that goes
+on asking for the message: it neither stops nor commits on it. The inbox is then
+asked for again on a schedule of its own, the idle backoff doubling up to its cap,
+while the message is asked for at the normal poll, and the reads are normal again as
+soon as the inbox can be read, so a cancel by the human is seen. A server that goes
 away during the wait, or answers a 5xx to a read of it (starting, restarting, in
 trouble), is held for with the backoff of the idle wait (finding the service again
 in discovery mode, and no read is made until the attach has succeeded), since the

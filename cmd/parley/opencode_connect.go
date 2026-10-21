@@ -40,6 +40,14 @@ func tui(session string) string {
 	return fmt.Sprintf("`opencode -s %s` in the session's checkout, which starts OpenCode's service if none runs", session)
 }
 
+// tuiOn is how a session is started in OpenCode on the server `opencode serve
+// --port` started, which the background service's `opencode -s` does not reach: the
+// TUI is pointed at the server, with the password it was started with in
+// OPENCODE_PASSWORD.
+func tuiOn(port int, session string) string {
+	return fmt.Sprintf("`opencode --server %s -s %s` in the session's checkout, with OPENCODE_PASSWORD set to the password the server was started with", opencode.LoopbackURL(port), session)
+}
+
 // discoverService is connectOpenCode without a port: OpenCode's background
 // service, from its service file. The server is asked who it is, and the answer
 // is held against the file, before the session is asked for, so that a file left
@@ -100,7 +108,7 @@ func probePort(ctx context.Context, getenv func(string) string, port int, sessio
 	case err == nil:
 		return &opencodeTarget{client: c, version: info.Version, where: where}, nil
 	case errors.Is(err, opencode.ErrSessionNotFound):
-		return nil, cfgErrf("OpenCode on %s does not know session %s: start OpenCode on it with %s: %v", where, session, tui(session), err)
+		return nil, cfgErrf("OpenCode on %s does not know session %s: start OpenCode on it with %s: %v", where, session, tuiOn(port, session), err)
 	case opencode.IsTransport(err):
 		return nil, cfgErrf("cannot reach OpenCode on %s: nothing answers there. Start the server with `opencode serve --port %d`, or run the pump without --port to use the background service, which %s: %v", where, port, tui(session), err)
 	}

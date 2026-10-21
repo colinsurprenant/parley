@@ -338,13 +338,14 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 	backoff := p.idlePoll
 	away, outage, held := true, false, false
+	reauths := 0
 	for {
 		if away {
 			if err := p.attach(ctx); err != nil {
 				if ctx.Err() != nil {
 					return waited, ctx.Err()
 				}
-				if IsTransport(err) {
+				if IsTransport(err) || IsServerError(err) {
 					if !outage {
 						p.logf("OpenCode is not answering (%v): holding deliveries in the stream and retrying", err)
 						outage = true
@@ -375,6 +376,9 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 		}
 		switch {
 		case err == nil && !busy && !stopped:
+			if held {
+				p.logf("the session was sent something; delivering again")
+			}
 			return waited, nil
 		case err == nil:
 			if stopped && !held {
@@ -390,6 +394,15 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 		case IsTransport(err), IsServerError(err):
 			p.logf("OpenCode is not answering (%v): holding deliveries in the stream and retrying", err)
 			waited, away, outage = true, true, true
+		case p.staleCredentials(err):
+			// The service restarted at the address the pump holds, with a new
+			// password: attach reads the file again, and a refusal of what it finds
+			// there is the end.
+			if reauths++; reauths > maxReauths {
+				return waited, p.refusedAgain(err)
+			}
+			p.logf("%v: the service refused the password the pump holds; reading its file again", err)
+			waited, away = true, true
 		default:
 			return waited, fmt.Errorf("session status: %w", err)
 		}
@@ -444,9 +457,11 @@ func (p *Pump) attach(ctx context.Context) error {
 }
 
 // attachWithin attaches, and again after every failure that is the server being
-// away, sleeping backoff between the tries and doubling it up to the pump's cap,
-// until the attach succeeds. It ends with the context, and with any failure that
-// waiting does not mend. No request to the session is made by it or between its
+// away or in trouble (no answer, or a 5xx), sleeping backoff between the tries and
+// doubling it up to the pump's cap, until the attach succeeds. It ends with the
+// context, and with any failure that waiting does not mend: a 401 from the
+// credentials it has just found, a version it refuses, a session the server does not
+// know, any other status. No request to the session is made by it or between its
 // tries, which is the point of it: the caller posts, or reads, only once it returns
 // nil.
 func (p *Pump) attachWithin(ctx context.Context, backoff time.Duration) error {
@@ -457,7 +472,7 @@ func (p *Pump) attachWithin(ctx context.Context, backoff time.Duration) error {
 			return nil
 		case ctx.Err() != nil:
 			return ctx.Err()
-		case !IsTransport(err):
+		case !IsTransport(err) && !IsServerError(err):
 			return err
 		}
 		if !p.sleep(ctx, backoff) {
@@ -483,6 +498,26 @@ func holdForService(err error) error {
 	return err
 }
 
+// maxReauths is how many times in a row a 401 on a client the pump found earlier is
+// answered by finding the service again, before the pump gives up on it: the
+// credentials it just found are the ones that were refused, and finding them again
+// would not mend that.
+const maxReauths = 3
+
+// staleCredentials is whether err is a 401 on the client the pump holds, in discovery
+// mode: the service has probably restarted at the same address with a new password,
+// which its file now holds, so the thing to do is to read the file again and make a
+// client of what it says. The same 401 on a client made from a file just read (an
+// attach that fails) is not this: that password is the service's own, and it was
+// refused. With a port the password is the human's, set once, and is never this.
+func (p *Pump) staleCredentials(err error) bool { return p.discovery != nil && IsUnauthorized(err) }
+
+// refusedAgain is the end of a pump whose service keeps refusing the password its
+// file holds.
+func (p *Pump) refusedAgain(err error) error {
+	return fmt.Errorf("the service refused the password in its file %d times in a row, each time after reading the file again: %w", maxReauths, err)
+}
+
 // awaitServer holds, after a request to the server got no answer or a 5xx, until
 // the server answers again, with the backoff the idle wait uses, and says so once
 // when the outage begins (l is what has been said of the wait). Whatever else fails
@@ -506,6 +541,7 @@ func (p *Pump) awaitServer(ctx context.Context, cause error, l *landing) error {
 // answered notes that the server answered a whole look at the delivery, which ends
 // an outage that awaitServer began.
 func (p *Pump) answered(l *landing) {
+	l.reauths = 0
 	if l.outage {
 		p.logf("OpenCode is back")
 		l.outage = false

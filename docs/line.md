@@ -314,7 +314,9 @@ expected to work.
    address as HTTP basic credentials under the user `opencode` and never printed, so
    there is nothing to set. For an `opencode serve --port <n>` you started yourself,
    give `--port <n>` and set `OPENCODE_PASSWORD` (or the older
-   `OPENCODE_SERVER_PASSWORD`) to the password it was started with.
+   `OPENCODE_SERVER_PASSWORD`) to the password it was started with; the session's
+   TUI on that server is `opencode --server http://127.0.0.1:<n> -s <session>`, with
+   the same password in `OPENCODE_PASSWORD`.
 
    The pump takes the same breaker as the other fronts and registers the nick. It
    posts each delivery into the session as one user message, the peer header
@@ -328,7 +330,8 @@ expected to work.
    (Esc in the TUI), the pump does not post into it until you send it something: it
    says "the session was interrupted; holding deliveries until you send it
    something" once, keeps what arrives in the stream, and delivers when you have
-   sent the session a prompt, or a turn that is not interrupted has ended. If a
+   sent the session a prompt, or a turn that is not interrupted has ended, saying
+   "the session was sent something; delivering again". If a
    delivery was already waiting in the session's inbox when you interrupted it, it
    stays parked there and the pump says so once and waits: after you resume the
    session it runs right after your turn, as its own user message, and the pump

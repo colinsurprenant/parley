@@ -103,6 +103,7 @@ func (p *Pump) handOff(ctx context.Context, id, text string) error {
 	// reached is whether any attempt may have reached the server. Until one has,
 	// a failure to connect sent nothing.
 	reached := false
+	reauths := 0
 	var last error
 	for {
 		err := p.client.Prompt(phase, p.session, id, text)
@@ -115,11 +116,22 @@ func (p *Pump) handOff(ctx context.Context, id, text string) error {
 			// The bound of the phase cut the request short, which may have been
 			// the one that reached the server.
 			reached = true
-		case IsTransport(err):
-			if !IsDial(err) {
+		case IsTransport(err) || IsServerError(err) || p.staleCredentials(err):
+			if IsTransport(err) {
+				if !IsDial(err) {
+					reached = true
+				} else if !reached {
+					return &notSentError{err: err}
+				}
+			} else if IsServerError(err) {
+				// A service in trouble may have admitted the entry before it failed:
+				// the same id makes the repeat safe, as for an answer that was lost.
 				reached = true
-			} else if !reached {
-				return &notSentError{err: err}
+			} else if reauths++; reauths > maxReauths {
+				// A 401 is a post that was refused before anything was admitted, so
+				// it is posted again under the same id once the service is found
+				// again; but not for ever.
+				return p.refusedAgain(err)
 			}
 			last = err
 			p.logf("%v: posting the delivery again under message id %s", err, id)
@@ -165,6 +177,13 @@ type landing struct {
 	// queued is whether the delivery was last seen in the inbox, which slows the
 	// polls.
 	queued bool
+	// inboxAt is when the inbox is next read, and inboxBackoff how long the last wait
+	// for it was: an inbox that is too large to read is asked for again on a
+	// schedule of its own, and not at every poll for the message.
+	inboxAt      time.Time
+	inboxBackoff time.Duration
+	// reauths is how many 401s in a row were answered by finding the service again.
+	reauths int
 }
 
 // landed waits for the delivery under id, which the server has admitted, to become
@@ -214,6 +233,11 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (don
 	if found {
 		return true, p.confirm(msg, text)
 	}
+	if time.Now().Before(l.inboxAt) {
+		// The inbox was too large to read a moment ago; the message is asked for at
+		// the normal poll and the inbox when its turn comes.
+		return false, nil
+	}
 	inbox, err := p.client.Inbox(ctx, p.session)
 	if IsTooLong(err) {
 		// The inbox carries every queued entry's payload, attachments included, and the
@@ -226,11 +250,14 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (don
 			l.tooLong = true
 		}
 		l.queued = false
+		l.inboxBackoff = nextBackoff(l.inboxBackoff, p.idlePoll, p.maxBackoff)
+		l.inboxAt = time.Now().Add(l.inboxBackoff)
 		return false, nil
 	}
 	if err != nil {
 		return false, p.readFailed(ctx, err, l)
 	}
+	l.inboxBackoff, l.inboxAt = 0, time.Time{}
 	var item *InboxItem
 	for i := range inbox {
 		if inbox[i].ID == id {
@@ -281,6 +308,14 @@ func (p *Pump) landedStep(ctx context.Context, id, text string, l *landing) (don
 	return false, nil
 }
 
+// nextBackoff doubles prev from first up to limit.
+func nextBackoff(prev, first, limit time.Duration) time.Duration {
+	if prev <= 0 {
+		return first
+	}
+	return min(prev*2, limit)
+}
+
 // readFailed decides what a failed read means. A shutdown ends the wait. A server
 // that is away, or answers a 5xx (starting, restarting, in trouble), is waited for,
 // since the delivery was admitted and the message may yet show, and stopping would
@@ -293,6 +328,13 @@ func (p *Pump) readFailed(ctx context.Context, err error, l *landing) error {
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case IsTransport(err), IsServerError(err):
+		return p.awaitServer(ctx, err, l)
+	case p.staleCredentials(err):
+		// The service restarted at the same address with a new password: it is found
+		// again from its file before another read, as for a server that was away.
+		if l.reauths++; l.reauths > maxReauths {
+			return p.refusedAgain(err)
+		}
 		return p.awaitServer(ctx, err, l)
 	case errors.Is(err, ErrSessionNotFound):
 		return fmt.Errorf("the delivery was posted to session %s, which the server no longer knows, so it cannot be confirmed; nothing was committed: %w", p.session, err)

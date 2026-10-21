@@ -1051,7 +1051,10 @@ func TestA4xxOtherThanA404DuringTheWaitStillStopsThePump(t *testing.T) {
 	}
 }
 
-const interruptedLog = "the session was interrupted; holding deliveries until you send it something"
+const (
+	interruptedLog = "the session was interrupted; holding deliveries until you send it something"
+	heldLiftedLog  = "the session was sent something; delivering again"
+)
 
 // interruptedSession is the history of a session whose turn the human stopped: the
 // step the model was in is aborted, and the idle marker says interrupted.
@@ -1113,6 +1116,9 @@ func TestAHumanPromptAndTheTurnThatEndedLetTheDeliveryGo(t *testing.T) {
 	if n := strings.Count(h.logs.String(), interruptedLog); n != 1 {
 		t.Fatalf("the hold was said %d times, want once", n)
 	}
+	if n := strings.Count(h.logs.String(), heldLiftedLog); n != 1 {
+		t.Fatalf("the end of the hold was said %d times, want once:\n%s", n, h.logs.String())
+	}
 }
 
 // TestANewerUserMessageAloneEndsTheHold: the human sent the session something and it
@@ -1124,6 +1130,9 @@ func TestANewerUserMessageAloneEndsTheHold(t *testing.T) {
 	f.addUser("carry on")
 	f.waitPosts(1)
 	h.cursorPast("")
+	if n := strings.Count(h.logs.String(), heldLiftedLog); n != 1 {
+		t.Fatalf("the end of the hold was said %d times, want once:\n%s", n, h.logs.String())
+	}
 }
 
 // TestAnInterruptedMarkerBehindATurnThatWentThroughHoldsNothing: a marker that is
@@ -1160,5 +1169,262 @@ func TestAServiceInTroubleDuringTheCheckForAnInterruptIsHeldFor(t *testing.T) {
 	}
 	if !strings.Contains(h.logs.String(), "OpenCode is not answering") {
 		t.Fatalf("the outage was not logged:\n%s", h.logs.String())
+	}
+}
+
+// awaitConsumed waits until the fake has answered every status queued for route.
+func awaitConsumed(t *testing.T, f *fakeOpenCode, h *harness, route string) {
+	t.Helper()
+	pending := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return len(f.failNext[route])
+	}
+	for deadline := time.Now().Add(testDeadline); pending() > 0; time.Sleep(pollInterval) {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the pump never made the %s request that was to fail; logs:\n%s", route, h.logs.String())
+		}
+	}
+}
+
+// notStopped fails the test if the pump has returned.
+func notStopped(t *testing.T, h *harness, what string) {
+	t.Helper()
+	select {
+	case <-h.done:
+		t.Fatalf("the pump stopped on %s: %v\n%s", what, h.runErr, h.logs.String())
+	default:
+	}
+}
+
+// TestA5xxDuringAReattachInPortModeIsHeldFor: a server that answers 5xx to the
+// question of who it is, or to the lookup of the session, is starting; the attach
+// that follows a request that failed (or that begins a delivery) is retried with its
+// backoff and not given up, in every wait: before the post, between a post that got
+// no answer and its repeat, and after admission. Nothing is posted twice under
+// another id, and the delivery commits once.
+func TestA5xxDuringAReattachInPortModeIsHeldFor(t *testing.T) {
+	t.Run("after admission", func(t *testing.T) {
+		f := newFake(t)
+		f.set(func() { f.busyOnPost = true })
+		h := newHarness(t, f, nil)
+		h.start()
+		h.peerSend(peerNick, "behind a turn, with the server starting")
+		f.waitPosts(1)
+		f.waitReads("inbox", 2)
+		f.set(func() {
+			f.failNext = map[string][]int{"message": {503}, "session": {500, 503}}
+			f.info503 = 2
+		})
+		awaitConsumed(t, f, h, "session")
+		notStopped(t, h, "a 5xx while it attached again")
+		f.set(func() { f.busyOnPost = false })
+		f.release()
+		h.cursorPast("")
+		if n := len(f.postBodies()); n != 1 {
+			t.Fatalf("%d posts, want the one", n)
+		}
+		if users := f.userTexts(); len(users) != 1 {
+			t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
+		}
+	})
+	t.Run("between a post that got no answer and its repeat", func(t *testing.T) {
+		f := newFake(t)
+		f.set(func() {
+			f.loseResponses = 1
+			f.onLose = func() { f.info503 = 2; f.failNext = map[string][]int{"session": {500}} }
+		})
+		h := newHarness(t, f, nil)
+		h.start()
+		h.peerSend(peerNick, "sent as the server restarted")
+		posts := f.waitPosts(2)
+		first, _, _ := post(t, posts[0].Body)
+		if again, _, _ := post(t, posts[1].Body); again != first {
+			t.Fatalf("the repeat was made under id %s, not the %s of the first post", again, first)
+		}
+		h.cursorPast("")
+		if users := f.userTexts(); len(users) != 1 {
+			t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
+		}
+	})
+	t.Run("before the post", func(t *testing.T) {
+		f := newFake(t)
+		f.set(func() {
+			f.info503 = 2
+			f.failNext = map[string][]int{"session": {500}}
+		})
+		h := newHarness(t, f, nil)
+		h.start()
+		h.peerSend(peerNick, "sent as the server came up")
+		f.waitPosts(1)
+		h.cursorPast("")
+		if !strings.Contains(h.logs.String(), "OpenCode is not answering") {
+			t.Fatalf("the outage was not logged:\n%s", h.logs.String())
+		}
+		if n := len(f.postBodies()); n != 1 {
+			t.Fatalf("%d posts, want the one", n)
+		}
+	})
+}
+
+// TestARestartAtTheSameAddressWithANewPasswordIsFoundAgain: the service restarted at
+// the url the pump holds, with another password, and no request failed to connect in
+// between. A 401 on the client the pump holds is not the end: the file is read again,
+// a client is made of what it says, and the wait goes on to commit the delivery once.
+func TestARestartAtTheSameAddressWithANewPasswordIsFoundAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake(t)
+	a.setPassword("old-password")
+	a.set(func() { a.busyOnPost = true })
+	writeFakeService(t, path, a, "old-password")
+	h := newDiscoveryHarness(t, path)
+	h.start()
+
+	h.peerSend(peerNick, "behind a turn, across a restart with a new password")
+	a.waitPosts(1)
+	a.waitReads("inbox", 2)
+	// The file is rewritten first, as the service writes it when it starts; then the
+	// password changes under the client the pump holds.
+	writeFakeService(t, path, a, "new-password")
+	a.setPassword("new-password")
+	h.waitLog("OpenCode is back")
+	notStopped(t, h, "a 401 after the service restarted with a new password")
+	a.set(func() { a.busyOnPost = false })
+	a.release()
+	h.cursorPast("")
+	if n := len(a.postBodies()); n != 1 {
+		t.Fatalf("%d posts, want the one", n)
+	}
+	if users := a.userTexts(); len(users) != 1 {
+		t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
+	}
+	if n := strings.Count(h.logs.String(), "OpenCode is not answering"); n != 1 {
+		t.Fatalf("the outage was said %d times, want once:\n%s", n, h.logs.String())
+	}
+	if strings.Contains(h.logs.String(), "old-password") || strings.Contains(h.logs.String(), "new-password") {
+		t.Fatalf("a password is in the log:\n%s", h.logs.String())
+	}
+}
+
+// TestA401FromTheCredentialsJustFoundIsStillFatalAfterAdmission: the file was read
+// again and its password is refused, so there is nothing to wait for.
+func TestA401FromTheCredentialsJustFoundIsStillFatalAfterAdmission(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake(t)
+	a.setPassword("right")
+	a.set(func() { a.busyOnPost = true })
+	writeFakeService(t, path, a, "right")
+	h := newDiscoveryHarness(t, path)
+	h.start()
+
+	h.peerSend(peerNick, "behind a turn")
+	a.waitPosts(1)
+	a.waitReads("inbox", 2)
+	a.setPassword("changed, and not in the file")
+	err := h.join()
+	if err == nil || !strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "right") || strings.Contains(err.Error(), "changed") {
+		t.Fatalf("Run returned %v", err)
+	}
+	if c := h.savedCursor(); c != "" {
+		t.Fatalf("a cursor %q was saved", c)
+	}
+}
+
+// TestA5xxToThePostIsPostedAgainUnderTheSameID: a service in trouble may or may not
+// have admitted the entry, which is what the id is for; the post is repeated, after
+// the attach, until the service is well, and does not stop the pump.
+func TestA5xxToThePostIsPostedAgainUnderTheSameID(t *testing.T) {
+	f := newFake(t)
+	f.set(func() { f.failNext = map[string][]int{"prompt": {503, 500}} })
+	h := newHarness(t, f, nil)
+	h.start()
+	h.peerSend(peerNick, "sent to a service in trouble")
+	f.waitPosts(1)
+	h.cursorPast("")
+	notStopped(t, h, "a 5xx to the post")
+	if n := len(f.postBodies()); n != 1 {
+		t.Fatalf("%d posts reached the session, want the one", n)
+	}
+	if n := strings.Count(h.logs.String(), "posting the delivery again under message id"); n != 2 {
+		t.Fatalf("the repeat was logged %d times, want 2:\n%s", n, h.logs.String())
+	}
+	if users := f.userTexts(); len(users) != 1 {
+		t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
+	}
+}
+
+// TestA401OnTheClientHeldBeforeAPostIsAnsweredByFindingTheServiceAgain: the post was
+// refused before anything was admitted, so it is made again under the same id once
+// the file has been read again.
+func TestA401OnTheClientHeldBeforeAPostIsAnsweredByFindingTheServiceAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake(t)
+	writeFakeService(t, path, a, "")
+	a.set(func() { a.failNext = map[string][]int{"prompt": {401}} })
+	h := newDiscoveryHarness(t, path)
+	h.start()
+	h.peerSend(peerNick, "refused once, then sent")
+	a.waitPosts(1)
+	h.cursorPast("")
+	if n := len(a.postBodies()); n != 1 {
+		t.Fatalf("%d posts reached the server, want the one that was not refused", n)
+	}
+	if users := a.userTexts(); len(users) != 1 {
+		t.Fatalf("the session holds %d copies of the delivery: %v", len(users), users)
+	}
+}
+
+// TestA401WhileWaitingForAnIdleSessionIsAnsweredByFindingTheServiceAgain: the check
+// of the session before a post meets a 401 on the client the pump holds.
+func TestA401WhileWaitingForAnIdleSessionIsAnsweredByFindingTheServiceAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "service.json")
+	a := newFake(t)
+	writeFakeService(t, path, a, "")
+	a.set(func() { a.failNext = map[string][]int{"active": {401}} })
+	h := newDiscoveryHarness(t, path)
+	h.start()
+	h.peerSend(peerNick, "after a refused check")
+	a.waitPosts(1)
+	h.cursorPast("")
+}
+
+// TestAnInboxTooLargeToReadIsAskedForOnASlowerScheduleThanTheMessage: the inbox read
+// that is over the bound backs off on its own, with the idle backoff up to its cap,
+// while the message by its id is asked for at the normal poll. Once the inbox is
+// readable again the reads are normal, so a cancel by the human is seen.
+func TestAnInboxTooLargeToReadIsAskedForOnASlowerScheduleThanTheMessage(t *testing.T) {
+	f := newFake(t)
+	f.set(func() {
+		f.busyOnPost = true
+		f.inboxTooLong = true
+	})
+	h := newHarness(t, f, func(c *Config) {
+		c.IdlePoll = 20 * time.Millisecond
+		c.MaxBackoff = 200 * time.Millisecond
+		c.ReadBackPoll = 5 * time.Millisecond
+	})
+	h.start()
+	h.peerSend(peerNick, "behind a turn, with an inbox too large to read")
+	f.waitPosts(1)
+	h.waitLog("is over the")
+	messages, inboxes := f.read("message"), f.read("inbox")
+	f.waitReads("message", messages+100)
+	gotMessages, gotInboxes := f.read("message")-messages, f.read("inbox")-inboxes
+	if gotInboxes*4 > gotMessages {
+		t.Fatalf("%d inbox reads against %d message reads over the same time: the inbox is not on a slower schedule", gotInboxes, gotMessages)
+	}
+	if n := strings.Count(h.logs.String(), "is over the"); n != 1 {
+		t.Fatalf("the oversized inbox was said %d times, want once", n)
+	}
+	notStopped(t, h, "an inbox over the bound")
+
+	// The inbox is readable again, and the human cancels the delivery: it is seen.
+	f.set(func() {
+		f.inboxTooLong = false
+		f.inbox = nil
+	})
+	h.cursorPast("")
+	if !strings.Contains(h.logs.String(), "was cancelled there") {
+		t.Fatalf("the cancel was not seen:\n%s", h.logs.String())
 	}
 }

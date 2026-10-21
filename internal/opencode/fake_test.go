@@ -115,7 +115,8 @@ type fakeOpenCode struct {
 	// reads it under, as an inbox full of attachments does.
 	inboxTooLong bool
 	reads        map[string]int
-	// failNext is, per route ("active", "inbox", "message"), the statuses the next
+	// failNext is, per route ("active", "inbox", "message", "recent", "session",
+	// "prompt"), the statuses the next
 	// reads are answered with in place of their answers: a service that is starting
 	// or in trouble.
 	failNext map[string][]int
@@ -372,6 +373,9 @@ func (f *fakeOpenCode) sessionLocked(w http.ResponseWriter, r *http.Request, tai
 	switch {
 	case tail == "" && r.Method == http.MethodGet:
 		f.reads["session"]++
+		if f.failedLocked(w, "session") {
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": testSession, "title": "t", "location": map[string]any{"directory": f.dir}}})
 	case tail == "inbox" && r.Method == http.MethodGet:
 		f.reads["inbox"]++
@@ -493,6 +497,9 @@ func (f *fakeOpenCode) messageLocked(w http.ResponseWriter, id string) {
 }
 
 func (f *fakeOpenCode) promptLocked(w http.ResponseWriter, r *http.Request) {
+	if f.failedLocked(w, "prompt") {
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	f.posts = append(f.posts, fakePost{Body: body, TurnRunning: f.busyLocked()})
 	// The body is held to the three fields this front sends: anything else is a
