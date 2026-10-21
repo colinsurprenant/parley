@@ -44,7 +44,7 @@ func cmdLineAdd(args []string) error {
 	}
 	nick := fs.String("nick", "", "required: the session's nick; it must differ from the chair's and from every other session's, without regard to ASCII case")
 	harness := fs.String("harness", "", "required: claude, codex or opencode (OpenCode 2)")
-	model := fs.String("model", "", "the model, at most 128 bytes of letters, digits and . _ - : / @ [ ] +; passed to codex exec -m for a Codex session, to opencode run -m (provider/model) for an OpenCode one, and printed as --model on a Claude one's launch line")
+	model := fs.String("model", "", "the model, at most 128 bytes of letters, digits and . _ - : / @ [ ] +; passed to codex exec -m for a Codex session, to opencode run -m (provider/model, or provider/model#variant) for an OpenCode one, and printed as --model on a Claude one's launch line")
 	checkout := fs.String("checkout", "", "required: the absolute path of the session's own checkout, an existing directory; a Claude session gets .mcp.json there, a Codex session .codex/config.toml, unless this line already wrote that file for another session of the checkout; an OpenCode session gets no file there")
 	stateDir := fs.String("state-dir", "", "the state directory the line was set up under (default $XDG_STATE_HOME/parley)")
 	pos, err := parseInterleaved(fs, args)
@@ -192,15 +192,15 @@ func planLineAdd(in lineAddInput) (*linePlan, error) {
 		if in.model == "" {
 			return nil, cfgErrf("--model is empty: name a model, or leave the flag out")
 		}
-		if err := checkModel("--model", in.model, in.model); err != nil {
-			return nil, err
-		}
-		// opencode run -m takes provider/model; anything else would make the session
-		// and then fail its turn.
+		// opencode run -m takes provider/model with an optional #variant; anything
+		// else would make the session and then fail its turn. Claude and Codex models
+		// never carry a '#'.
+		check := checkModel
 		if in.harness == harnessOpenCode {
-			if provider, model, ok := strings.Cut(in.model, "/"); !ok || provider == "" || model == "" {
-				return nil, cfgErrf("--model %q: an OpenCode model is provider/model, as `opencode models` lists them", in.model)
-			}
+			check = checkOpenCodeModel
+		}
+		if err := check("--model", in.model, in.model); err != nil {
+			return nil, err
 		}
 		p.model = in.model
 	}

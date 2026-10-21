@@ -728,6 +728,24 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 		{"a model that is not provider/model", 2, "provider/model", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			return b.ladd("demo", "build", "opencode", co, "--model", "sonnet"), nil
 		}},
+		{"a model with a variant and no slash", 2, "an OpenCode model is provider/model", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			return b.ladd("demo", "build", "opencode", co, "--model", "a#b"), nil
+		}},
+		{"a model with an empty variant", 2, "variant after '#' is empty", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			return b.ladd("demo", "build", "opencode", co, "--model", "a/b#"), nil
+		}},
+		{"a model with two variants", 2, "at most one '#'", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			return b.ladd("demo", "build", "opencode", co, "--model", "a/b#c#d"), nil
+		}},
+		{"a model with no provider", 2, "an OpenCode model is provider/model", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			return b.ladd("demo", "build", "opencode", co, "--model", "/b"), nil
+		}},
+		{"a model with no model", 2, "an OpenCode model is provider/model", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			return b.ladd("demo", "build", "opencode", co, "--model", "a/"), nil
+		}},
+		{"a model with a variant that holds a character no model has", 2, "holds ' '", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+			return b.ladd("demo", "build", "opencode", co, "--model", "a/b#c d"), nil
+		}},
 		{"a checkout that is not UTF-8", 2, "not valid UTF-8", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			return b.ladd("demo", "build", "opencode", co+"/bad\xffname"), nil
 		}},
@@ -780,6 +798,48 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 				t.Errorf("opencode was run: %v", b.calls(t))
 			}
 		})
+	}
+}
+
+// TestLineAddOpenCodeModelWithAVariantReachesTheRunVerbatim: OpenCode's `run -m` takes
+// provider/model#variant (its help says so), and line add passes it on as it was
+// given. The record keeps it, and a verb that reads the record back accepts it.
+func TestLineAddOpenCodeModelWithAVariantReachesTheRunVerbatim(t *testing.T) {
+	const model = "kimi-code-plan-global/k3#high"
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	co := b.gitCheckout(t, "co")
+	mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", co, "--model", model)...)
+	argv := b.call(t, 1)
+	found := false
+	for i, a := range argv {
+		if a == "-m" && i+1 < len(argv) && argv[i+1] == model {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the run was not given -m %s verbatim: %q", model, argv)
+	}
+	if got := sessionByNick(t, b.record(t, "demo"), "build").Model; got != model {
+		t.Errorf("the record keeps the model %q, want %q", got, model)
+	}
+	// The record is read and checked again by the verbs that take the session down.
+	mustLine(t, b.lineBench, b.ldrop("demo", "build")...)
+}
+
+// TestLineAddCodexAndClaudeModelsStillRefuseAHash: only an OpenCode model may carry a
+// '#', for its variant; no Claude or Codex model id has one.
+func TestLineAddCodexAndClaudeModelsStillRefuseAHash(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	co := b.gitCheckout(t, "co")
+	for _, harness := range []string{"claude", "codex"} {
+		for _, model := range []string{"opus#high", "gpt-5#high", "a/b#high"} {
+			res := runParleyEnvIn(t, "", b.env(), b.ladd("demo", harness, harness, co, "--model", model)...)
+			if res.code != 2 || !strings.Contains(res.stderr, `holds '#'`) {
+				t.Errorf("%s --model %s: exit %d, stderr:\n%s", harness, model, res.code, res.stderr)
+			}
+		}
 	}
 }
 

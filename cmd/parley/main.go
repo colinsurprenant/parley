@@ -462,7 +462,8 @@ verbs:
            state and temp path; the checkout is resolved, links and all, and
            the resolved path is the one recorded and printed); a state directory
            inside the checkout, and for a Codex or an OpenCode session $TMPDIR
-           inside it; an OpenCode model that is not provider/model; a Claude
+           inside it; an OpenCode model that is not provider/model or
+           provider/model#variant; a Claude
            session's .mcp.json that is in the
            checkout and is not the one this line wrote (the record holds the
            sha256 of its exact bytes), and a Codex session's
@@ -498,7 +499,7 @@ verbs:
            nothing else written in its checkout; it gets the same kind of reply
            directory as a Codex one, and a session started by opencode run
            --format json --title "parley line <id> <nick>" --session <id> in the
-           checkout (-m provider/model when a model is given), where <id> is an
+           checkout (-m provider/model, or provider/model#variant, when a model is given), where <id> is an
            id parley makes the way OpenCode does (ses_ and 26 letters or digits)
            and the run creates the session under, with the primer on stdin, so
            that it reaches the model as it is, stdin otherwise closed, the

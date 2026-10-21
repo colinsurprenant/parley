@@ -405,7 +405,11 @@ func (s lineSession) check(r lineRecord) error {
 		return fmt.Errorf("harness %q is none of claude, codex and opencode", s.Harness)
 	}
 	if s.Model != "" {
-		if err := checkModel("model", s.Model, s.Model); err != nil {
+		check := checkModel
+		if s.Harness == harnessOpenCode {
+			check = checkOpenCodeModel
+		}
+		if err := check("model", s.Model, s.Model); err != nil {
 			return err
 		}
 	}

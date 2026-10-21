@@ -468,7 +468,32 @@ func parseMember(flagName, raw string) (*seatPlan, error) {
 // carry: a control character, a leading '-', more than modelMax bytes, or a
 // character outside modelRune. flagName and raw name where it came from in the
 // refusal: the --seat or --peer value, or the --model value itself.
-func checkModel(flagName, raw, model string) error {
+func checkModel(flagName, raw, model string) error { return checkModelRunes(flagName, raw, model, "") }
+
+// checkOpenCodeModel is checkModel for an OpenCode model, which `opencode run -m`
+// takes as provider/model with an optional #variant (`opencode run --help`: "the
+// format provider/model#variant"), and which line add passes on verbatim. The shape
+// is held to: a provider and a model either side of the first '/', both not empty,
+// and, if there is a '#', one only, with a variant after it that is not empty. The
+// '#' is allowed here and nowhere else: no Claude or Codex model id has one. Whatever
+// else a model is held to, the control characters, the leading '-', the length and
+// the rune set, it is held to as well, the variant included.
+func checkOpenCodeModel(flagName, raw, model string) error {
+	base, variant, hasVariant := strings.Cut(model, "#")
+	if strings.Contains(variant, "#") {
+		return cfgErrf("%s %q: an OpenCode model has at most one '#', before its variant: provider/model#variant", flagName, raw)
+	}
+	if hasVariant && variant == "" {
+		return cfgErrf("%s %q: the variant after '#' is empty: an OpenCode model is provider/model, or provider/model#variant", flagName, raw)
+	}
+	if provider, name, ok := strings.Cut(base, "/"); !ok || provider == "" || name == "" {
+		return cfgErrf("%s %q: an OpenCode model is provider/model, or provider/model#variant, as `opencode models` lists them", flagName, raw)
+	}
+	return checkModelRunes(flagName, raw, model, "#")
+}
+
+// checkModelRunes is checkModel with the characters extra allowed besides modelRune.
+func checkModelRunes(flagName, raw, model, extra string) error {
 	switch {
 	case hasControl(model):
 		return cfgErrf("%s %q: the model holds a control character", flagName, raw)
@@ -477,9 +502,9 @@ func checkModel(flagName, raw, model string) error {
 	case len(model) > modelMax:
 		return cfgErrf("%s: the model is %d bytes, over the %d bytes of the longest model id a harness takes (it is kept in the record, printed into commands and handed to `codex exec -m`, `opencode run -m` and `claude --model`)", flagName, len(model), modelMax)
 	}
-	if i := strings.IndexFunc(model, func(r rune) bool { return !modelRune(r) }); i >= 0 {
+	if i := strings.IndexFunc(model, func(r rune) bool { return !modelRune(r) && !strings.ContainsRune(extra, r) }); i >= 0 {
 		bad, _ := utf8.DecodeRuneInString(model[i:])
-		return cfgErrf("%s %q: the model holds %q, which no model id of Claude Code, Codex or OpenCode has: a model is letters, digits and . _ - : / @ [ ] +", flagName, raw, bad)
+		return cfgErrf("%s %q: the model holds %q, which no model id of Claude Code, Codex or OpenCode has: a model is letters, digits and . _ - : / @ [ ] + (and, for OpenCode, one '#' before a variant)", flagName, raw, bad)
 	}
 	return nil
 }

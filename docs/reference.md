@@ -856,7 +856,9 @@ exit 2.
   `builds`, `lines`), the chair's, or already in the line, without regard to ASCII
   case; a harness other than `claude`, `codex` and `opencode`; a model over 128 bytes
   or outside letters, digits and `. _ - : / @ [ ] +`, or for OpenCode one that is
-  not `provider/model`; a checkout that is not an
+  not `provider/model` or `provider/model#variant` (the one model that may hold a
+  `#`, once, with a variant after it that is not empty; it is passed to `opencode run
+  -m` as it is, and `opencode run --help` documents the form); a checkout that is not an
   existing directory given by an absolute path, or that holds, or resolves to a
   path that holds, a `$` or a control character (the checkout is resolved, links
   and all, and the resolved path is the one recorded and printed); a checkout,

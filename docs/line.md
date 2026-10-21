@@ -126,8 +126,9 @@ expected to work.
    `--state-dir` only says where to find it. The command refuses, with exit 2 and
    nothing changed, a nick that is invalid, reserved (`tables`, `builds`, `lines`),
    the chair's, or already in the line, all without regard to ASCII case; a model
-   outside the charset `table new` takes (so `provider/model#variant`, which OpenCode
-   takes, is not given here), or for OpenCode one that is not `provider/model`; a `<checkout>` that is not an absolute, existing directory,
+   outside the charset `table new` takes, or for OpenCode one that is not `provider/model`
+   or `provider/model#variant` (a `#` is allowed for OpenCode only, with one variant
+   after it); a `<checkout>` that is not an absolute, existing directory,
    or holds a `$`; a Codex or OpenCode session with `$TMPDIR` inside the checkout;
    and a launch file that is in the checkout and is not this line's, below. A nick whose lock a running session or pump
    holds is refused with exit 1, and so is a machine that `parley doctor`'s static
@@ -250,7 +251,8 @@ expected to work.
      the way OpenCode does (`ses_` and 26 letters or digits, newest first) and
      starts the session with `opencode run --format json --title "parley line
      <channel> <nick>" --session <id>` in the checkout, `-m <model>` when you gave
-     one (an OpenCode model is `provider/model`, as `opencode models` lists them),
+     one (an OpenCode model is `provider/model`, as `opencode models` lists them, with an
+     optional `#variant`, passed on as it is),
      and a five-minute limit. The primer goes in on stdin, because `opencode run`
      wraps a message argument that holds spaces in double quotes and escapes the
      quotes in it, and the session's first message should be the primer as it is.
