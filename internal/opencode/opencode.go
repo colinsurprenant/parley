@@ -320,6 +320,22 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 	}
 }
 
+// What the pump says when it holds deliveries because of what the history shows, and
+// when it lets go: once each, by the kind of hold. A stop is the human's interrupt.
+// The undecided hold is a history that goes back further than the pump reads without a
+// user message or an idle marker, where releasing could start a session the human
+// stopped.
+var (
+	heldSaid = map[holdState]string{
+		holdStopped:   "the session was interrupted; holding deliveries until you send it something",
+		holdUndecided: fmt.Sprintf("the newest %d messages of the session hold neither a user message nor an idle marker, so it cannot be told whether you interrupted it; holding deliveries until it can", recentWindow*maxHistoryPages),
+	}
+	heldLifted = map[holdState]string{
+		holdStopped:   "the session was sent something; delivering again",
+		holdUndecided: "the session's history shows a user message or an idle marker again; delivering again",
+	}
+)
+
 // awaitIdle attaches to the server, then blocks until the session is idle, and
 // says whether it had to wait, which tells the caller that its delivery may be
 // stale. It attaches on every call and not only the first: the server that
@@ -333,11 +349,14 @@ func (p *Pump) deliver(ctx context.Context, from stream.Cursor, d *stream.Delive
 // A session the human interrupted is not idle for this purpose: if the newest idle
 // marker of its history says interrupted and no user message is newer, the human
 // stopped it and has sent it nothing since, and a delivery would start it again over
-// their stop. The pump holds, says so once, and goes on looking at the idle backoff
-// until the human sends the session something (humanStopped).
+// their stop. The history is read back until a user message or an idle marker decides
+// (checkStopped), however many other entries lie between; if it does not within the
+// bound, it is held as a stop is, since releasing could start a stopped session. The
+// pump holds, says so once, and goes on looking at the idle backoff until the human
+// sends the session something.
 func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 	backoff := p.idlePoll
-	away, outage, held := true, false, false
+	away, outage, held := true, false, holdNone
 	reauths := 0
 	for {
 		if away {
@@ -366,24 +385,22 @@ func (p *Pump) awaitIdle(ctx context.Context) (waited bool, err error) {
 			away, backoff = false, p.idlePoll
 		}
 		busy, err := p.client.Busy(ctx, p.session)
-		stopped := false
+		hold := holdNone
 		if err == nil && !busy {
 			// Idle is not yet free to post into: the human may have stopped the
 			// session, and a delivery now would start it again over their stop.
-			var recent []HistoryMessage
-			recent, err = p.client.Recent(ctx, p.session, recentWindow)
-			stopped = err == nil && humanStopped(recent)
+			hold, err = checkStopped(ctx, p.client, p.session)
 		}
 		switch {
-		case err == nil && !busy && !stopped:
-			if held {
-				p.logf("the session was sent something; delivering again")
+		case err == nil && !busy && hold == holdNone:
+			if held != holdNone {
+				p.logf("%s", heldLifted[held])
 			}
 			return waited, nil
 		case err == nil:
-			if stopped && !held {
-				p.logf("the session was interrupted; holding deliveries until you send it something")
-				held = true
+			if hold != holdNone && hold != held {
+				p.logf("%s", heldSaid[hold])
+				held = hold
 			}
 			waited = true
 			if !p.sleep(ctx, p.idlePoll) {

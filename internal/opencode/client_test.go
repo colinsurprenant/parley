@@ -398,7 +398,8 @@ func TestACanceledContextIsNotATransportError(t *testing.T) {
 }
 
 // TestRecent: the newest messages of the history are asked for newest first with a
-// limit, and read strictly for what the front decides on.
+// limit, the page after one with its cursor and no order, and both are read strictly
+// for what the front decides on.
 func TestRecent(t *testing.T) {
 	var query string
 	c := serving(t, func(w http.ResponseWriter, r *http.Request) {
@@ -407,14 +408,17 @@ func TestRecent(t *testing.T) {
 			map[string]any{"id": "msg_i", "time": map[string]any{"created": 3}, "type": "idle", "outcome": "succeeded"},
 			map[string]any{"id": "msg_a", "time": map[string]any{"created": 2}, "type": "assistant", "agent": "build", "content": []any{}, "finish": "stop"},
 			map[string]any{"id": "msg_s", "time": map[string]any{"created": 1}, "type": "skill", "anything": []any{1, 2}},
-		}, "cursor": map[string]any{"previous": nil, "next": nil}})
+		}, "cursor": map[string]any{"previous": "back", "next": "eyJpZCI6Im1zZ19zIn0"}})
 	})
-	got, err := c.Recent(context.Background(), testSession, 4)
+	got, next, err := c.Recent(context.Background(), testSession, 4, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := "/api/session/" + testSession + "/message?limit=4&order=desc"; query != want {
 		t.Errorf("the request was %q, want %q", query, want)
+	}
+	if next != "eyJpZCI6Im1zZ19zIn0" {
+		t.Errorf("next = %q, want the cursor of the page of older messages", next)
 	}
 	want := []HistoryMessage{{ID: "msg_i", Kind: KindIdle, Outcome: OutcomeSucceeded}, {ID: "msg_a", Kind: KindAssistant, Finish: "stop"}, {ID: "msg_s", Kind: "skill"}}
 	if len(got) != len(want) {
@@ -423,6 +427,24 @@ func TestRecent(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("message %d is %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	// A later page is asked for with its cursor and the limit, and no order.
+	if _, _, err := c.Recent(context.Background(), testSession, 4, "a cursor/with+odd=chars"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/api/session/" + testSession + "/message?cursor=a+cursor%2Fwith%2Bodd%3Dchars&limit=4"; query != want {
+		t.Errorf("the request for a later page was %q, want %q", query, want)
+	}
+
+	// A cursor that is null, or absent, is the start of the history.
+	for name, body := range map[string]string{
+		"a null next": `{"data":[],"cursor":{"previous":null,"next":null}}`,
+		"no cursor":   `{"data":[]}`,
+		"no next":     `{"data":[],"cursor":{}}`,
+	} {
+		if _, next, err := serving(t, answering(200, body)).Recent(context.Background(), testSession, 4, ""); err != nil || next != "" {
+			t.Errorf("Recent with %s = %q, %v; want no next cursor", name, next, err)
 		}
 	}
 
@@ -437,18 +459,24 @@ func TestRecent(t *testing.T) {
 		"an idle with another outcome": `{"data":[{"id":"msg_x","type":"idle","outcome":"done"}]}`,
 		"more than asked for":          `{"data":[{"id":"1","type":"user"},{"id":"2","type":"user"},{"id":"3","type":"user"},{"id":"4","type":"user"},{"id":"5","type":"user"}]}`,
 		"a finish that is not text":    `{"data":[{"id":"msg_x","type":"assistant","finish":5}]}`,
+		"a cursor that is not text":    `{"data":[],"cursor":{"next":5}}`,
+		"a cursor that is no object":   `{"data":[],"cursor":"next"}`,
+		"a cursor that is too long":    `{"data":[],"cursor":{"next":"` + strings.Repeat("x", 2000) + `"}}`,
 	} {
-		if got, err := serving(t, answering(200, body)).Recent(context.Background(), testSession, 4); err == nil {
-			t.Errorf("Recent of %s = %+v, want an error", name, got)
+		if got, next, err := serving(t, answering(200, body)).Recent(context.Background(), testSession, 4, ""); err == nil {
+			t.Errorf("Recent of %s = %+v, %q; want an error", name, got, next)
 		}
 	}
-	if _, err := serving(t, answering(404, `{"_tag":"SessionNotFoundError"}`)).Recent(context.Background(), testSession, 4); !errors.Is(err, ErrSessionNotFound) {
+	if _, _, err := serving(t, answering(404, `{"_tag":"SessionNotFoundError"}`)).Recent(context.Background(), testSession, 4, ""); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Recent of an unknown session = %v", err)
 	}
-	if _, err := serving(t, answering(503, `{}`)).Recent(context.Background(), testSession, 4); !IsServerError(err) {
+	if _, _, err := serving(t, answering(503, `{}`)).Recent(context.Background(), testSession, 4, ""); !IsServerError(err) {
 		t.Errorf("Recent of a 503 = %v, want a server error", err)
 	}
-	if _, err := c.Recent(context.Background(), testSession, 0); err == nil {
+	if _, _, err := c.Recent(context.Background(), testSession, 0, ""); err == nil {
 		t.Error("Recent with no limit returned no error")
+	}
+	if _, _, err := c.Recent(context.Background(), testSession, 4, strings.Repeat("x", 2000)); err == nil {
+		t.Error("Recent with a cursor over the bound returned no error")
 	}
 }

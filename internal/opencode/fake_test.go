@@ -115,6 +115,9 @@ type fakeOpenCode struct {
 	// reads it under, as an inbox full of attachments does.
 	inboxTooLong bool
 	reads        map[string]int
+	// cursorAlways keeps the next cursor of the history list non-null at its start,
+	// where the live server leaves it and the page after is empty.
+	cursorAlways bool
 	// failNext is, per route ("active", "inbox", "message", "recent", "session",
 	// "prompt"), the statuses the next
 	// reads are answered with in place of their answers: a service that is starting
@@ -425,17 +428,38 @@ func (f *fakeOpenCode) failedLocked(w http.ResponseWriter, route string) bool {
 	return true
 }
 
-// recentLocked answers the list of the newest messages: only the one query the
-// front is allowed to make, order=desc and a limit, and newest first.
+// recentLocked answers a page of the history, newest first: the newest messages for
+// order=desc and a limit, and the ones after a page for a cursor and a limit (the
+// server's rule is that a cursor is not combined with an order). The cursor is the
+// index of the next older message. A page that leaves none behind has a null next
+// cursor, unless the test wants the cursor kept at the start of the history, as the
+// live server keeps it.
 func (f *fakeOpenCode) recentLocked(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, err := strconv.Atoi(q.Get("limit"))
-	if q.Get("order") != "desc" || err != nil || limit < 1 || len(q) != 2 {
+	bad := func() {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"_tag": "InvalidRequestError", "message": "bad query"})
+	}
+	if err != nil || limit < 1 || len(q) != 2 {
+		bad()
+		return
+	}
+	start := len(f.msgs) - 1
+	switch {
+	case q.Has("cursor"):
+		n, err := strconv.Atoi(strings.TrimPrefix(q.Get("cursor"), "c"))
+		if err != nil || !strings.HasPrefix(q.Get("cursor"), "c") || n >= len(f.msgs) {
+			bad()
+			return
+		}
+		start = n
+	case q.Get("order") != "desc":
+		bad()
 		return
 	}
 	out := []map[string]any{}
-	for i := len(f.msgs) - 1; i >= 0 && len(out) < limit; i-- {
+	i := start
+	for ; i >= 0 && len(out) < limit; i-- {
 		m := f.msgs[i]
 		e := map[string]any{"id": m.id, "time": map[string]any{"created": i + 1}, "metadata": map[string]any{}}
 		switch m.kind {
@@ -445,10 +469,24 @@ func (f *fakeOpenCode) recentLocked(w http.ResponseWriter, r *http.Request) {
 			e["type"], e["agent"], e["content"], e["finish"] = "assistant", "build", []any{}, m.finish
 		case "idle":
 			e["type"], e["outcome"] = "idle", m.outcome
+		default:
+			e["type"] = m.kind
 		}
 		out = append(out, e)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": out, "cursor": map[string]any{}})
+	var next any
+	if i >= 0 || f.cursorAlways {
+		next = "c" + strconv.Itoa(i)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": out, "cursor": map[string]any{"previous": nil, "next": next}})
+}
+
+// addOther puts a message of a kind the front reads past (a skill, a shell) into the
+// history.
+func (f *fakeOpenCode) addOther(kind string) {
+	f.set(func() {
+		f.msgs = append(f.msgs, fakeMsg{id: fmt.Sprintf("msg_o%d", len(f.msgs)), kind: kind})
+	})
 }
 
 // addAssistant puts an assistant message that finished as finish into the history,

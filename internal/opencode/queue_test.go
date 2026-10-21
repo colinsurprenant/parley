@@ -1428,3 +1428,118 @@ func TestAnInboxTooLargeToReadIsAskedForOnASlowerScheduleThanTheMessage(t *testi
 		t.Fatalf("the cancel was not seen:\n%s", h.logs.String())
 	}
 }
+
+// pageOfOthers is more than a page of entries the front reads past, as a session that
+// loaded skills or ran shell commands leaves behind.
+func pageOfOthers(f *fakeOpenCode, n int) {
+	for i := 0; i < n; i++ {
+		f.addOther("skill")
+	}
+}
+
+// holdingFor starts a pump over the session as the caller left it, with a delivery
+// waiting in the stream, and returns once the pump has said line and has looked at the
+// history a few times more.
+func holdingFor(t *testing.T, f *fakeOpenCode, line string) *harness {
+	t.Helper()
+	h := newHarness(t, f, nil)
+	h.start()
+	h.peerSend(peerNick, "held behind the human's interrupt")
+	h.waitLog(line)
+	reads := f.read("recent")
+	f.waitReads("recent", reads+3)
+	return h
+}
+
+// TestAnInterruptedMarkerBehindAPageOfOtherEntriesIsHeld: the newest messages are
+// entries of kinds the front reads past, more than a page of them, and the interrupted
+// marker is behind them. A pump that took the window for the whole of it would release
+// the delivery and start a session the human stopped; it reads back to the marker.
+func TestAnInterruptedMarkerBehindAPageOfOtherEntriesIsHeld(t *testing.T) {
+	f := newFake(t)
+	interruptedSession(f)
+	pageOfOthers(f, 6)
+	h := holdingFor(t, f, interruptedLog)
+	if n := len(f.postBodies()); n != 0 {
+		t.Fatalf("%d prompt(s) posted into a session the human interrupted", n)
+	}
+	if n := strings.Count(h.logs.String(), interruptedLog); n != 1 {
+		t.Fatalf("the hold was said %d times, want once:\n%s", n, h.logs.String())
+	}
+	if strings.Contains(h.logs.String(), "neither a user message nor an idle marker") {
+		t.Fatalf("a history that holds the marker was called undecided:\n%s", h.logs.String())
+	}
+}
+
+// TestAUserMessageBehindAPageOfOtherEntriesReleasesTheDelivery: the human sent the
+// session something after the interrupt, and entries of other kinds came after that.
+func TestAUserMessageBehindAPageOfOtherEntriesReleasesTheDelivery(t *testing.T) {
+	f := newFake(t)
+	interruptedSession(f)
+	f.addUser("carry on")
+	pageOfOthers(f, 5)
+	h := newHarness(t, f, nil)
+	h.start()
+	h.peerSend(peerNick, "released")
+	f.waitPosts(1)
+	h.cursorPast("")
+	if strings.Contains(h.logs.String(), interruptedLog) {
+		t.Fatalf("the pump held for a marker behind a newer user message:\n%s", h.logs.String())
+	}
+}
+
+// TestAHistoryThatStaysInconclusivePastTheBoundIsHeldAndSaidOnce: more entries of
+// other kinds than the pump reads back, with the interrupted marker behind them all.
+// It cannot tell, and releasing could start a stopped session, so it holds, says so
+// once, and lets go when a user message shows.
+func TestAHistoryThatStaysInconclusivePastTheBoundIsHeldAndSaidOnce(t *testing.T) {
+	const undecidedLog = "hold neither a user message nor an idle marker"
+	f := newFake(t)
+	interruptedSession(f)
+	pageOfOthers(f, recentWindow*maxHistoryPages+5)
+	h := newHarness(t, f, nil)
+	h.start()
+	h.peerSend(peerNick, "held behind an inconclusive history")
+	h.waitLog(undecidedLog)
+	reads := f.read("recent")
+	f.waitReads("recent", reads+2*maxHistoryPages)
+	if n := len(f.postBodies()); n != 0 {
+		t.Fatalf("%d prompt(s) posted into a session the pump cannot tell about", n)
+	}
+	if n := strings.Count(h.logs.String(), undecidedLog); n != 1 {
+		t.Fatalf("the hold was said %d times, want once:\n%s", n, h.logs.String())
+	}
+	if reads < maxHistoryPages {
+		t.Fatalf("the pump gave up after %d page(s), want %d before it held", reads, maxHistoryPages)
+	}
+	notStopped(t, h, "a history it cannot tell")
+
+	// A user message shows at the top of it, and the hold lifts.
+	f.addUser("carry on")
+	f.waitPosts(1)
+	h.cursorPast("")
+	if !strings.Contains(h.logs.String(), "shows a user message or an idle marker again") {
+		t.Fatalf("the end of the hold was not said:\n%s", h.logs.String())
+	}
+}
+
+// TestAHistoryWithNeitherMarkerThatEndsIsNotHeld: a history that ends, however many
+// pages it takes to see that, has no interrupt in it. The page after the last may be
+// empty with the cursor kept, as the live server leaves it, or have no cursor.
+func TestAHistoryWithNeitherMarkerThatEndsIsNotHeld(t *testing.T) {
+	for name, keep := range map[string]bool{"a null cursor at the start": false, "a cursor kept at the start": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			f.set(func() { f.cursorAlways = keep })
+			pageOfOthers(f, 6)
+			h := newHarness(t, f, nil)
+			h.start()
+			h.peerSend(peerNick, "nothing to hold for")
+			f.waitPosts(1)
+			h.cursorPast("")
+			if strings.Contains(h.logs.String(), "holding deliveries") {
+				t.Fatalf("the pump held for a history with no marker:\n%s", h.logs.String())
+			}
+		})
+	}
+}

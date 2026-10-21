@@ -359,11 +359,16 @@ pump still waits for an idle session before it posts (`GET /api/session/active`
 lists the sessions in a turn; one it does not list is idle), so that what arrived
 meanwhile goes over as one delivery, but a post that lands in a turn nobody
 expected is not folded into it. An idle session is not yet free to post into: an
-interrupt holds everything. Before each post the pump reads the newest messages
-(`GET /api/session/<id>/message?order=desc&limit=4`), and if the newest idle marker
-has the outcome `interrupted` and no user message is newer than it, the human
-stopped the session and has sent it nothing since; a post would start it again over
-their stop. The pump holds, logs once "the session was interrupted; holding
+interrupt holds everything. Before each post the pump reads the history back from
+the newest message, four at a time (`GET /api/session/<id>/message?order=desc&limit=4`,
+then `?cursor=<cursor.next>&limit=4` for older ones, at most ten pages), until it
+meets a user message or an idle marker, whatever other entries (a skill, a shell)
+lie between. If that is an idle marker with the outcome `interrupted`, with no user
+message newer than it, the human stopped the session and has sent it nothing since;
+a post would start it again over their stop. A history that ends before either
+marker has no interrupt in it, and one longer than the ten pages without either is
+inconclusive: it is held for as a stop is, with a line of its own, logged once, that
+says the pump cannot tell. The pump holds, logs once "the session was interrupted; holding
 deliveries until you send it something", and goes on checking at the idle backoff,
 keeping what arrives in the stream. The hold ends when the human sends the session
 something: a user message newer than the marker, or a newer idle marker whose
@@ -906,10 +911,12 @@ exit 2.
   `step_finish` may never be printed (the turn is `step_start`, `tool_use`,
   `step_finish`, `step_start`, `text`, and exit 0). The server says. `line add` finds
   the service the way the pump does (from its file, held to the same checks) and
-  asks `GET /api/session/<id>/message?order=desc&limit=4`: the newest message must
-  be an idle marker with the outcome `succeeded`, and the nearest assistant message
-  before it must have finished with `stop`. While the history does not yet end in an
-  idle marker it is read again, for up to 15 seconds. An outcome of `interrupted` or
+  reads the history back, as the pump does (four messages a page, at most ten
+  pages): the newest idle marker must have the outcome `succeeded`, with only entries
+  of other kinds newer than it, and the nearest assistant message before it must have
+  finished with `stop`. While the history does not yet show the turn over (a user or
+  assistant message newer than the marker, or no marker) it is read again, for up to
+  15 seconds. An outcome of `interrupted` or
   `failed`, a last step that went on, a service that cannot be found or reached or
   does not know the session, or an answer that is not the shape this front reads,
   fails the add, with the reads bounded and the password in no message. The session is registered for deletion (`opencode session

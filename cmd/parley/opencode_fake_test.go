@@ -219,18 +219,33 @@ func (s *ocServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// historyLocked answers the list of the newest messages, newest first, for the one
-// query the front is allowed to make: order=desc and a limit.
+// historyLocked answers a page of the history, newest first, for the two queries the
+// front is allowed to make: order=desc and a limit for the newest, and a cursor and a
+// limit (no order) for the page after one. The cursor is the index of the next older
+// message, and null when there is none.
 func (s *ocServer) historyLocked(w http.ResponseWriter, r *http.Request) {
 	s.historyReads++
 	q := r.URL.Query()
 	limit, err := strconv.Atoi(q.Get("limit"))
-	if q.Get("order") != "desc" || err != nil || limit < 1 || len(q) != 2 {
+	start := len(s.history) - 1
+	switch {
+	case err != nil || limit < 1 || len(q) != 2:
+		ocJSON(w, http.StatusBadRequest, map[string]any{"_tag": "InvalidRequestError", "message": "bad query"})
+		return
+	case q.Has("cursor"):
+		n, err := strconv.Atoi(strings.TrimPrefix(q.Get("cursor"), "c"))
+		if err != nil || n >= len(s.history) {
+			ocJSON(w, http.StatusBadRequest, map[string]any{"_tag": "InvalidRequestError", "message": "bad cursor"})
+			return
+		}
+		start = n
+	case q.Get("order") != "desc":
 		ocJSON(w, http.StatusBadRequest, map[string]any{"_tag": "InvalidRequestError", "message": "bad query"})
 		return
 	}
 	out := []map[string]any{}
-	for i := len(s.history) - 1; i >= 0 && len(out) < limit; i-- {
+	i := start
+	for ; i >= 0 && len(out) < limit; i-- {
 		h := s.history[i]
 		e := map[string]any{"id": "msg_h" + strconv.Itoa(i), "time": map[string]any{"created": i + 1}}
 		switch h.kind {
@@ -240,10 +255,16 @@ func (s *ocServer) historyLocked(w http.ResponseWriter, r *http.Request) {
 			e["type"], e["agent"], e["content"], e["finish"] = "assistant", "build", []any{}, h.finish
 		case "idle":
 			e["type"], e["outcome"] = "idle", h.outcome
+		default:
+			e["type"] = h.kind
 		}
 		out = append(out, e)
 	}
-	ocJSON(w, http.StatusOK, map[string]any{"data": out, "cursor": map[string]any{}})
+	var next any
+	if i >= 0 {
+		next = "c" + strconv.Itoa(i)
+	}
+	ocJSON(w, http.StatusOK, map[string]any{"data": out, "cursor": map[string]any{"previous": nil, "next": next}})
 }
 
 func (s *ocServer) promptLocked(w http.ResponseWriter, r *http.Request, session string) {

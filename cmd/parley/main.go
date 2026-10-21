@@ -195,10 +195,12 @@ verbs:
            to resume a session an interrupt parked (it never steers an entry),
            and treating an entry the human cancelled as handed over; it commits
            only then, so a crash re-delivers and does not drop. An interrupt
-           holds everything: before it posts, the pump reads the newest messages,
-           and while the newest idle marker says the human interrupted the
-           session and no user message is newer, it holds (saying so once) until
-           the human sends the session something. Before it opens
+           holds everything: before it posts, the pump reads the history back to
+           the last user message or idle marker, and while that marker says the
+           human interrupted the session and no user message is newer, it holds
+           (saying so once) until the human sends the session something; a
+           history it cannot read back to either within 40 messages is held for
+           too. Before it opens
            anything, the pump checks that the server answers, is OpenCode 2
            (parley was {{opencode-verified}}; a 1 is refused with the way to
            OpenCode 2), and knows the session; a failure exits 2 and
@@ -505,7 +507,7 @@ verbs:
            an error. The events cannot show that the turn completed (the run can
            end before it has printed its last step_finish), so OpenCode's service,
            found from its file as the pump finds it, is asked: the session's
-           history must end in an idle marker with the outcome succeeded after an
+           history's newest idle marker must have the outcome succeeded, after an
            assistant message that finished with stop. The id is recorded
            in the opencode-session file --session auto reads. A failure or an
            interrupt takes down what the run made, a started Codex thread

@@ -101,9 +101,12 @@ type Client interface {
 	Message(ctx context.Context, session, id string) (msg UserMessage, found bool, err error)
 	// Inbox returns the session's inbox, oldest first.
 	Inbox(ctx context.Context, session string) ([]InboxItem, error)
-	// Recent returns the newest messages of the session's history, newest first and
-	// at most limit of them, whatever their kind.
-	Recent(ctx context.Context, session string, limit int) ([]HistoryMessage, error)
+	// Recent returns a page of the session's history, newest first and at most limit
+	// of them, whatever their kind: the newest ones when cursor is empty, and the
+	// ones after the previous page's when it is the next cursor that page returned.
+	// next is the cursor of the page of older messages, empty when the server has
+	// none to give.
+	Recent(ctx context.Context, session string, limit int, cursor string) (messages []HistoryMessage, next string, err error)
 }
 
 // ErrConflict is the server's 409: the request names something that is not in
@@ -690,28 +693,44 @@ func (c *HTTPClient) Inbox(ctx context.Context, session string) ([]InboxItem, er
 	return out, nil
 }
 
-// Recent implements Client: GET /api/session/{id}/message?order=desc&limit=n,
-// which answers {"data":[...],"cursor":{...}} with the newest messages first. Only
-// what the front decides on is read, and read strictly: every entry has an id and a
-// kind, an idle marker has an outcome that is one of the three there are, and an
-// assistant message has a finish that is text when it has one.
-func (c *HTTPClient) Recent(ctx context.Context, session string, limit int) ([]HistoryMessage, error) {
+// maxCursor bounds the opaque cursor of a page of the history, which is passed back
+// to the server as it came.
+const maxCursor = 1024
+
+// Recent implements Client: GET /api/session/{id}/message?order=desc&limit=n for
+// the newest messages, and ?cursor=c&limit=n, with no order (the server's rule), for
+// the page after the one whose cursor.next is c. It answers
+// {"data":[...],"cursor":{"previous","next"}} with the messages newest first, and
+// cursor.next leads to older ones; it is null, or still there for a page that turns
+// out empty, at the start of the history. Only what the front decides on is read,
+// and read strictly: every entry has an id and a kind, an idle marker has an outcome
+// that is one of the three there are, an assistant message has a finish that is text
+// when it has one, and a cursor is text of a bounded length when it is not null.
+func (c *HTTPClient) Recent(ctx context.Context, session string, limit int, cursor string) ([]HistoryMessage, string, error) {
 	if limit < 1 {
-		return nil, fmt.Errorf("opencode: a read of the history asks for at least one message, not %d", limit)
+		return nil, "", fmt.Errorf("opencode: a read of the history asks for at least one message, not %d", limit)
+	}
+	if len(cursor) > maxCursor {
+		return nil, "", fmt.Errorf("opencode: a cursor of the history is longer than the %d bytes this front passes back", maxCursor)
 	}
 	path := sessionPath(session, "/message")
 	op := "GET " + path
-	q := url.Values{"order": {"desc"}, "limit": {strconv.Itoa(limit)}}
+	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	if cursor == "" {
+		q.Set("order", "desc")
+	} else {
+		q.Set("cursor", cursor)
+	}
 	code, body, err := c.do(ctx, http.MethodGet, path, q, nil, maxMessageBody)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	switch {
 	case code == http.StatusOK:
 	case code == http.StatusNotFound && notFoundTag(body) == "SessionNotFoundError":
-		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, session)
+		return nil, "", fmt.Errorf("%w: %s", ErrSessionNotFound, session)
 	default:
-		return nil, statusError(op, code, body)
+		return nil, "", statusError(op, code, body)
 	}
 	var in struct {
 		Data []*struct {
@@ -720,32 +739,41 @@ func (c *HTTPClient) Recent(ctx context.Context, session string, limit int) ([]H
 			Outcome *string `json:"outcome"`
 			Finish  *string `json:"finish"`
 		} `json:"data"`
+		Cursor *struct {
+			Next *string `json:"next"`
+		} `json:"cursor"`
 	}
 	if err := decode(op, body, &in); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if in.Data == nil {
-		return nil, fmt.Errorf("opencode: %s: the answer is not a list", op)
+		return nil, "", fmt.Errorf("opencode: %s: the answer is not a list", op)
 	}
 	if len(in.Data) > limit {
-		return nil, fmt.Errorf("opencode: %s: the answer holds %d messages for a limit of %d", op, len(in.Data), limit)
+		return nil, "", fmt.Errorf("opencode: %s: the answer holds %d messages for a limit of %d", op, len(in.Data), limit)
+	}
+	next := ""
+	if in.Cursor != nil && in.Cursor.Next != nil {
+		if next = *in.Cursor.Next; len(next) > maxCursor {
+			return nil, "", fmt.Errorf("opencode: %s: the cursor of the next page is longer than %d bytes", op, maxCursor)
+		}
 	}
 	out := make([]HistoryMessage, 0, len(in.Data))
 	for i, m := range in.Data {
 		if m == nil || m.ID == nil || *m.ID == "" || m.Type == nil || *m.Type == "" {
-			return nil, fmt.Errorf("opencode: %s: message %d has no id and type", op, i)
+			return nil, "", fmt.Errorf("opencode: %s: message %d has no id and type", op, i)
 		}
 		h := HistoryMessage{ID: *m.ID, Kind: *m.Type}
 		switch h.Kind {
 		case KindIdle:
 			if m.Outcome == nil {
-				return nil, fmt.Errorf("opencode: %s: idle marker %s has no outcome", op, h.ID)
+				return nil, "", fmt.Errorf("opencode: %s: idle marker %s has no outcome", op, h.ID)
 			}
 			switch *m.Outcome {
 			case OutcomeSucceeded, OutcomeFailed, OutcomeInterrupted:
 				h.Outcome = *m.Outcome
 			default:
-				return nil, fmt.Errorf("opencode: %s: idle marker %s has the outcome %s, which is not one of the three there are", op, h.ID, strconv.Quote(*m.Outcome))
+				return nil, "", fmt.Errorf("opencode: %s: idle marker %s has the outcome %s, which is not one of the three there are", op, h.ID, strconv.Quote(*m.Outcome))
 			}
 		case KindAssistant:
 			if m.Finish != nil {
@@ -754,7 +782,7 @@ func (c *HTTPClient) Recent(ctx context.Context, session string, limit int) ([]H
 		}
 		out = append(out, h)
 	}
-	return out, nil
+	return out, next, nil
 }
 
 // userinfoRE is the userinfo of a URL: whatever sits between the scheme's "//" and

@@ -807,6 +807,24 @@ func TestLineAddOpenCodeAcceptsATurnWhoseFinalStepWasNeverPrinted(t *testing.T) 
 	}
 }
 
+// TestLineAddOpenCodeCertifiesAcrossPagesOfTheHistory: entries of other kinds lie
+// between the newest of the history and the idle marker, more than a page of them,
+// and the turn is read back through them to the marker and the assistant message.
+func TestLineAddOpenCodeCertifiesAcrossPagesOfTheHistory(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	b.svc.set(func() {
+		b.svc.history = append(append([]ocHist(nil), ocLiveTurn...), ocHist{kind: "skill"}, ocHist{kind: "skill"}, ocHist{kind: "skill"}, ocHist{kind: "skill"}, ocHist{kind: "skill"}, ocHist{kind: "skill"})
+	})
+	mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
+	b.svc.mu.Lock()
+	reads := b.svc.historyReads
+	b.svc.mu.Unlock()
+	if reads < 2 {
+		t.Errorf("the history was read %d time(s), want a second page", reads)
+	}
+}
+
 // TestLineAddOpenCodeTurnTheServiceDoesNotCertifyRollsBack: the run exited 0 and its
 // events are clean, but the server does not show the turn to have completed: the
 // session was interrupted or failed, its last step went on, or the service cannot be

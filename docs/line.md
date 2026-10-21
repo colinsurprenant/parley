@@ -259,9 +259,9 @@ expected to work.
      error. The events do not say the turn completed: `opencode run --format json`
      can end before it has printed the finish of its last step, while the server
      holds the turn as finished. So `line add` asks the server, which it finds the
-     way the pump does (from the service file): the newest message of the session's
-     history must be an idle marker with the outcome `succeeded`, after an assistant
-     message that finished with `stop`. A turn that was interrupted or failed, a
+     way the pump does (from the service file): the newest idle marker of the
+     session's history must have the outcome `succeeded`, after an assistant message
+     that finished with `stop`. A turn that was interrupted or failed, a
      last step that went on, or a service that cannot be reached or does not know the
      session, fails the turn. If the turn did not complete, or did not end within the
      limit, or you interrupt the add, `opencode session delete <id>` is run from the
@@ -328,8 +328,10 @@ expected to work.
    a crash delivers again rather than drop (`docs/reference.md`, "opencode: the
    OpenCode front"). **An interrupt holds everything.** If you interrupt the session
    (Esc in the TUI), the pump does not post into it until you send it something: it
-   says "the session was interrupted; holding deliveries until you send it
-   something" once, keeps what arrives in the stream, and delivers when you have
+   reads the history back to the last user message or idle marker, however many
+   other entries (a skill, a shell) lie after it, says "the session was interrupted;
+   holding deliveries until you send it something" once, keeps what arrives in the
+   stream, and delivers when you have
    sent the session a prompt, or a turn that is not interrupted has ended, saying
    "the session was sent something; delivering again". If a
    delivery was already waiting in the session's inbox when you interrupted it, it
