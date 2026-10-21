@@ -6,19 +6,52 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/colinsurprenant/parley/internal/codex"
 )
 
 // The links skills/install.sh makes, one per skill under each root: ~/.claude
 // for Claude Code, ~/.agents for the agentskills.io convention Codex reads.
-// TestSkillLinksAreTheOnesInstallMakes keeps these in step with the script.
+// OpenCode 2 loads a SKILL.md from both. TestSkillLinksAreTheOnesInstallMakes
+// keeps these in step with the script.
 var (
 	claudeSkillRoot = []string{".claude", "skills"}
 	codexSkillRoot  = []string{".agents", "skills"}
 	skillRoots      = [][]string{claudeSkillRoot, codexSkillRoot}
 	skillNames      = []string{"parley-build", "parley-table", "parley-line"}
 )
+
+// A skillReader is how a harness finds a skill: it finds one when a link under
+// any of the roots it reads holds a skill. Claude Code and Codex read one root
+// each; OpenCode reads both, so a machine installed for either of the others
+// serves it.
+type skillReader struct {
+	harness string
+	roots   [][]string
+}
+
+var (
+	claudeSkills   = skillReader{"Claude Code", [][]string{claudeSkillRoot}}
+	codexSkills    = skillReader{"Codex", [][]string{codexSkillRoot}}
+	openCodeSkills = skillReader{"OpenCode", skillRoots}
+)
+
+// skillReaders are the readers of the harnesses o chooses, in the order the
+// report lists them.
+func (o Options) skillReaders() []skillReader {
+	var rs []skillReader
+	if o.Claude {
+		rs = append(rs, claudeSkills)
+	}
+	if o.Codex {
+		rs = append(rs, codexSkills)
+	}
+	if o.OpenCode {
+		rs = append(rs, openCodeSkills)
+	}
+	return rs
+}
 
 // tableSkillName, buildSkillName and lineSkillName are the one skill a table's
 // seats, a build's peers, or a line's sessions are started on.
@@ -31,55 +64,28 @@ const (
 // checkSkills checks each link install.sh makes: it exists, it resolves, and
 // what it resolves to is a skill. A missing or dangling link is a failure — the
 // seat that needs it would start without its protocol and nothing would say so.
-// The links are the ones under the root of each harness chosen, all three skills
-// under each, and under both roots when neither is chosen.
-func checkSkills(claude, codex bool) []Result {
-	if !claude && !codex {
-		return checkSkillLinks(skillRoots, skillNames)
+// The links are the ones each harness chosen reads, all three skills, and every
+// link under both roots when none is chosen.
+func checkSkills(readers []skillReader) []Result {
+	if len(readers) == 0 {
+		readers = []skillReader{claudeSkills, codexSkills}
 	}
-	var roots [][]string
-	if claude {
-		roots = append(roots, claudeSkillRoot)
-	}
-	if codex {
-		roots = append(roots, codexSkillRoot)
-	}
-	return checkSkillLinks(roots, skillNames)
+	return checkReaderSkills(readers, skillNames)
 }
 
-// checkTableSkill checks the parley-table link under the root each harness a
-// table's seats run on reads: a table of Claude seats does not depend on the
-// links Codex reads, nor one of Codex seats on Claude Code's, and no table
-// depends on the parley-build skill.
-func checkTableSkill(claude, codex bool) []Result {
-	return checkHarnessSkill(tableSkillName, claude, codex)
+// checkHarnessSkill checks the one skill a table, a build or a line needs under
+// the root each harness chosen reads: a table of Claude seats does not depend on
+// the links Codex reads, nor one of Codex seats on Claude Code's, and no table
+// depends on the parley-build skill. With no harness chosen there is nothing to
+// check.
+func checkHarnessSkill(name string, readers []skillReader) []Result {
+	return checkReaderSkills(readers, []string{name})
 }
 
-// checkBuildSkill is checkTableSkill for a build's peers: the parley-build link
-// under the root each harness reads, and not the parley-table one.
-func checkBuildSkill(claude, codex bool) []Result {
-	return checkHarnessSkill(buildSkillName, claude, codex)
-}
-
-// checkLineSkill is checkTableSkill for a line's sessions: the parley-line link
-// under the root each harness reads, and neither of the others.
-func checkLineSkill(claude, codex bool) []Result {
-	return checkHarnessSkill(lineSkillName, claude, codex)
-}
-
-func checkHarnessSkill(name string, claude, codex bool) []Result {
-	var roots [][]string
-	if claude {
-		roots = append(roots, claudeSkillRoot)
-	}
-	if codex {
-		roots = append(roots, codexSkillRoot)
-	}
-	return checkSkillLinks(roots, []string{name})
-}
-
-func checkSkillLinks(roots [][]string, names []string) []Result {
-	if len(roots) == 0 {
+// checkReaderSkills checks each name for each reader, in that order, and says
+// nothing twice: a link two harnesses read is one line.
+func checkReaderSkills(readers []skillReader, names []string) []Result {
+	if len(readers) == 0 {
 		return nil
 	}
 	home, err := os.UserHomeDir()
@@ -87,17 +93,42 @@ func checkSkillLinks(roots [][]string, names []string) []Result {
 		return []Result{{Fail, "skill", fmt.Sprintf("cannot locate the home directory the skills are linked under: %v", err)}}
 	}
 	var rs []Result
-	for _, root := range roots {
+	seen := map[Result]bool{}
+	for _, r := range readers {
 		for _, name := range names {
-			rs = append(rs, checkSkillLink(filepath.Join(home, filepath.Join(root...), name)))
+			if res := r.check(home, name); !seen[res] {
+				seen[res] = true
+				rs = append(rs, res)
+			}
 		}
 	}
 	return rs
 }
 
+// check is the reader's verdict on one skill: the first root whose link holds
+// it. A reader of one root reports that root's link as it is; one of several
+// that finds none fails once, naming what is wrong under each root and saying
+// it needs only one, so that a link missing under one root does not read as one
+// that must be there.
+func (r skillReader) check(home, name string) Result {
+	var problems []string
+	for _, root := range r.roots {
+		res := checkSkillLink(filepath.Join(home, filepath.Join(root...), name))
+		if res.Level == OK || len(r.roots) == 1 {
+			return res
+		}
+		problems = append(problems, strings.TrimSuffix(res.Detail, ": "+skillFix))
+	}
+	return Result{Fail, "skill", fmt.Sprintf("%s reads skills from either root, and %s is under neither: %s: %s",
+		r.harness, name, strings.Join(problems, "; "), skillFix)}
+}
+
+// skillFix is what a person does about a link that is not there.
+const skillFix = "run sh skills/install.sh from a parley checkout"
+
 func checkSkillLink(path string) Result {
 	const surface = "skill"
-	fix := "run sh skills/install.sh from a parley checkout"
+	fix := skillFix
 	li, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):

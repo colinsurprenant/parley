@@ -12,18 +12,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/colinsurprenant/parley/internal/doctor"
 	"github.com/colinsurprenant/parley/internal/state"
 	"github.com/colinsurprenant/parley/internal/stream"
 )
 
-// cmdLineDrop takes one session off a line: its thread record, its reply
-// directory and, when no other session of its checkout and harness still uses it,
-// the launch file the line wrote there and the exclude line it added for it. It
-// deletes only what it can show is the line's: the record it reads is parley's
-// state, but a checkout is the user's, and a file there is the line's only if its
-// bytes still hash to the digest the record holds. It never touches a Codex
-// session; it prints the command that would, for the human to run if the history
-// is not wanted.
+// cmdLineDrop takes one session off a line: its thread record (a Codex session's)
+// or session record (an OpenCode session's), its reply directory and, when no
+// other session of its checkout and harness still uses it, the launch file the
+// line wrote there and the exclude line it added for it; an OpenCode session has
+// no launch file. It deletes only what it can show is the line's: the record it
+// reads is parley's state, but a checkout is the user's, and a file there is the
+// line's only if its bytes still hash to the digest the record holds. It never
+// touches a Codex or an OpenCode session; it prints the command that would, for
+// the human to run if the history is not wanted.
 func cmdLineDrop(args []string) error {
 	fs := flag.NewFlagSet("parley line drop", flag.ContinueOnError)
 	fs.Usage = func() {
@@ -208,6 +210,8 @@ const (
 	// fileLeft: the file is there and is not shown to be the line's, and --force
 	// said to finish without it.
 	fileLeft
+	// fileNone: the session has no launch file (an OpenCode session).
+	fileNone
 )
 
 type threadAction int
@@ -219,12 +223,24 @@ const (
 	threadLeft                       // the record is not shown to be the session's
 )
 
+// idRecord is what a session's record beside its cursor offers the teardown, which
+// is the same for a Codex thread's (state.ThreadRecord) and an OpenCode session's
+// (state.SessionRecord).
+type idRecord interface {
+	Path() string
+	Read() (string, error)
+	Remove() error
+}
+
 // sessionClaim is what a session's teardown will do, judged before any of it is
 // done.
 type sessionClaim struct {
 	s lineSession
 
-	threadRec *state.ThreadRecord
+	threadRec idRecord
+	// recWhat names the record in the report: the Codex thread's, or the OpenCode
+	// session's.
+	recWhat   string
 	thread    threadAction
 	threadWhy string
 
@@ -243,24 +259,39 @@ type sessionClaim struct {
 // uses is theirs to take down. A thing the session cannot be shown to own is a
 // refusal, with --force letting a launch file that is not the line's stay.
 func claimSession(base string, rec lineRecord, s lineSession, remaining []lineSession, force bool) (sessionClaim, error) {
-	c := sessionClaim{s: s, file: s.Files[0]}
+	c := sessionClaim{s: s}
+	if len(s.Files) > 0 {
+		c.file = s.Files[0]
+	}
 
 	if s.Thread != "" {
-		tr, err := state.OpenThreadRecord(base, s.Nick, rec.Stream)
+		// A Codex thread's UUID is hex, which the record may spell in either case;
+		// an OpenCode session id is base62 and case-sensitive.
+		same := strings.EqualFold
+		what, held := "thread record", "thread"
+		var tr idRecord
+		var err error
+		if s.Harness == harnessOpenCode {
+			same = func(a, b string) bool { return a == b }
+			what, held = "OpenCode session record", "session"
+			tr, err = state.OpenSessionRecord(base, s.Nick, rec.Stream)
+		} else {
+			tr, err = state.OpenThreadRecord(base, s.Nick, rec.Stream)
+		}
 		if err != nil {
 			return c, err
 		}
-		c.threadRec = tr
+		c.threadRec, c.recWhat = tr, what
 		got, rerr := tr.Read()
 		switch {
 		case rerr != nil:
 			c.thread, c.threadWhy = threadLeft, rerr.Error()
 		case got == "":
 			c.thread = threadGone
-		case strings.EqualFold(got, s.Thread):
+		case same(got, s.Thread):
 			c.thread = threadRemove
 		default:
-			c.thread, c.threadWhy = threadLeft, fmt.Sprintf("it holds thread %s, not session %s's %s, so it is another session's or no one's", got, s.Nick, s.Thread)
+			c.thread, c.threadWhy = threadLeft, fmt.Sprintf("it holds %s %s, not session %s's %s, so it is another session's or no one's", held, got, s.Nick, s.Thread)
 		}
 	}
 
@@ -282,6 +313,10 @@ func claimSession(base string, rec lineRecord, s lineSession, remaining []lineSe
 		c.replyDir = dir
 	}
 
+	if !hasLaunchFile(s.Harness) {
+		c.fileAct = fileNone
+		return c, nil
+	}
 	if others := sharingOf(remaining, s); len(others) > 0 {
 		c.fileAct, c.fileWhy = fileKept, others[0].Nick
 		return c, nil
@@ -317,8 +352,12 @@ func checkoutMoved(checkout string) string {
 	return ""
 }
 
-// sharingOf are the sessions among of that use the launch file s does.
+// sharingOf are the sessions among of that use the launch file s does; a session
+// with no launch file shares none.
 func sharingOf(of []lineSession, s lineSession) []lineSession {
+	if !hasLaunchFile(s.Harness) {
+		return nil
+	}
 	var out []lineSession
 	for _, o := range of {
 		if o.Harness == s.Harness && sameDir(o.Checkout, s.Checkout) {
@@ -391,6 +430,7 @@ type teardown struct {
 
 	removed, kept, left []string
 	codexDeletes        []string
+	openCodeDeletes     []string
 }
 
 // failed ends the run with err, after saying what was already taken down: the
@@ -403,10 +443,11 @@ func (t *teardown) failed(err error) error {
 	return fmt.Errorf("%w%s (line.json lists what is left: run this again to finish)", err, b.String())
 }
 
-// drop takes one session's things down, in order: the thread record, the reply
-// directory, the launch file and its directory, the exclude line, and last the
-// session's place in the record. Every step is safe to repeat, so a session that
-// is still in the record after a failure is taken down from where it stopped.
+// drop takes one session's things down, in order: the thread or session record,
+// the reply directory, the launch file and its directory, the exclude line, and
+// last the session's place in the record. Every step is safe to repeat, so a
+// session that is still in the record after a failure is taken down from where
+// it stopped.
 func (t *teardown) drop(c sessionClaim) error {
 	s := c.s
 
@@ -418,11 +459,11 @@ func (t *teardown) drop(c sessionClaim) error {
 		// Its stream directory goes with it when nothing else is in it, as it does
 		// for a session whose pump never committed a cursor.
 		_ = os.Remove(filepath.Dir(c.threadRec.Path()))
-		t.removed = append(t.removed, "thread record for session "+s.Nick)
+		t.removed = append(t.removed, c.recWhat+" for session "+s.Nick)
 	case threadGone:
-		t.removed = append(t.removed, "thread record for session "+s.Nick+" (already gone)")
+		t.removed = append(t.removed, c.recWhat+" for session "+s.Nick+" (already gone)")
 	case threadLeft:
-		t.left = append(t.left, fmt.Sprintf("thread record %s: %s", c.threadRec.Path(), c.threadWhy))
+		t.left = append(t.left, fmt.Sprintf("%s %s: %s", c.recWhat, c.threadRec.Path(), c.threadWhy))
 	}
 
 	if s.ReplyDir != "" {
@@ -448,6 +489,7 @@ func (t *teardown) drop(c sessionClaim) error {
 		if err := t.removeLaunchFile(s, f, c.fileAct); err != nil {
 			return err
 		}
+	case fileNone:
 	}
 
 	return t.forget(s)
@@ -557,11 +599,18 @@ func (t *teardown) forget(s lineSession) error {
 		}
 		t.codexDeletes = append(t.codexDeletes, fmt.Sprintf("  %s delete %s    # session %s", name, q(s.Thread), s.Nick))
 	}
+	if s.Harness == harnessOpenCode && s.Thread != "" {
+		name := doctor.DefaultOpenCodeBin
+		if t.rec.OpenCodeBin != "" {
+			name = q(t.rec.OpenCodeBin)
+		}
+		t.openCodeDeletes = append(t.openCodeDeletes, fmt.Sprintf("  %s session delete %s    # session %s", name, q(s.Thread), s.Nick))
+	}
 	return nil
 }
 
 // report says what was removed, kept and left in place, and prints, never runs,
-// the commands that delete the Codex sessions.
+// the commands that delete the Codex and OpenCode sessions.
 func (t *teardown) report(w io.Writer, whole bool) error {
 	var b strings.Builder
 	if whole {
@@ -588,6 +637,10 @@ func (t *teardown) report(w io.Writer, whole bool) error {
 	if len(t.codexDeletes) > 0 {
 		b.WriteString("\nCodex still has each Codex session. Keep that history, or delete it:\n")
 		b.WriteString(strings.Join(t.codexDeletes, "\n") + "\n")
+	}
+	if len(t.openCodeDeletes) > 0 {
+		b.WriteString("\nOpenCode still has each OpenCode session. Keep that history, or delete it:\n")
+		b.WriteString(strings.Join(t.openCodeDeletes, "\n") + "\n")
 	}
 	if whole {
 		b.WriteString("\nEach session's cursor and IRC password stay under " + filepath.Join(t.base, "<nick>") + "/, so the same nick can come back; remove one by hand once the nick is retired.\n")

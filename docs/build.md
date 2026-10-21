@@ -22,7 +22,8 @@ ergo, the skills (`sh skills/install.sh` links `parley-build`, `parley-table` an
 `parley-line`; the build skill is `/parley-build` in Claude Code and `$parley-build` in Codex),
 the `claude` and `codex` harnesses on the `PATH`, and an IRC client for you.
 `parley doctor` checks them (`--harness claude` or `--harness codex`, repeatable,
-limits it to the harnesses you use; without one it checks both); `parley build
+limits it to the harnesses you use; without one it checks both, and `--harness
+opencode` adds OpenCode, which a line takes and a build does not yet); `parley build
 new` runs its static checks itself, with the `parley-build` link under the root
 each peer's harness reads.
 
@@ -64,8 +65,9 @@ two-peer, and a third is refused, naming that. The order of the two flags
 counts: the first peer is the one you hand message one to, listed first on its
 `participants:` line, and the second is the **integrator**, the peer that merges
 the two branches at the end (see "After the build"), unless the task names
-another. OpenCode peers are not supported yet; OpenCode is the next harness on
-the list. A model is at most 128 bytes of ASCII letters and digits and `. _ - : / @ [ ] +`,
+another. OpenCode peers are not supported for now (a line takes OpenCode sessions, see
+`docs/line.md`), and open to explore. A model is at most 128 bytes of
+ASCII letters and digits and `. _ - : / @ [ ] +`,
 which holds the ids Claude Code and Codex take (`opus`, `sonnet[1m]`,
 `claude-sonnet-4-5-20250929`, `us.anthropic.claude-sonnet-4-5-20250929-v1:0`,
 `gpt-5.1-codex-max`, `qwen2.5-coder:32b`, a Bedrock inference-profile ARN); it

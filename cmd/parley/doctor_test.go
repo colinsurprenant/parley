@@ -35,14 +35,44 @@ func runParleyEnvIn(t *testing.T, dir string, env []string, args ...string) resu
 	return res
 }
 
-// doctorBench is a machine for `parley doctor` to look at: fake codex, claude
-// and ergo, a home with the skill links, and an address nothing listens on.
+// fakeOpenCodeBin writes a stand-in for the opencode CLI in dir: --version
+// prints version and the help texts are the real ones of the version last
+// verified, printed on stderr as yargs does. The fixtures are named by absolute path, since the
+// script runs from the system temp directory.
+func fakeOpenCodeBin(t *testing.T, dir, version string) string {
+	t.Helper()
+	testdata, err := filepath.Abs(filepath.Join("..", "..", "internal", "doctor", "testdata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	help := func(name string) string {
+		return filepath.Join(testdata, "opencode-"+doctor.OpenCodeVerified+"-"+name+".help")
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1 $2" in
+"--version "*) echo %q; exit 0 ;;
+"--help ") cat %q; exit 0 ;;
+"run --help") cat %q; exit 0 ;;
+"session --help") cat %q; exit 0 ;;
+esac
+exit 64
+`, version, help("tui"), help("run"), help("session"))
+	bin := filepath.Join(dir, "opencode")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// doctorBench is a machine for `parley doctor` to look at: fake codex, claude,
+// opencode and ergo, a home with the skill links, and an address nothing
+// listens on.
 type doctorBench struct {
-	codex, claude, ergo string
-	codexLog            string
-	home                string
-	state               string
-	server              string
+	codex, claude, opencode, ergo string
+	codexLog                      string
+	home                          string
+	state                         string
+	server                        string
 }
 
 // bench builds one. codexVersion and strip shape the fake codex; strip names
@@ -94,6 +124,7 @@ exit 64
 	if err := os.WriteFile(b.claude, []byte(fmt.Sprintf("#!/bin/sh\necho %q\n", claudeVersion+" (Claude Code)")), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	b.opencode = fakeOpenCodeBin(t, dir, doctor.OpenCodeVerified)
 	b.ergo = filepath.Join(dir, "ergo")
 	if err := os.WriteFile(b.ergo, []byte("#!/bin/sh\necho ergo-"+doctor.ErgoVerified+"\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -122,7 +153,7 @@ exit 64
 
 func (b doctorBench) run(t *testing.T, extra ...string) result {
 	t.Helper()
-	args := append([]string{"doctor", "--codex-bin", b.codex, "--claude-bin", b.claude, "--ergo-bin", b.ergo, "--server", b.server}, extra...)
+	args := append([]string{"doctor", "--codex-bin", b.codex, "--claude-bin", b.claude, "--opencode-bin", b.opencode, "--ergo-bin", b.ergo, "--server", b.server}, extra...)
 	return runParleyEnvIn(t, "", []string{"HOME=" + b.home, "XDG_STATE_HOME=" + b.state}, args...)
 }
 
@@ -165,6 +196,12 @@ func TestDoctorWithEverythingPresentExits0AndWarnsOnlyAboutTheServer(t *testing.
 	}
 	if got := len(withLevel(ls, "ok")); got != len(ls)-1 {
 		t.Errorf("%d ok lines of %d", got, len(ls))
+	}
+	// OpenCode is checked only when named, so a machine without it is not failed.
+	for _, l := range ls {
+		if strings.Contains(l, "opencode") {
+			t.Errorf("an opencode line though it was not named: %q", l)
+		}
 	}
 }
 
@@ -328,11 +365,122 @@ func TestDoctorHarnessLiveSpendsNoCodexTurnForClaudeAlone(t *testing.T) {
 }
 
 func TestDoctorRefusesAnUnknownHarness(t *testing.T) {
-	for _, args := range [][]string{{"--harness", "opencode"}, {"--harness", ""}, {"--harness", "Claude"}, {"--harness", "claude", "--harness", "gemini"}} {
+	for _, args := range [][]string{{"--harness", "gemini"}, {"--harness", ""}, {"--harness", "Claude"}, {"--harness", "OpenCode"}, {"--harness", "claude", "--harness", "gemini"}} {
 		res := runParley(t, "", append([]string{"doctor"}, args...)...)
-		if res.code != exitConfig || !strings.Contains(res.stderr, "--harness") || !strings.Contains(res.stderr, "claude or codex") {
+		if res.code != exitConfig || !strings.Contains(res.stderr, "--harness") || !strings.Contains(res.stderr, "claude, codex or opencode") {
 			t.Errorf("doctor %v: exit %d, stderr %q; want 2 naming --harness", args, res.code, res.stderr)
 		}
+	}
+}
+
+// TestDoctorHarnessOpenCodeChecksOpenCodeAndItsSkills: named alone, OpenCode is
+// the only harness looked at: its binary, version, the flags and subcommand of
+// its commands, and the skills under the roots it reads. It is served by either
+// root, so a machine with only the Codex-side links passes.
+func TestDoctorHarnessOpenCodeChecksOpenCodeAndItsSkills(t *testing.T) {
+	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
+	if err := os.Remove(b.codex); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(b.claude); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(b.home, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	res := b.run(t, "--harness", "opencode")
+	if res.code != 0 {
+		t.Fatalf("--harness opencode: exit %d\n%s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	ls := reportLines(t, res.stdout)
+	skills := 0
+	for _, l := range ls {
+		if strings.Contains(l, "codex") || strings.Contains(l, "claude") && !strings.Contains(l, ".claude") {
+			t.Errorf("a codex or claude line though only opencode was named: %q", l)
+		}
+		if strings.HasPrefix(l, "ok   skill ") {
+			skills++
+		}
+	}
+	for _, surface := range []string{"ok   opencode ", "ok   opencode version", "ok   opencode tui", "ok   opencode run", "ok   opencode session"} {
+		found := false
+		for _, l := range ls {
+			found = found || strings.HasPrefix(l, surface)
+		}
+		if !found {
+			t.Errorf("no %q line:\n%s", surface, res.stdout)
+		}
+	}
+	if skills != 3 || !strings.Contains(res.stdout, filepath.Join(b.home, ".agents", "skills", "parley-line")) {
+		t.Errorf("want the three skills, found under the Codex root (%d skill lines):\n%s", skills, res.stdout)
+	}
+}
+
+// TestDoctorOpenCodeCanBeAddedToTheOthers: --harness is repeatable, and a named
+// opencode that is missing is its own FAIL while the others pass.
+func TestDoctorOpenCodeCanBeAddedToTheOthers(t *testing.T) {
+	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
+	res := b.run(t, "--harness", "claude", "--harness", "codex", "--harness", "opencode")
+	if res.code != 0 {
+		t.Fatalf("exit %d\n%s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	for _, want := range []string{"ok   codex version", "ok   claude version", "ok   opencode version"} {
+		if !strings.Contains(res.stdout, want) {
+			t.Errorf("no %q line:\n%s", want, res.stdout)
+		}
+	}
+	if err := os.Remove(b.opencode); err != nil {
+		t.Fatal(err)
+	}
+	res = b.run(t, "--harness", "codex", "--harness", "opencode")
+	fails := withLevel(reportLines(t, res.stdout), "FAIL")
+	if res.code != 1 || len(fails) != 1 || !strings.Contains(fails[0], "opencode") || !strings.Contains(fails[0], doctor.OpenCodeInstallURL) {
+		t.Errorf("a missing opencode: exit %d, FAIL lines %v", res.code, fails)
+	}
+}
+
+// TestDoctorOpenCodeIsSpokenToOnlyAsATwo: the front speaks OpenCode 2's HTTP API
+// and the version last verified passes; the legacy 1.x is a FAIL that says where
+// OpenCode 2 comes from, and any other major version is a FAIL.
+func TestDoctorOpenCodeIsSpokenToOnlyAsATwo(t *testing.T) {
+	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
+	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "opencode v"+doctor.OpenCodeVerified)
+	res := b.run(t, "--harness", "opencode")
+	if fails := withLevel(reportLines(t, res.stdout), "FAIL"); res.code != 0 || len(fails) != 0 {
+		t.Errorf("an OpenCode 2: exit %d, FAIL lines %v\n%s", res.code, fails, res.stdout)
+	}
+	if !strings.Contains(res.stdout, "ok   opencode version "+doctor.OpenCodeVerified+", the version last verified") {
+		t.Errorf("no ok version line for the verified 2.x:\n%s", res.stdout)
+	}
+
+	for version, want := range map[string]string{
+		"1.18.30":         "the legacy 1.x",
+		"opencode v3.0.0": "not a major version parley speaks to",
+	} {
+		b.opencode = fakeOpenCodeBin(t, t.TempDir(), version)
+		res = b.run(t, "--harness", "opencode")
+		fails := withLevel(reportLines(t, res.stdout), "FAIL")
+		if res.code != 1 || len(fails) != 1 || !strings.Contains(fails[0], want) || !strings.Contains(fails[0], "brew install opencode") {
+			t.Errorf("%s: exit %d, FAIL lines %v\n%s", version, res.code, fails, res.stdout)
+		}
+	}
+}
+
+// TestDoctorOpenCodeADifferentTwoVersionIsAWarning: a 2.x other than the verified
+// one warns, and says what parley was last verified against.
+func TestDoctorOpenCodeADifferentTwoVersionIsAWarning(t *testing.T) {
+	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
+	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "2.9.0")
+	res := b.run(t, "--harness", "opencode")
+	warns := withLevel(reportLines(t, res.stdout), "warn")
+	var ok bool
+	for _, l := range warns {
+		ok = ok || strings.Contains(l, "opencode version") && strings.Contains(l, "newer than "+doctor.OpenCodeVerified) &&
+			strings.Contains(l, "It may work as it is") && strings.Contains(l, "Parley was "+doctor.OpenCodeVerifiedNote) &&
+			strings.Contains(l, "a newer 2.x is expected to work") && !strings.Contains(l, "install OpenCode "+doctor.OpenCodeVerified)
+	}
+	if res.code != 0 || !ok {
+		t.Errorf("exit %d; want a warn that says it may work and what it was verified against:\n%s", res.code, res.stdout)
 	}
 }
 
@@ -345,6 +493,9 @@ func TestDoctorRefusesAServerThatIsNotLoopbackAndTakesNoArguments(t *testing.T) 
 	}
 	if res := runParley(t, "", "doctor", "--codex-bin", ""); res.code != exitConfig {
 		t.Errorf("an empty --codex-bin exited %d, want 2", res.code)
+	}
+	if res := runParley(t, "", "doctor", "--opencode-bin", ""); res.code != exitConfig {
+		t.Errorf("an empty --opencode-bin exited %d, want 2", res.code)
 	}
 }
 

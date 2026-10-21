@@ -18,6 +18,7 @@ import (
 
 	"github.com/colinsurprenant/parley/internal/channel"
 	"github.com/colinsurprenant/parley/internal/doctor"
+	"github.com/colinsurprenant/parley/internal/opencode"
 	"github.com/colinsurprenant/parley/internal/primer"
 	"github.com/colinsurprenant/parley/internal/state"
 	"github.com/colinsurprenant/parley/internal/stream"
@@ -29,10 +30,12 @@ const codexNetworkNotice = "network access is ON for Codex in this checkout: the
 	"so that parley send can reach the loopback IRC server from inside the sandbox. It applies to every Codex session in the checkout, not only this one."
 
 // cmdLineAdd puts one session on an existing line: its launch file in its
-// checkout, for a Codex session its reply directory and its thread, started on the
-// line's primer and recorded for `parley codex --thread auto`. It prints what is
-// left for that session. Everything it made is taken down again if a step fails or
-// the run is interrupted.
+// checkout (an OpenCode session has none), for a Codex or an OpenCode session its
+// reply directory and its thread or session, started on the line's primer and
+// recorded for `parley codex --thread auto` or `parley opencode --session auto`.
+// It prints what is left for that session. Everything it made is taken down again
+// if a step fails or the run is interrupted; the Codex thread or OpenCode
+// session itself is deleted by the rollback, and by nothing else.
 func cmdLineAdd(args []string) error {
 	fs := flag.NewFlagSet("parley line add", flag.ContinueOnError)
 	fs.Usage = func() {
@@ -40,9 +43,9 @@ func cmdLineAdd(args []string) error {
 		fs.PrintDefaults()
 	}
 	nick := fs.String("nick", "", "required: the session's nick; it must differ from the chair's and from every other session's, without regard to ASCII case")
-	harness := fs.String("harness", "", "required: claude or codex; opencode is not supported yet")
-	model := fs.String("model", "", "the model, at most 128 bytes of letters, digits and . _ - : / @ [ ] +; passed to codex exec -m for a Codex session and printed as --model on a Claude one's launch line")
-	checkout := fs.String("checkout", "", "required: the absolute path of the session's own checkout, an existing directory; a Claude session gets .mcp.json there, a Codex session .codex/config.toml, unless this line already wrote that file for another session of the checkout")
+	harness := fs.String("harness", "", "required: claude, codex or opencode (OpenCode 2)")
+	model := fs.String("model", "", "the model, at most 128 bytes of letters, digits and . _ - : / @ [ ] +; passed to codex exec -m for a Codex session, to opencode run -m (provider/model, or provider/model#variant) for an OpenCode one, and printed as --model on a Claude one's launch line")
+	checkout := fs.String("checkout", "", "required: the absolute path of the session's own checkout, an existing directory; a Claude session gets .mcp.json there, a Codex session .codex/config.toml, unless this line already wrote that file for another session of the checkout; an OpenCode session gets no file there")
 	stateDir := fs.String("state-dir", "", "the state directory the line was set up under (default $XDG_STATE_HOME/parley)")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
@@ -53,7 +56,7 @@ func cmdLineAdd(args []string) error {
 	}
 	switch {
 	case len(pos) == 0:
-		return cfgErrf("the line id is required: parley line add <id> --nick <nick> --harness claude|codex --checkout <absolute dir>")
+		return cfgErrf("the line id is required: parley line add <id> --nick <nick> --harness claude|codex|opencode --checkout <absolute dir>")
 	case len(pos) > 1:
 		return cfgErrf("unexpected argument %q", pos[1])
 	}
@@ -151,9 +154,13 @@ type linePlan struct {
 	data []byte
 	// codexBin is the resolved codex a Codex session runs; codexGiven whether the
 	// line was made with --codex-bin, in which case the lines printed carry it.
-	codexBin   string
-	codexGiven bool
-	serverDown bool
+	// openCodeBin and openCodeGiven are the same for an OpenCode session and
+	// --opencode-bin.
+	codexBin      string
+	codexGiven    bool
+	openCodeBin   string
+	openCodeGiven bool
+	serverDown    bool
 }
 
 // planLineAdd validates everything that needs no look at the line's record. Each
@@ -172,14 +179,12 @@ func planLineAdd(in lineAddInput) (*linePlan, error) {
 	p.nick = in.nick
 
 	if !in.harnessGiven {
-		return nil, cfgErrf("--harness is required: claude or codex")
+		return nil, cfgErrf("--harness is required: claude, codex or opencode")
 	}
 	switch in.harness {
-	case harnessClaude, harnessCodex:
-	case "opencode":
-		return nil, cfgErrf("--harness opencode: OpenCode sessions are not supported yet; the harnesses are claude and codex")
+	case harnessClaude, harnessCodex, harnessOpenCode:
 	default:
-		return nil, cfgErrf("--harness %q: the harnesses are claude and codex", in.harness)
+		return nil, cfgErrf("--harness %q: the harnesses are claude, codex and opencode", in.harness)
 	}
 	p.harness = in.harness
 
@@ -187,7 +192,14 @@ func planLineAdd(in lineAddInput) (*linePlan, error) {
 		if in.model == "" {
 			return nil, cfgErrf("--model is empty: name a model, or leave the flag out")
 		}
-		if err := checkModel("--model", in.model, in.model); err != nil {
+		// opencode run -m takes provider/model with an optional #variant; anything
+		// else would make the session and then fail its turn. Claude and Codex models
+		// never carry a '#'.
+		check := checkModel
+		if in.harness == harnessOpenCode {
+			check = checkOpenCodeModel
+		}
+		if err := check("--model", in.model, in.model); err != nil {
 			return nil, err
 		}
 		p.model = in.model
@@ -268,20 +280,21 @@ func planLineAdd(in lineAddInput) (*linePlan, error) {
 		}
 	}
 	// The state directory holds every nick's IRC password, and the reply directory
-	// is a Codex session's scratch: neither belongs in a checkout, where git
-	// status shows them and a careless add commits them.
+	// is a Codex or an OpenCode session's scratch: neither belongs in a checkout,
+	// where git status shows them and a careless add commits them.
 	if within(p.checkout, p.base) {
 		return nil, cfgErrf("the state directory %s is inside the checkout %s: it holds the IRC passwords, so name a --state-dir outside it", p.base, p.checkout)
 	}
-	if p.harness == harnessCodex && within(p.checkout, p.tmp) {
+	if p.harness != harnessClaude && within(p.checkout, p.tmp) {
 		return nil, cfgErrf("the temp directory ($TMPDIR) %s is inside the checkout %s: the reply directory is made in it, so run with a TMPDIR outside it", p.tmp, p.checkout)
 	}
 	return p, nil
 }
 
 // bind reads the line's record, under the id's lock, and checks the session
-// against it: the nick, the launch file in the checkout, the Claude launch and the
-// Codex binary. It sets what the machine check and the run need.
+// against it: the nick, the launch file in the checkout (an OpenCode session has
+// none), the Claude launch and the Codex or OpenCode binary. It sets what the
+// machine check and the run need.
 func (p *linePlan) bind() error {
 	rec, raw, err := readLineRecord(p.base, p.id)
 	if err != nil {
@@ -308,15 +321,28 @@ func (p *linePlan) bind() error {
 		if err := checkUTF8(pathField{"the codex binary's path", p.codexBin}); err != nil {
 			return err
 		}
-		tr, err := state.OpenThreadRecord(p.base, p.nick, rec.Stream)
-		if err != nil {
-			return cfgErrf("--nick %q: %v", p.nick, err)
+		if err := p.checkNoStaleRecord(rec.Stream); err != nil {
+			return err
 		}
-		if _, err := os.Lstat(tr.Path()); err == nil {
-			return cfgErrf("--nick %q already has a Codex thread record for this line's stream, %s: a session that is not in line.json made it (a drop that did not finish, or a pump of your own); remove it, or give this session another nick", p.nick, tr.Path())
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("look for %s: %w", tr.Path(), err)
+	}
+
+	if p.harness == harnessOpenCode {
+		p.openCodeGiven = rec.OpenCodeBin != ""
+		p.openCodeBin = rec.OpenCodeBin
+		if p.openCodeBin == "" {
+			if p.openCodeBin, err = doctor.Resolve(doctor.DefaultOpenCodeBin); err != nil {
+				return cfgErrf("opencode: %v: %s, or make the line with `parley line new --opencode-bin <path>`", err, opencode.InstallHint)
+			}
 		}
+		if err := checkUTF8(pathField{"the opencode binary's path", p.openCodeBin}); err != nil {
+			return err
+		}
+		if err := p.checkNoStaleRecord(rec.Stream); err != nil {
+			return err
+		}
+		// No launch file: nothing is looked for in the checkout, and nothing will
+		// be written there.
+		return nil
 	}
 
 	if err := p.checkLaunchFile(); err != nil {
@@ -325,6 +351,40 @@ func (p *linePlan) bind() error {
 	if p.harness == harnessClaude && !p.reuse {
 		if p.data, err = p.mcpJSON(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkNoStaleRecord refuses a nick that already has a record, for the line's
+// stream, of the session the harness of this one makes, or of the other of the two
+// that keep one: a Codex thread's or an OpenCode session's. A record that no
+// session of line.json owns was left by a drop that did not finish, or is a pump's
+// own, and `--thread auto` or `--session auto` would deliver into whatever it
+// names. The harness's own kind is looked for first, so that it is the one named
+// when both are there.
+func (p *linePlan) checkNoStaleRecord(stream string) error {
+	tr, err := state.OpenThreadRecord(p.base, p.nick, stream)
+	if err != nil {
+		return cfgErrf("--nick %q: %v", p.nick, err)
+	}
+	sr, err := state.OpenSessionRecord(p.base, p.nick, stream)
+	if err != nil {
+		return cfgErrf("--nick %q: %v", p.nick, err)
+	}
+	records := []struct{ what, path string }{
+		{"a Codex thread", tr.Path()},
+		{"an OpenCode session", sr.Path()},
+	}
+	if p.harness == harnessOpenCode {
+		records[0], records[1] = records[1], records[0]
+	}
+	for _, r := range records {
+		if _, err := os.Lstat(r.path); err == nil {
+			return cfgErrf("--nick %q already has %s record for this line's stream, %s: a session that is not in line.json made it (a drop that did not finish, or a pump of your own); remove it, or give this session another nick",
+				p.nick, r.what, r.path)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("look for %s: %w", r.path, err)
 		}
 	}
 	return nil
@@ -422,11 +482,13 @@ func (p *linePlan) mcpJSON() ([]byte, error) {
 // reported by `line new`; here it is a warning.
 func (p *linePlan) checkMachine(ctx context.Context, w io.Writer) error {
 	down, err := checkMachineWith(ctx, w, "parley line add", doctor.Options{
-		Codex:     p.harness == harnessCodex,
-		Claude:    p.harness == harnessClaude,
-		CodexBin:  p.codexBin,
-		Server:    p.rec.Server,
-		LineSkill: true,
+		Codex:       p.harness == harnessCodex,
+		Claude:      p.harness == harnessClaude,
+		OpenCode:    p.harness == harnessOpenCode,
+		CodexBin:    p.codexBin,
+		OpenCodeBin: p.openCodeBin,
+		Server:      p.rec.Server,
+		LineSkill:   true,
 	})
 	p.serverDown = down
 	return err
@@ -457,10 +519,11 @@ type lineAddRun struct {
 	file        lineFile
 	wrote       bool
 	excludeNote string
-	thread      string
-	answer      string
-	replyDir    string
-	replyFile   string
+	// thread is the Codex thread or the OpenCode session id.
+	thread    string
+	answer    string
+	replyDir  string
+	replyFile string
 }
 
 // lockNick takes the session's nick lock without waiting, before anything is
@@ -490,11 +553,18 @@ func (r *lineAddRun) setUp(ctx context.Context) error {
 	if err := r.lockNick(); err != nil {
 		return err
 	}
-	if err := r.writeLaunchFile(ctx); err != nil {
-		return err
+	if hasLaunchFile(p.harness) {
+		if err := r.writeLaunchFile(ctx); err != nil {
+			return err
+		}
 	}
-	if p.harness == harnessCodex {
+	switch p.harness {
+	case harnessCodex:
 		if err := r.startCodex(ctx); err != nil {
+			return err
+		}
+	case harnessOpenCode:
+		if err := r.startOpenCode(ctx); err != nil {
 			return err
 		}
 	}
@@ -667,13 +737,15 @@ func removeIfDigest(path, digest, checkout string) error {
 	return os.Remove(path)
 }
 
-// startCodex makes the session's reply directory and starts its Codex
-// session on the line's primer, recording the thread for --thread auto.
-func (r *lineAddRun) startCodex(ctx context.Context) error {
+// makeReplyDir makes the session's reply directory, the one its reply file goes
+// in, and registers its removal.
+func (r *lineAddRun) makeReplyDir() error {
 	p := r.plan
 	// The same kind of directory the channel front makes for a Claude session's
 	// reply: 0700 under $TMPDIR, because Codex's workspace-write sandbox can write
-	// $TMPDIR and, of the state base, nothing.
+	// $TMPDIR and, of the state base, nothing. For an OpenCode session it is a
+	// place under $TMPDIR of the session's own, which OpenCode asks about before
+	// the first write (external_directory) and the human answers in the TUI.
 	dir, err := os.MkdirTemp("", lineReplyPrefix(p.id))
 	if err != nil {
 		return fmt.Errorf("create the reply directory: %w", err)
@@ -692,6 +764,16 @@ func (r *lineAddRun) startCodex(ctx context.Context) error {
 	}
 	r.replyDir = dir
 	r.replyFile = filepath.Join(dir, p.nick+".reply")
+	return nil
+}
+
+// startCodex makes the session's reply directory and starts its Codex
+// session on the line's primer, recording the thread for --thread auto.
+func (r *lineAddRun) startCodex(ctx context.Context) error {
+	p := r.plan
+	if err := r.makeReplyDir(); err != nil {
+		return err
+	}
 
 	text := primer.Render(primer.Params{
 		Front:     primer.Codex,
@@ -721,8 +803,46 @@ func (r *lineAddRun) startCodex(ctx context.Context) error {
 	return nil
 }
 
-// lineReplyMarkerContent is what a Codex session's reply directory holds in its
-// marker: the line's id, then the session's nick, each ending in a newline.
+// startOpenCode makes the session's reply directory and starts its OpenCode
+// session on the line's primer, under an id parley makes the way OpenCode does,
+// recording the session for --session auto. A machine whose opencode is not an
+// OpenCode 2 has failed doctor's static check before anything is made.
+func (r *lineAddRun) startOpenCode(ctx context.Context) error {
+	p := r.plan
+	if err := r.makeReplyDir(); err != nil {
+		return err
+	}
+	text := primer.Render(primer.Params{
+		Front:     primer.OpenCode,
+		Command:   p.self,
+		Spec:      p.rec.Stream,
+		Nick:      p.nick,
+		StateDir:  p.base,
+		ReplyPath: r.replyFile,
+		Skill:     primer.SkillLine,
+		Chair:     p.rec.Chair,
+		Cap:       p.rec.Cap,
+		Window:    p.rec.windowDuration(),
+	})
+	sid, err := opencode.NewSessionID()
+	if err != nil {
+		return err
+	}
+	id, answer, err := startOpenCodeSession(ctx, r, openCodeSession{
+		nick: p.nick, model: p.model, dir: p.checkout,
+		bin: p.openCodeBin, name: p.openCodeName(), sid: sid, title: fmt.Sprintf("parley line %s %s", p.id, p.nick),
+		prompt: text, base: p.base, stream: p.rec.Stream,
+	})
+	if err != nil {
+		return err
+	}
+	r.thread, r.answer = id, answer
+	return nil
+}
+
+// lineReplyMarkerContent is what a Codex or OpenCode session's reply directory
+// holds in its marker: the line's id, then the session's nick, each ending in a
+// newline.
 func lineReplyMarkerContent(id, nick string) string { return id + "\n" + nick + "\n" }
 
 // codexName is how the lines printed for the human, and the rollback's own
@@ -733,6 +853,14 @@ func (p *linePlan) codexName() string {
 		return q(p.codexBin)
 	}
 	return codexDefault
+}
+
+// openCodeName is codexName's counterpart for the opencode --opencode-bin names.
+func (p *linePlan) openCodeName() string {
+	if p.openCodeGiven {
+		return q(p.openCodeBin)
+	}
+	return doctor.DefaultOpenCodeBin
 }
 
 // record adds the session to line.json, through a temp file and a rename, after
@@ -750,9 +878,15 @@ func (r *lineAddRun) record() error {
 			}
 		}
 	}
+	// An OpenCode session has no launch file, and a record that says so with an
+	// empty list.
+	files := []lineFile{}
+	if hasLaunchFile(p.harness) {
+		files = []lineFile{r.file}
+	}
 	rec.Sessions = append(rec.Sessions, lineSession{
 		Nick: p.nick, Harness: p.harness, Model: p.model, Checkout: p.checkout,
-		Thread: r.thread, ReplyDir: r.replyDir, Files: []lineFile{r.file},
+		Thread: r.thread, ReplyDir: r.replyDir, Files: files,
 	})
 	dir := lineDirOf(p.base, p.id)
 	// The write goes through a temp file and a rename, so a failure leaves the old
@@ -781,6 +915,8 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 	file, _ := launchFileOf(p.harness, p.checkout)
 	fmt.Fprintf(&b, "Session %s (%s) is added to line %s, checkout %s.\n", p.nick, p.harness, p.id, p.checkout)
 	switch {
+	case !hasLaunchFile(p.harness):
+		b.WriteString("Wrote nothing in the checkout.\n")
 	case r.wrote:
 		fmt.Fprintf(&b, "Wrote %s.", file)
 		if r.file.ExcludeFile != "" {
@@ -810,6 +946,11 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 		return b.String()
 	}
 
+	if p.harness == harnessOpenCode {
+		b.WriteString(p.openCodeRunbook(r))
+		return b.String()
+	}
+
 	fmt.Fprintf(&b, "Codex thread %s.\n\n", r.thread)
 	fmt.Fprintf(&b, "Network: %s\n", codexNetworkNotice)
 	pumpExtra := ""
@@ -828,6 +969,49 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 	}
 	b.WriteString(".\n")
 	fmt.Fprintf(&b, "\n   Session %s's answer to its primer (codex exec, thread %s):\n\n", p.nick, r.thread)
+	answer := plainAnswer(r.answer)
+	if answer == "" {
+		answer = "(none: the turn ended without a final message)"
+	}
+	b.WriteString(indent(answer, "        ") + "\n")
+	return b.String()
+}
+
+// openCodeRunbook is the part of the runbook that is an OpenCode session's.
+// OpenCode's TUI, run and session commands reach one background service per user,
+// which the pump finds from the file the service writes. So the TUI comes first,
+// as it is what starts the service, and there is no port to share between the two
+// commands and no password to carry: the service's own is in that file.
+func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
+	var b strings.Builder
+	step := 0
+	next := func(format string, a ...any) {
+		step++
+		fmt.Fprintf(&b, "\n%d. "+format+"\n\n", append([]any{step}, a...)...)
+	}
+	cmd := func(line string) { fmt.Fprintf(&b, "    %s\n", line) }
+
+	fmt.Fprintf(&b, "OpenCode session %s.\n", r.thread)
+	b.WriteString("\nWhat is left is yours, in this order:\n")
+	next("In one terminal, start OpenCode on its session, in its checkout. It comes first: it starts OpenCode's background\n   service if none runs, and the pump checks as it starts that the service answers and knows the session. There is no port\n   to choose: the pump finds the service from the file the service writes, service.json in $XDG_STATE_HOME/opencode\n   (~/.local/state/opencode if that is not set), so both commands need the same HOME and XDG_STATE_HOME.")
+	cmd("cd " + q(p.checkout))
+	cmd(fmt.Sprintf("%s -s %s", p.openCodeName(), q(r.thread)))
+	next("In another, start its pump:")
+	cmd(fmt.Sprintf("%s opencode --stream %s --nick %s --session auto --skill line --chair %s --cap %d --window %s --state-dir %s",
+		q(p.self), q(p.rec.Stream), p.nick, p.rec.Chair, p.rec.Cap, p.window, q(p.base)))
+	next("Check that the session has loaded the parley-line skill. OpenCode loads a skill with its skill tool and has no /parley-line\n   command; if its answer to the primer below does not show it did, ask it to load the skill.")
+	fmt.Fprintf(&b, "Notes:\n")
+	fmt.Fprintf(&b, "  The reply file, %s, is outside the session's checkout. OpenCode allows external_directory by default,\n", q(r.replyFile))
+	b.WriteString("  so writing it asks nothing. To be asked, add this rule to your opencode.jsonc and answer for the\n  reply directory when it asks:\n")
+	b.WriteString("    { \"permissions\": [ { \"action\": \"external_directory\", \"resource\": \"*\", \"effect\": \"ask\" } ] }\n")
+	b.WriteString("  The session was made by opencode run --session, which adds no permission rules of its own to the session. A run has no one\n")
+	b.WriteString("  to ask, so during the primer turn it rejected any permission ask and cancelled any question; from here the session's agent\n  and your configuration decide.\n")
+	b.WriteString("  The service's password is in its service file (mode 600) and the pump reads it from there and sends it to the service's\n")
+	b.WriteString("  loopback address only; it is never printed. For an opencode serve of your own, run the pump with --port <n> and\n")
+	b.WriteString("  OPENCODE_PASSWORD (or OPENCODE_SERVER_PASSWORD) set to the password it was started with.\n")
+	b.WriteString("  If you interrupt the session, the pump holds deliveries until you send it something.\n")
+	fmt.Fprintf(&b, "  Parley was %s.\n", doctor.OpenCodeVerifiedNote)
+	fmt.Fprintf(&b, "\n   Session %s's answer to its primer (opencode run, session %s):\n\n", p.nick, r.thread)
 	answer := plainAnswer(r.answer)
 	if answer == "" {
 		answer = "(none: the turn ended without a final message)"

@@ -139,9 +139,12 @@ func TestResultLineIsLevelSurfaceDetail(t *testing.T) {
 		r    Result
 		want string
 	}{
-		{Result{OK, "codex", "found /bin/codex"}, "ok   codex          found /bin/codex"},
-		{Result{Warn, "codex version", "newer"}, "warn codex version  newer"},
-		{Result{Fail, "server", "down"}, "FAIL server         down"},
+		{Result{OK, "codex", "found /bin/codex"}, "ok   codex            found /bin/codex"},
+		{Result{Warn, "codex version", "newer"}, "warn codex version    newer"},
+		{Result{Fail, "server", "down"}, "FAIL server           down"},
+		// The widest surface names, "opencode version" and "opencode session",
+		// fill the column exactly.
+		{Result{OK, "opencode session", "subcommand delete"}, "ok   opencode session subcommand delete"},
 	} {
 		if got := tc.r.String(); got != tc.want {
 			t.Errorf("String() = %q, want %q", got, tc.want)

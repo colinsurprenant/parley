@@ -1,7 +1,7 @@
 // Package doctor checks that every external surface parley depends on still
-// works with this machine's current versions: the Codex CLI and the Claude Code
-// CLI parley drives, the ergo server it talks to, and the skills that tell a
-// session how to behave. Codex moves fast between releases, so the point
+// works with this machine's current versions: the Codex CLI, the Claude Code
+// CLI and the OpenCode CLI parley drives, the ergo server it talks to, and the
+// skills that tell a session how to behave. Codex moves fast between releases, so the point
 // is to notice a surface drifting before a table finds out mid-run.
 //
 // Check is the whole API. A caller picks the surfaces: `parley doctor` asks for
@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/colinsurprenant/parley/internal/codex"
@@ -28,24 +29,35 @@ import (
 
 // The versions parley was last verified against, live, by a person: the Codex
 // CLI and ergo by `parley doctor --live`, Claude Code at a table (a live table
-// ran end to end on 2.1.296). A different version is not a failure: the report
-// says it may work and what to do if a table or a build misbehaves; to the
-// maintainer it is the cue to verify again, and then to move the constant.
-// ErgoVerified is the ergo the embedded configuration
-// (internal/ergoconf/ircd.yaml) was written for.
+// ran end to end on 2.1.296), and OpenCode 2 on a live model (delivery, queueing,
+// steering, cancelling, a service restart, the reply path and the header byte for
+// byte). A different version is not a failure, except an OpenCode of a major
+// version other than 2, which parley does not speak to: the report says it may
+// work and what to do if a table or a build misbehaves; to the maintainer it is
+// the cue to verify again, and then to move the constant (and the help fixtures
+// under testdata, named for the version they were read from).
+// ErgoVerified is the ergo the embedded configuration (internal/ergoconf/ircd.yaml)
+// was written for.
 const (
-	CodexVerified  = "0.161.0"
-	ClaudeVerified = "2.1.296"
-	ErgoVerified   = "2.19.1"
+	CodexVerified    = "0.161.0"
+	ClaudeVerified   = "2.1.296"
+	OpenCodeVerified = "2.1.0"
+	ErgoVerified     = "2.19.1"
 )
+
+// OpenCodeVerifiedNote is the one phrase that says what OpenCode parley was last
+// verified against, for the usage text, the runbook and the doctor's remedy; the
+// docs say it in the same words, and a test holds them to OpenCodeVerified.
+const OpenCodeVerifiedNote = "last verified against OpenCode " + OpenCodeVerified + " on a live model"
 
 // Where a person installs each of them, each the project's own install page
 // (ergo's is the one its README sends people to). A report that finds a binary
 // missing, or at a version other than the verified one, links the page.
 const (
-	ClaudeInstallURL = "https://code.claude.com/docs/en/setup"
-	CodexInstallURL  = "https://learn.chatgpt.com/docs/codex/cli"
-	ErgoInstallURL   = "https://github.com/ergochat/ergo/releases/latest"
+	ClaudeInstallURL   = "https://code.claude.com/docs/en/setup"
+	CodexInstallURL    = "https://learn.chatgpt.com/docs/codex/cli"
+	OpenCodeInstallURL = "https://opencode.ai/docs/"
+	ErgoInstallURL     = "https://github.com/ergochat/ergo/releases/latest"
 )
 
 // ergoVerifiedURL is the release page of the ergo that was verified.
@@ -57,9 +69,10 @@ const ErgoInstallHint = "install ergo from " + ErgoInstallURL + " (contrib/ergo/
 
 // The default names the harnesses are resolved by, on PATH.
 const (
-	DefaultCodexBin  = "codex"
-	DefaultClaudeBin = "claude"
-	DefaultErgoBin   = "ergo"
+	DefaultCodexBin    = "codex"
+	DefaultClaudeBin   = "claude"
+	DefaultOpenCodeBin = "opencode"
+	DefaultErgoBin     = "ergo"
 )
 
 // Level is how a check came out.
@@ -95,7 +108,7 @@ type Result struct {
 
 // String is the report line: the level, the surface, the detail.
 func (r Result) String() string {
-	return fmt.Sprintf("%-4s %-14s %s", r.Level, r.Surface, r.Detail)
+	return fmt.Sprintf("%-4s %-16s %s", r.Level, r.Surface, r.Detail)
 }
 
 // Failed reports whether any check failed, which is what makes the exit status
@@ -111,12 +124,13 @@ func Failed(rs []Result) bool {
 
 // Options picks the surfaces to check.
 type Options struct {
-	// Codex and Claude say which harnesses to check; each is its binary, its
-	// version against the verified one and, for Codex, every flag parley uses.
-	Codex, Claude bool
-	// CodexBin and ClaudeBin are the binaries as they are spelled and resolved
-	// on PATH; empty means the default name.
-	CodexBin, ClaudeBin string
+	// Codex, Claude and OpenCode say which harnesses to check; each is its
+	// binary, its version against the verified one and, for Codex and OpenCode,
+	// every flag and subcommand parley uses.
+	Codex, Claude, OpenCode bool
+	// CodexBin, ClaudeBin and OpenCodeBin are the binaries as they are spelled
+	// and resolved on PATH; empty means the default name.
+	CodexBin, ClaudeBin, OpenCodeBin string
 	// ErgoBin, when not empty, adds the check that ergo is installed.
 	ErgoBin string
 	// Server, when not empty, is the loopback host:port to ask for its IRC
@@ -124,21 +138,22 @@ type Options struct {
 	// not be started yet.
 	Server string
 	// Skills adds the check that the skill links install.sh makes exist and
-	// resolve: all three skills under the root each harness chosen with Claude
-	// and Codex reads, and under both roots when neither is chosen.
+	// resolve: all three skills under the root each harness chosen with Claude,
+	// Codex and OpenCode reads (OpenCode reads both, and one valid link of the
+	// two is enough), and under both roots when none is chosen.
 	Skills bool
 	// TableSkill adds the narrower check a table needs: the parley-table skill
-	// under the root each harness chosen with Claude and Codex reads (Claude Code
-	// ~/.claude/skills, Codex ~/.agents/skills), and nothing else. Skills, when it
-	// is set too, covers all of it.
+	// under the root each harness chosen with Claude, Codex and OpenCode reads
+	// (Claude Code ~/.claude/skills, Codex ~/.agents/skills, OpenCode either),
+	// and nothing else. Skills, when it is set too, covers all of it.
 	TableSkill bool
 	// BuildSkill is TableSkill for a build: the parley-build skill under the root
-	// each harness chosen with Claude and Codex reads, and nothing else. Skills,
-	// when it is set too, covers all of it.
+	// each harness chosen reads, and nothing else. Skills, when it is set too,
+	// covers all of it.
 	BuildSkill bool
 	// LineSkill is TableSkill for a line: the parley-line skill under the root
-	// each harness chosen with Claude and Codex reads, and nothing else. Skills,
-	// when it is set too, covers all of it.
+	// each harness chosen reads, and nothing else. Skills, when it is set too,
+	// covers all of it.
 	LineSkill bool
 	// Live adds what costs something: for Codex one model turn, for ergo (when
 	// ErgoBin is set) a throwaway server and a message through it.
@@ -146,8 +161,8 @@ type Options struct {
 }
 
 // Check runs the checks Options asks for and returns one Result per check, in
-// a stable order: codex, claude, ergo, the server, the skills, then what Live
-// adds. A check that cannot run because its binary is missing is that
+// a stable order: codex, claude, opencode, ergo, the server, the skills, then
+// what Live adds. A check that cannot run because its binary is missing is that
 // binary's failure, reported once.
 func Check(ctx context.Context, o Options) []Result {
 	var rs []Result
@@ -160,6 +175,9 @@ func Check(ctx context.Context, o Options) []Result {
 	if o.Claude {
 		rs = append(rs, checkClaude(ctx, orDefault(o.ClaudeBin, DefaultClaudeBin))...)
 	}
+	if o.OpenCode {
+		rs = append(rs, checkOpenCode(ctx, orDefault(o.OpenCodeBin, DefaultOpenCodeBin))...)
+	}
 	if o.ErgoBin != "" {
 		var er []Result
 		er, ergoOK = checkErgo(ctx, o.ErgoBin)
@@ -168,15 +186,16 @@ func Check(ctx context.Context, o Options) []Result {
 	if o.Server != "" {
 		rs = append(rs, checkServer(ctx, o.Server))
 	}
+	readers := o.skillReaders()
 	switch {
 	case o.Skills:
-		rs = append(rs, checkSkills(o.Claude, o.Codex)...)
+		rs = append(rs, checkSkills(readers)...)
 	case o.TableSkill:
-		rs = append(rs, checkTableSkill(o.Claude, o.Codex)...)
+		rs = append(rs, checkHarnessSkill(tableSkillName, readers)...)
 	case o.BuildSkill:
-		rs = append(rs, checkBuildSkill(o.Claude, o.Codex)...)
+		rs = append(rs, checkHarnessSkill(buildSkillName, readers)...)
 	case o.LineSkill:
-		rs = append(rs, checkLineSkill(o.Claude, o.Codex)...)
+		rs = append(rs, checkHarnessSkill(lineSkillName, readers)...)
 	}
 	if o.Live {
 		if codexOK {
@@ -232,10 +251,40 @@ func probeFor(ctx context.Context, d time.Duration, bin string, args ...string) 
 	// it is capped, as on every other child-process path.
 	so, se := &limitBuffer{limit: maxProbeOutput}, &limitBuffer{limit: maxProbeOutput}
 	cmd.Stdout, cmd.Stderr = so, se
+	ownGroup(cmd)
 	// A descendant that inherited the pipes must not hold the report hostage.
 	cmd.WaitDelay = 2 * time.Second
 	err = cmd.Run()
+	if err != nil {
+		killGroup(cmd)
+	}
 	return so.String(), se.String(), err
+}
+
+// ownGroup makes the probe a process group of its own, which a timeout takes
+// whole. A harness's CLI may be a launcher that runs the program as a child, as
+// an npm install's is, and the default cancellation of CommandContext kills the
+// launcher alone and leaves the child that hangs on --version or --help. When the
+// wait delay expires Run returns without Cancel having run, which is why a probe
+// that failed is followed by killGroup.
+func ownGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+}
+
+// killGroup takes whatever is left of the process group of a probe that ended
+// badly: the launcher may have exited while a child still held the pipes, and a
+// group lives as long as it has a member. It is called after the command has been
+// waited for, so the group is the probe's own or empty.
+func killGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 }
 
 // describe is how a failed probe reads in a report line: the exit status, and
@@ -263,6 +312,12 @@ func checkVersion(ctx context.Context, name, bin, verified, remedy string) Resul
 	if err != nil {
 		return Result{Fail, surface, fmt.Sprintf("%s --version: %s", name, describe(err, stdout, stderr))}
 	}
+	return compareVersion(name, stdout, verified, remedy)
+}
+
+// compareVersion is checkVersion's verdict on what --version printed.
+func compareVersion(name, stdout, verified, remedy string) Result {
+	surface := name + " version"
 	have := versionRE.FindString(stdout)
 	if have == "" {
 		return Result{Warn, surface, fmt.Sprintf("%s --version printed %q, which holds no version; the last verified is %s. It may work as it is. %s", name, strings.TrimSpace(stdout), verified, remedy)}

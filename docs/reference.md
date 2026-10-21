@@ -10,6 +10,7 @@ step-by-step guides are `docs/table.md` (running a table), `docs/build.md`
 - [The IRC stream](#the-irc-stream)
 - [channel: the Claude Code front](#channel-the-claude-code-front)
 - [codex: the Codex CLI front](#codex-the-codex-cli-front)
+- [opencode: the OpenCode front](#opencode-the-opencode-front)
 - [primer](#primer)
 - [Tables](#tables)
 - [Builds](#builds)
@@ -55,7 +56,7 @@ terminal back to column zero or start a line there, and no header can be drawn
 there either. A participant is never delivered its own messages. There are two stream schemes: `file:<path>`, an
 append-only NDJSON file that stock tools can read and write, and
 `irc://host:port/channel`, one channel on a local IRC server. The verbs that
-take `--stream` — `send`, `wait`, `channel`, `codex` and `primer` — take either.
+take `--stream` — `send`, `wait`, `channel`, `codex`, `opencode` and `primer` — take either.
 
 The single-process lock lives in `$XDG_STATE_HOME/parley/<nick>/` (by default
 `~/.local/state/parley/<nick>/`), or under `<dir>/<nick>/` with `--state-dir
@@ -68,14 +69,17 @@ following two streams under one nick keeps two independent positions. A `file:`
 path is resolved to its absolute form first, so one file keeps one position
 however it is spelled, and two files never share one. A Codex seat's thread
 record sits beside the cursor, in `codex-thread`: mode 0600, one line holding
-the thread's UUID and ending in its newline (a record without it is malformed), the thread `parley codex --thread auto` delivers into. `parley table new`, `build new` and `line add` write it. A line's
+the thread's UUID and ending in its newline (a record without it is malformed), the thread `parley codex --thread auto` delivers into. `parley table new`, `build new` and `line add` write it. An OpenCode session's record is its counterpart, `opencode-session`, in the same place and with the same mode and write: one line holding the session's id (`ses_` and 26 letters or digits, case-sensitive) and ending in its newline, the session `parley opencode --session auto` delivers into; `parley line add` writes it. A line's
 state is `lines/<id>/line.json` (mode 0600, in a directory at 0700, written through
 a temp file and a rename and read through a 64 KiB bound): the line's `id`,
 `stream`, `server`, `state_dir`, `chair`, `cap`, `window` as written on a command
-line (`10m`), `codex_bin` when `line new` was given `--codex-bin`, `created`, and
-`sessions`, each with its `nick`, `harness`, `model`, `checkout`, a Codex session's
-`thread` and `reply_dir`, and `files`, the one launch file the line wrote or shares
-for it: its `path`, the `sha256` of its exact bytes, `exclude_file` (the exclude file
+line (`10m`), `codex_bin` when `line new` was given `--codex-bin` and `opencode_bin`
+when it was given `--opencode-bin`, `created`, and
+`sessions`, each with its `nick`, `harness` (`claude`, `codex` or `opencode`),
+`model`, `checkout`, a Codex or OpenCode session's `thread` (the Codex thread's
+UUID, or the OpenCode session's id) and `reply_dir`, and `files`, the one launch
+file the line wrote or shares for it (an empty list for an OpenCode session, which
+has none): its `path`, the `sha256` of its exact bytes, `exclude_file` (the exclude file
 that holds the launch file's line because the line put it there, this session or
 another of the line; `exclude_sep` when the line had to end that file's last line
 first, `exclude_made` when it created the file) and `made_dir` (a `.codex` the line
@@ -253,16 +257,229 @@ its thread id; `docs/line.md` has the steps. `--skill` is
 both required; `line` also takes `--window`, 10m by default (see Tables and
 Lines, below).
 
+## opencode: the OpenCode front
+
+`parley opencode` is the same delivery loop for an OpenCode session that is
+already running: a long-lived foreground process that blocks on the stream and
+hands each delivery to the live session as one user message, over the HTTP API of
+the OpenCode 2 server the session runs on: the background service that `opencode -s
+<ses_id>` starts in the session's checkout, or a server started with `opencode serve
+--port <port>`. The legacy OpenCode 1.x has no such API and is refused. Parley was
+last verified against OpenCode 2.1.0 on a live model; a newer 2.x is expected to work.
+OpenCode has no channel of its own — a prompt posted to a
+session is a user message, and nothing about it tells the model that the text was
+not typed by its human — so the `[parley]` peer header is the only mark this front
+has, and it is mandatory: the message is exactly what `wait` would have printed,
+header first and byte for byte, as the text of the request, with no system prompt
+and no other part. The pump never rewrites, re-prefixes, wraps or splits
+it. It takes the same single-process lock and keeps the same per-stream cursor as
+`wait`. A pump for a nick with no cursor starts from the channel's backlog: its first
+delivery is what the channel already held. Nothing is printed on stdout; the log is
+on stderr.
+
+```
+parley opencode --stream file:./chat.ndjson --nick oc-a --session <ses_id>
+parley opencode --stream file:./chat.ndjson --nick oc-a --session <ses_id> --port 4096   # opencode serve --port 4096
+```
+
+`--port` is the port of a server on `127.0.0.1` that was started with `opencode
+serve --port <port>`, and is optional. OpenCode's TUI, `run` and `session` commands
+reach one background service per user, which `opencode -s <ses_id>` in the checkout
+starts if none runs; without `--port` the pump finds that service (see **Discovery**
+below). The pump connects to `127.0.0.1` and nowhere else; there is no host or URL
+flag, so the credentials below cannot be sent anywhere else. `--session` is the
+session id, as `opencode session list` shows it, or `auto`, which reads the id
+recorded for this nick and stream in `opencode-session`, under the state directory
+`--state-dir` names, by `parley line add`; with no record it exits 2. Under `--skill
+line` it says to run `parley line add --harness opencode` or pass `--session <id>`;
+under `build` or `table`, which take no OpenCode seats yet and so have nothing that
+records one, it says so and to pass `--session <id>`. `auto` is reserved, and no
+session id looks like it. `--skill` is `build` by default and takes `table` and
+`line`, each with `--chair` and `--cap`, both required; `line` also takes `--window`,
+10m by default. A line session is started with `--skill line` by `parley line add`,
+which prints the pump line.
+
+**Discovery.** Without `--port` the pump reads OpenCode's registration file,
+`${XDG_STATE_HOME:-$HOME/.local/state}/opencode/service.json`, which the service
+writes with mode 0600: `{"id", "version", "url", "pid", "password"}`. The file is a
+credential written for OpenCode's own clients, and the pump trusts it as the
+user's own `opencode` does and no further: it is opened without following a link
+and checked on the open file to be a regular file owned by the current user with no
+permission for the group or anyone else and under 16 KiB (otherwise it is refused
+and not read), `url` must be `http` on a loopback IP address with a port (a name,
+another address, another scheme or a path is refused before the password goes
+anywhere), `GET /api/info` must answer a 2.x version, and the `pid` (and `version`)
+it answers must be the file's, so that a file left by a service that has gone, at
+an address something else now has, is not taken for it. `XDG_STATE_HOME` must be
+absolute when set. The password is never logged, printed or put in an error, and a
+URL is printed without any userinfo. The file is read when the pump starts and again
+every time it attaches, which is before each delivery and after every outage: a
+restarted service has a new address, password and process id (`opencode service
+stop` removes the file, and the service that comes back writes a new one while the
+sessions persist). While the file is
+absent, or does not describe the server that answers (a stale file, or one written a
+moment before the service is up), or the server answers a 5xx (starting), the pump
+holds with its backoff and says so once; a 401 after the file was read again is the
+end of the pump, since the password is the service's own. A 401 on the client the
+pump already holds is not that: the service has probably restarted at the same
+address with a new password, so the file is read again and a client made of it (at
+most three times in a row), and only a 401 from the password just read ends the
+pump. The server is asked who it
+is, and held against the file, before the session is asked for, so a stale file
+reads as stale. With `--port` there is no file to read: the pump asks `GET /api/info`
+of `127.0.0.1:<port>` with the password from `OPENCODE_PASSWORD`, else
+`OPENCODE_SERVER_PASSWORD`, under the user `opencode`, and the failures are the
+server's own, except that a 5xx from `GET /api/info` or the session lookup is held
+for as a server that is starting. The session's TUI on such a server is `opencode
+--server http://127.0.0.1:<port> -s <ses_id>`, with `OPENCODE_PASSWORD` set to the
+password the server was started with.
+
+**Startup.** Before the stream is opened (so a refused start costs the nick no IRC
+account, no connection and no lock), the pump asks the server whether it is there,
+is OpenCode 2 and knows the session: `GET /api/info` must answer a version whose
+major is 2 (a 1 is refused with the way to OpenCode 2, `brew install opencode` or
+`npm i -g @opencode/cli`, and any other major version is refused), and `GET
+/api/session/<id>` must find the session. A server that is not answering, a session
+the server does not know, a service file that is missing or refused, a bad flag or a
+record that is missing or malformed is exit 2, naming the command to run. A nick
+whose lock is held is exit 2 as for the other fronts. A signal ends the pump with
+exit 0. Any other failure after startup is exit 1: an HTTP answer that is not the one
+expected stops the pump with nothing committed. The same check is made before every
+delivery. A delivery is posted whole, with one bound, in the Codex front's register:
+a message whose rendering is over 128 KiB, and a message that would take one delivery
+past 512 KiB, is not posted, and a stub takes its place, its own header over a
+one-line notice naming it, while the full text stays in the stream for the human to
+read; a delivery that comes to 1 MiB with its stubs counted ends in one notice for the
+rest. A server that goes away after startup is waited for: the pump holds the
+deliveries in the stream, logs it once and tries again with a backoff of at most 5
+seconds. A post that fails to connect is nothing delivered, and goes back to waiting.
+
+**Delivery.** OpenCode has a queue, and the delivery uses it. The
+pump still waits for an idle session before it posts (`GET /api/session/active`
+lists the sessions in a turn; one it does not list is idle), so that what arrived
+meanwhile goes over as one delivery, but a post that lands in a turn nobody
+expected is not folded into it. An idle session is not yet free to post into: an
+interrupt holds everything. Before each post the pump reads the history back from
+the newest message, four at a time (`GET /api/session/<id>/message?order=desc&limit=4`,
+then `?cursor=<cursor.next>&limit=4` for older ones, at most ten pages), until it
+meets a user message or an idle marker, whatever other entries (a skill, a shell)
+lie between. If that is an idle marker with the outcome `interrupted`, with no user
+message newer than it, the human stopped the session and has sent it nothing since;
+a post would start it again over their stop. A history that ends before either
+marker has no interrupt in it, and one longer than the ten pages without either is
+inconclusive: it is held for as a stop is, with a line of its own, logged once, that
+says the pump cannot tell. The pump holds, logs once "the session was interrupted; holding
+deliveries until you send it something", and goes on checking at the idle backoff,
+keeping what arrives in the stream. The hold ends when the human sends the session
+something: a user message newer than the marker, or a newer idle marker whose
+outcome is not `interrupted`; the pump then logs "the session was sent something;
+delivering again". A history that cannot be read is the server being
+away (a transport failure or a 5xx is held for), and one that is not the shape
+this front reads stops the pump. The wait for an entry already in the inbox, below,
+is not changed by this. The pump makes the message id itself
+(`msg_` and 26 characters, the way OpenCode's `identifier.ts` does) and posts
+`POST /api/session/<id>/prompt` with exactly `{"id", "text", "delivery":"queue"}`,
+the text being the delivery's rendering, verbatim, with no file, agent, skill or
+other part. The server admits the first post of an id and answers a repeat of it
+with the first, so a post that got no answer (a timeout, a reset) is posted again
+under the same id, up to the 30-second bound, and the session ends up with the
+delivery once. The repeat is made only after the pump has attached to the server
+again (finding the service from its file again in discovery mode, and checking the
+version and the session as at startup), retried with the backoff of the idle wait
+within that bound; nothing is posted through a client whose attach failed. A post
+that never connected has sent nothing and goes back to waiting for the server,
+under an id of its own next time. The delivery counts as
+made when `GET /api/session/<id>/message/<msg id>` answers 200 with a user message
+holding exactly those bytes, and only then is it committed and the cursor saved.
+The 30-second bound is the bound of this post: it ends when the server has admitted
+the prompt and its answer has been read, with the text that was posted. A 5xx to the post is
+the service in trouble, which may have admitted the entry before it failed: the post
+is repeated under the same id, after the attach, within the same bound. A 409 on the
+post is the server saying the id is in use for something else, and stops the pump,
+as does any other refusal that is a 4xx (a 401 from the password just found, a
+deleted session).
+If the answer holds other text than was posted (a plugin that rewrites prompts), the
+entry was admitted and will probably be taken up as the server holds it: the pump
+stops, commits nothing, and says so, and a restart sends the delivery again under a
+new id.
+
+After admission the pump waits **with no deadline**. The message is a 404 until the
+session takes the entry up, and the entry is in the session's inbox
+(`GET /api/session/<id>/inbox`) meanwhile. There are two ways it waits and one way
+it ends otherwise. (1) **In the inbox, the session busy:** the delivery waits behind
+a turn that is not its own, and goes over when that turn ends; the pump logs it once.
+(2) **In the inbox, the session idle on two reads half a second apart:** the queue is
+parked, as it is after an interrupt (a turn that begins after one is steer-scoped, so
+entries queued during it wait at its end; a failed turn alone does not park the
+queue). The pump logs once "parked after an interrupt; it goes over when the session
+takes it up" and goes on waiting for the human to resume the session; when they
+do, the entry runs right after their turn, as its own user message. It **never
+steers** the entry: a `PATCH` to steer has no idle precondition and is promoted at
+the next step of whatever turn runs (so into a turn the human starts at that
+instant), and it wakes execution, which releases the prompts the human parked by
+interrupting. Waiting respects their interrupt. (A steer the human submits waits for
+the next step boundary of the turn that runs and does not cut a running tool short.) (3) **Not in the inbox and not a
+message:** the human cancelled it, which only a human does, on purpose; the pump
+reads the message once more (the entry leaves the inbox and becomes a message in
+one step, so a message is there if that is what happened), logs the cancel, counts
+the delivery as handed over and does not send it again. If the inbox is too large to
+read (it carries every queued entry's payload, attachments included, and the human's
+own large queued prompt can pass the 16 MiB bound), cancelled cannot be told from
+queued, so the pump says so once, names the attachments as the likely cause, and goes
+on asking for the message: it neither stops nor commits on it. The inbox is then
+asked for again on a schedule of its own, the idle backoff doubling up to its cap,
+while the message is asked for at the normal poll, and the reads are normal again as
+soon as the inbox can be read, so a cancel by the human is seen. A server that goes
+away during the wait, or answers a 5xx to a read of it (starting, restarting, in
+trouble), is held for with the backoff of the idle wait (finding the service again
+in discovery mode, and no read is made until the attach has succeeded), since the
+entry is in its database; it is logged once, however many reads fail, and any other
+refusal of a read, a 4xx but the 404 that says the message is not there yet, stops
+the pump with nothing committed. There is no
+step to see the turn begin: a queued post waits for its own turn and is never merged
+into a running one. Delivery is at-least-once: a pump that dies after the post and
+before the commit delivers again on restart rather than drops. Two residual cases are
+documented and not closed. A prompt the human submits as a steer while a delivery's
+turn runs is folded into that turn, as any steer is. And a post whose answer is lost
+is posted again under the same id; if the human deleted the admitted entry in that
+instant, the second post admits it once more, since OpenCode keeps no tombstone of a
+cancelled id, and the delivery goes over, once, although the human took it back.
+
+**Credentials.** An OpenCode server always wants HTTP basic credentials, under the
+user `opencode`. The service's password is the one in its service file, which the pump
+reads and sends to the service's loopback address only, so there is nothing to set;
+for an `opencode serve` that you started, use `--port` and set `OPENCODE_PASSWORD`
+(or the older `OPENCODE_SERVER_PASSWORD`) to the password it was started with. The
+password is never printed, logged or put in an error.
+
+**What it trusts.** The human, parley's own state, and the OpenCode server: the
+service whose registration file is in the human's own state directory (checked as
+under **Discovery**), or the server at `127.0.0.1:<port>` the human started. The
+server's JSON is read through bounds and strict shapes, but not treated as hostile.
+Stream content is not trusted: a peer's message reaches OpenCode only as the
+header-first text above, and the pump never interprets it. Out of scope: another
+process on this machine that has the password; what the session does with its
+harness's permissions, since parley is not a sandbox and OpenCode's bash tool runs
+without approval by default, and its file tools do not ask before writing outside the
+checkout (`external_directory` is allowed by default; a rule in `opencode.jsonc`
+restores the ask); and a hand edit of parley's state.
+
 ## primer
 
 `parley primer` delivers nothing: it prints the framing a front gives the model
 — the reply command first, then what a delivery is and what it is worth. There
-is one text with two forms, rendered from one source so neither can drift from
-the other: `--front claude` is what `parley channel` sends in its `instructions`
-at connect time, and `--front codex` is that same text plus what is true of a
-front with no connect-time channel. The codex text is the session's first
+is one text with three forms, rendered from one source so none can drift from
+the others: `--front claude` is what `parley channel` sends in its `instructions`
+at connect time, and `--front codex` and `--front opencode` are that same text
+plus what is true of a front with no connect-time channel, each with a paragraph
+of its own about its pump. The codex and opencode texts are the session's first
 message: a human pastes it in, or the session is started with it as its first
-prompt, which is what `parley table new`, `parley build new` and `parley line add` do. The build and table forms carry three facts as values, and `--chair`, `--target` and
+prompt, which is what `parley table new`, `parley build new` and `parley line add`
+do for Codex and `parley line add` for OpenCode. The opencode text has no git
+paragraph and says nothing of a sandbox, which OpenCode has none of; it says that
+each write of the reply file goes through OpenCode's own permission ask
+(`external_directory`), which asks nothing by default and only if the human's
+configuration says so, answered in the TUI. The build and table forms carry three facts as values, and `--chair`, `--target` and
 `--worktree` are required: the human's registered nick, the target repo and
 this session's worktree of it, each directory absolute and existing, printed as
 spelled, and not the same directory (links followed). The line form carries two,
@@ -282,8 +499,8 @@ over the cap. `--command` is the binary as the model
 should type it, taken as spelled (this binary's own path by default).
 `--reply-command` replaces the whole send line with one command of your own, for
 a wrapper script that holds the run's fixed arguments where an approval rule has
-to name one command and no suffix; it is for `--front codex` only, must be one
-line, and needs `--reply-file`.
+to name one command and no suffix; it is for `--front codex` and `--front opencode`
+only, must be one line, and needs `--reply-file`.
 
 ```
 parley primer --front codex --stream file:./chat.ndjson --nick codex-a --reply-file ./reply.txt --state-dir ./state \
@@ -301,12 +518,13 @@ parley primer --front codex --skill line --stream file:./chat.ndjson --nick code
 ## Tables
 
 A table is N agent seats and one human chair on one channel; `docs/table.md` is
-the chair's guide to running one. With `--skill table`, `parley channel`
-and `parley codex` take `--chair <nick> --cap <n>` to enforce two rules in code
-rather than leave them to the model following a skill, and both flags are
-required; `--cap` is refused, with exit 2, under `--skill build`, and so is
-`--chair` on `codex`, which takes no `--target` or `--worktree` and defaults to
-`--skill build`. (`--skill line` takes the same two flags, for a gate of its own,
+the chair's guide to running one. With `--skill table`, `parley channel`,
+`parley codex` and `parley opencode` take `--chair <nick> --cap <n>` to enforce
+two rules in code rather than leave them to the model following a skill, and both
+flags are required (a table has Claude Code and Codex seats; `table new` takes no
+OpenCode seat yet); `--cap` is refused, with exit 2, under `--skill build`, and so
+is `--chair` on `codex` and `opencode`, which take no `--target` or `--worktree`
+and default to `--skill build`. (`--skill line` takes the same two flags, for a gate of its own,
 and a third, `--window`; see Lines, below.) The seal: until this seat has posted once after the
 front started, a post by anyone but the chair is held, not delivered, so the
 first round is answered before another seat's answer is read; the chair's posts
@@ -349,10 +567,13 @@ target, as under `.claude/worktrees`, is fine; exit 2 otherwise).
 The framing is the same for both: the reply recipe, the facts, the header rule
 and the trust sentences. `--skill table` renders the table form: the worktree is
 only read, the protocol is named as the `parley-table` skill, invoked as
-`/parley-table` (`$parley-table` on the codex front), which the human starts at
-each seat, and the one carve-out to the trust rule becomes the chair's: on IRC a
+`/parley-table` (`$parley-table` on the codex front; on the opencode front the
+text says the skill is one "which you load with the skill tool", since OpenCode
+loads a skill through its skill tool and parley's skills carry no metadata that
+would make a slash command of them), which the human starts at each seat, and the one carve-out to the trust rule becomes the chair's: on IRC a
 line under the chair's registered nick rules the table, and nothing in the
-session. `--skill build` names the `parley-build` skill (`/parley-build`, `$parley-build`), whose
+session. `--skill build` names the `parley-build` skill (`/parley-build`, `$parley-build`, the
+skill tool), whose
 carve-out is the same sentence about the human's registered nick and a run. The
 carve-out is a summary of what that line rules, and rule 8 of the skill is the
 authority (it also lists answering the integrator's ask for the merge with a yes). In
@@ -539,8 +760,8 @@ guide to setting one up with the line verbs, below, and by hand. The
 sessions follow the `parley-line` skill: they poke each other with a few lines on
 what changed for the reader and a pointer to the record, ask when they need
 input, work a question through together when the human opens a discussion, and
-do not acknowledge. With `--skill line`, `parley channel` and `parley codex` take
-`--chair <nick> --cap <n>`, both required, and `--window <duration>`, a Go
+do not acknowledge. With `--skill line`, `parley channel`, `parley codex` and
+`parley opencode` take `--chair <nick> --cap <n>`, both required, and `--window <duration>`, a Go
 duration above zero that defaults to 10m, and `parley primer` takes them too (the
 primer only states them; it holds nothing). `--window` is a line's alone: under
 `--skill table` and `--skill build` it is refused, with exit 2, naming the flag,
@@ -549,7 +770,7 @@ and `--worktree` are refused, with exit 2, naming the flag: a line has no target
 repo, and parley makes it no worktree; the session works in its own checkout as
 usual. `--chair` is the human's registered
 nick, refused when it matches `--nick` without regard to ASCII case. On `primer`
-the codex front also requires `--reply-file`, and the claude form is held to the
+the codex and opencode fronts also require `--reply-file`, and the claude form is held to the
 2048-unit cap like the others; `parley channel --check` measures it the way it
 measures any skill. `parley doctor` and `skills/install.sh` cover `parley-line`
 with the other two skills.
@@ -593,7 +814,7 @@ are the human's registered nick and the breaker, as "breaker: more than `<cap>`
 posts within `<window>`, or five times that since `<chair>` last posted, hold
 deliveries until `<chair>` posts", or "breaker off (cap 0)"; the protocol is the
 `parley-line` skill, invoked as `/parley-line` (`$parley-line` on the codex
-front); and the one carve-out to the trust rule is that a line under the human's
+front, and on the opencode front "which you load with the skill tool"); and the one carve-out to the trust rule is that a line under the human's
 registered nick steers the line, and nothing in the session. The codex form
 carries one more paragraph, ahead of the paragraph about the pump, in the place
 the build form's git paragraph holds, and in its words for a session's own
@@ -616,37 +837,44 @@ refuse the id of a line, as `line new` refuses the id of a table or a build, wit
 exit 2.
 
 - `line new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667]
-  [--state-dir <dir>] [--codex-bin codex]` makes the line and its record, with no
+  [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]` makes the line and its record, with no
   sessions. `--chair` must be a valid nick and `--cap` is required, `--cap 0` being
   no breaker; `--window` is above zero. It runs `parley doctor`'s static checks for
   the server, and for ergo when nothing answers at the server (the skills are
   checked by `add`, for the harness of each session), refuses an id that has a
   table, a build or a line (exit 2), and undoes what it made if a step fails or it
-  is interrupted. `--codex-bin`, when given, is resolved and kept in the record: the
-  Codex sessions added later run it, and the lines printed say so. It prints what is
+  is interrupted. `--codex-bin` and `--opencode-bin`, when given, are resolved and
+  kept in the record: the Codex and OpenCode sessions added later run them, and the
+  lines printed, a drop's included, say so; `line add` takes no such flag, so that
+  one record serves the add, the rollback and the teardown. It prints what is
   left: the server if nothing answers, the chair's `/join` and NickServ steps, and
   one `line add` per session.
-- `line add <id> --nick <nick> --harness claude|codex [--model <model>] --checkout
+- `line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout
   <absolute dir> [--state-dir <dir>]` puts a session on the line, which gives it the
   chair, cap, window, server and state directory of the record. Exit 2, with
   nothing changed, for: no such line; a nick that is invalid, reserved (`tables`,
   `builds`, `lines`), the chair's, or already in the line, without regard to ASCII
-  case; `opencode` (not supported yet) or another harness; a model over 128 bytes
-  or outside letters, digits and `. _ - : / @ [ ] +`; a checkout that is not an
+  case; a harness other than `claude`, `codex` and `opencode`; a model over 128 bytes
+  or outside letters, digits and `. _ - : / @ [ ] +`, or for OpenCode one that is
+  not `provider/model` or `provider/model#variant` (the one model that may hold a
+  `#`, once, with a variant after it that is not empty; it is passed to `opencode run
+  -m` as it is, and `opencode run --help` documents the form); a checkout that is not an
   existing directory given by an absolute path, or that holds, or resolves to a
   path that holds, a `$` or a control character (the checkout is resolved, links
   and all, and the resolved path is the one recorded and printed); a checkout,
-  state directory, binary or temp path that is not valid UTF-8; a state directory inside the checkout, or, for a Codex session, `$TMPDIR`;
+  state directory, binary or temp path that is not valid UTF-8; a state directory inside the checkout, or, for a Codex or OpenCode session, `$TMPDIR`;
   a Claude session's `.mcp.json`, or a Codex session's `.codex/config.toml`, that
   is in the checkout and is not the one this line wrote for another session of it
   (the record holds the digest), or a `.codex` that is not a real directory; a
-  Codex nick that already has a thread record for the stream; and a Claude session
+  Codex nick that already has a thread record, or an OpenCode nick a session
+  record, for the stream; and a Claude session
   whose instructions, built in this process as `channel --check` builds them, are
   over Claude Code's cap. Exit 1, also with nothing changed: a machine on which
   doctor's static checks fail, as when the `parley-line` skill is not linked under
   the root the harness reads (`~/.claude/skills` for Claude Code,
-  `~/.agents/skills` for Codex), and a nick whose lock a running session or pump
-  holds.
+  `~/.agents/skills` for Codex, either for OpenCode, which reads both), an OpenCode
+  whose major version is neither 1 nor 2, and a nick whose lock a running session or
+  pump holds.
   A Claude session gets `<checkout>/.mcp.json`, one server `parley` whose
   command is the binary and whose args are `channel --stream irc://<server>/#<id>
   --nick ${PARLEY_NICK} --state-dir <base> --skill line --chair <chair> --cap <cap>
@@ -665,6 +893,48 @@ exit 2.
   be a git checkout, stdin closed, network off for the turn, `-m
   <model>` if given, a five-minute limit and a turn that must have completed, the
   thread recorded in `codex-thread`.
+  An OpenCode session gets no launch file and nothing else written in its checkout,
+  which may be any directory. It gets the same reply directory, and a session
+  started by `opencode run --format json --title "parley line <id> <nick>" --session
+  <id>` in the checkout, where `<id>` is the session's id, which parley makes the way
+  OpenCode's `identifier.ts` does (`ses_`, twelve hex digits of the clock inverted so
+  the newest sorts first, fourteen random letters or digits) and which the run
+  creates the session under ("continues the session, or creates it if it does not
+  exist"); `-m <model>` if given, the environment passed on as it is, a five-minute
+  limit and a process group of its own, which a stop takes whole, so that no turn is
+  left running on a session about to be deleted. The primer is on stdin and not an
+  argument: `opencode run` wraps an argument that holds spaces in double quotes and
+  escapes the quotes in it, and the first message should be the primer as it is. The
+  run must exit 0 with JSON events that all name the id parley chose (an event with
+  none fails the turn, and counts for nothing), no `error` event, and an end not cut
+  off at 1 MiB; a run that does not end within the bound is stopped. The events do
+  not say the turn completed: `opencode run --format json` stops printing steps once
+  the session has gone idle, and loses that race on real turns, so the last
+  `step_finish` may never be printed (the turn is `step_start`, `tool_use`,
+  `step_finish`, `step_start`, `text`, and exit 0). The server says. `line add` finds
+  the service the way the pump does (from its file, held to the same checks) and
+  reads the history back, as the pump does (four messages a page, at most ten
+  pages): the newest idle marker must have the outcome `succeeded`, with only entries
+  of other kinds newer than it, and the nearest assistant message before it must have
+  finished with `stop`. While the history does not yet show the turn over (a user or
+  assistant message newer than the marker, or no marker) it is read again, for up to
+  15 seconds. An outcome of `interrupted` or
+  `failed`, a last step that went on, a service that cannot be found or reached or
+  does not know the session, or an answer that is not the shape this front reads,
+  fails the add, with the reads bounded and the password in no message. The session is registered for deletion (`opencode session
+  delete`, run from the checkout) as soon as the run returns, whatever it did: the id
+  is known before the run. A delete answered "Session not found", for a run that
+  failed before it made the session, found nothing to remove and is not a failure.
+  The run adds no session-level rule (it creates the session with an id, an agent, a
+  model and a directory only): it rejects the asks of its own turn and cancels its
+  questions with a message to carry on, and that is the whole of it. It starts the user's
+  background service if none runs, which detaches itself (its own process group and
+  session, its stdio on `/dev/null`), so stopping the run leaves it alone. A
+  failed turn of a server in OpenCode's simulation mode, the one kind of turn that
+  can be run without a model (it retries, every try a `step_start`, then an `error`
+  event and exit status 1), fails the add with the error's own words and rolls the
+  session back. The id is recorded in `opencode-session`, and the session's answer
+  to the primer, the text of the turn's last step, is printed.
   Files are created with no overwrite and never through a link. When the checkout
   is the root of a git checkout, the launch file's line (`/.mcp.json` or
   `/.codex/config.toml`) is appended to the file `git rev-parse --git-path
@@ -674,18 +944,30 @@ exit 2.
   file: a session of the line that finds its line there, put by another session of
   the line, records the exclude file as its own to clean up. The session
   goes into `line.json` last. Any failure or interrupt takes down what the add made,
-  a started Codex thread included (`codex delete --force`), and puts the record
-  back. It prints the session's launch (Claude: `cd`, the `claude` line with
+  a started Codex thread (`codex delete --force`) or OpenCode session (`opencode
+  session delete`) included, and puts the record back. It prints the session's
+  launch (Claude: `cd`, the `claude` line with
   `--model`, the `--resume <session-id>` form, the `/mcp` and Channels-notice
   checks and `/parley-line`; Codex: the pump line with `--thread auto --skill line`,
-  the `codex resume` line, `/status` and `$parley-line`).
+  the `codex resume` line, `/status` and `$parley-line`; OpenCode, in this order: `cd`
+  and `opencode -s <id>`, which starts the service the pump finds, then the pump
+  line, `parley opencode ... --session auto --skill line ... --state-dir <base>`
+  with no port, the check that the session has loaded the `parley-line` skill, which
+  OpenCode loads with its skill tool and has no slash command for, and notes that
+  `external_directory` is allowed by default, with the `permissions` rule in
+  `opencode.jsonc` that makes it ask, that the run added no permission rules, that the
+  service's password is in its service file and is sent to its loopback address
+  only, and what OpenCode version parley was last verified against).
 - `line drop <id> <nick> [--force] [--state-dir <dir>]` takes one session off. It
   takes the id's lock and the session's nick lock without waiting, and refuses, exit
   1, while the session or its pump holds the latter. It removes the session's
-  thread record, only if it holds the recorded thread (any other is left, and said);
+  thread record (a Codex session's) or session record (an OpenCode session's), only
+  if it holds the recorded thread or session (any other is left, and said; session
+  ids are compared as they are, since they are case-sensitive);
   its reply directory, only if it is directly in `$TMPDIR`, named for the line and
   holds the marker, else it refuses (exit 1); and, when no other session of the line
-  uses that checkout with that harness, the launch file, only if it is a regular
+  uses that checkout with that harness, the launch file (an OpenCode session has
+  none, and shares none), only if it is a regular
   file in a real directory whose bytes hash to the recorded digest, then the `.codex`
   directory if the line made it and it is empty, and the line in the exclude file if
   the line added it, that exact line and nothing else, and the file itself if the
@@ -703,7 +985,9 @@ exit 2.
   another path (it was moved and replaced by a link, or a directory above it
   became one), checked before any file is judged and again before it is removed.
   The session is then removed from the record, and a
-  `codex delete <thread>` line is printed for a Codex session and never run.
+  `codex delete <thread>` line is printed for a Codex session and an `opencode
+  session delete <session>` line for an OpenCode one, spelled with the binary the
+  line was made with, and never run.
 - `line end <id> [--force] [--state-dir <dir>]` takes the id's lock and every
   session's nick lock, refusing (exit 1) if any is held, judges every session by
   the rules of `drop` before removing anything, drops them in order, and removes
@@ -723,17 +1007,26 @@ nothing else there. `docs/line.md` has the trust rules.
 with this machine's current versions, one line per check, `ok`, `warn` or
 `FAIL`, and exits 1 if any is a `FAIL`. It costs nothing: the Codex CLI's
 version against the last one verified and every flag of the Codex commands parley
-uses, the Claude Code CLI's version, ergo and its version, whether the server
+uses, the Claude Code CLI's version, the OpenCode CLI's version and every flag and
+subcommand of its commands that parley uses (when named, below), ergo and its version, whether the server
 answers with every IRC capability the adapter requires and, when its `sasl`
 lists mechanisms, `PLAIN` among them (a server that is not up is a `warn`), and
 the skill links `skills/install.sh` makes. A binary that is missing is a `FAIL`
-that links the project's install page. `--harness claude` or `--harness codex`,
-repeatable, narrows the binary, version, skill-link and `--live` checks to the
-harnesses you have, and both are checked without one; the server and ergo are
-checked either way. The Claude Code line says that a launch needs
+that links the project's install page. `--harness claude`, `--harness codex` or
+`--harness opencode`, repeatable, narrows the binary, version, skill-link and
+`--live` checks to the harnesses you have; Claude Code and Codex are checked
+without one, and OpenCode only when named, so a machine without it is not failed
+for lacking it; the server and ergo are checked either way. OpenCode must be a 2.x
+(the legacy 1.x is a `FAIL` that says where OpenCode 2 comes from, and so is any
+other major version or a version that cannot be read, since the pump refuses a
+server of it); its version is read
+against the one last verified (2.1.0), a different 2.x is a `warn` that says
+parley was last verified against that one on a live model, that a newer 2.x is
+expected to work, and what to do if a session misbehaves. An OpenCode skill link under either root passes. The Claude Code line says that a launch needs
 `--dangerously-load-development-channels`, which doctor cannot check.
 `--server` names a server other than `127.0.0.1:6667`, and `--codex-bin`,
-`--claude-bin` and `--ergo-bin` name a binary that is not on the `PATH`.
+`--claude-bin`, `--opencode-bin` and `--ergo-bin` name a binary that is not on the
+`PATH`.
 `parley table new` runs the same
 static checks for the harnesses its seats use, with ergo as well when nothing
 answers at the server (the first step it prints is `parley server`) and only the
@@ -741,8 +1034,8 @@ answers at the server (the first step it prints is `parley server`) and only the
 before any change; `parley build new` runs them for its peers with the
 `parley-build` link in its place; `parley line new` runs those for the server and
 ergo only, and `parley line add` for its session's harness, with the `parley-line`
-link in its place. A version of the Codex CLI, Claude Code or ergo that differs
-from the verified one is a `warn` that says what to do about it.
+link in its place. A version of the Codex CLI, Claude Code, OpenCode or ergo
+that differs from the verified one is a `warn` that says what to do about it.
 `parley doctor --live` also spends one tiny Codex turn (none, if `codex delete`
 has no `--force` to remove its thread without a prompt), in a temp directory, to
 check that the thread id Codex announces is the one the model reads in its shell,
@@ -771,7 +1064,7 @@ The fronts say what a delivery is; the protocol says how a build is conducted, a
 it is one document rather than two. `skills/parley-build/SKILL.md` is that document:
 the handshake that opens a run, the shape every message takes, the eight rules,
 what a peer message is worth, and what may be promoted to the ledger. It is
-harness-neutral — nothing in it is Claude Code's or Codex's — and it is addressed
+harness-neutral — nothing in it is Claude Code's, Codex's or OpenCode's — and it is addressed
 to the model that is a participant. `skills/parley-table/SKILL.md` is the protocol
 of a table, and `skills/parley-table/sheet.md` the template of the sheet the chair
 fills in. `skills/parley-line/SKILL.md` is the protocol of a line: heads-ups,
@@ -781,11 +1074,15 @@ sessions, with the work and its records staying where they live.
 `skills/install.sh` links the three skills, `skills/parley-build/`,
 `skills/parley-table/` and `skills/parley-line/`, into `~/.claude/skills/` and
 `~/.agents/skills/`, which is where Claude Code and
-the agentskills.io convention look. All six are symlinks into the checkout, so
+the agentskills.io convention look; OpenCode reads both roots. All six are symlinks into the checkout, so
 an edit is live in the next session; the script is idempotent, never replaces a
 path it did not create, and `--uninstall` takes its links out again. Claude
 Code invokes them as `/parley-build`, `/parley-table` and `/parley-line`, Codex as
 `$parley-build`, `$parley-table` and `$parley-line`, and the human invokes one at
-the start of a build, a table or a line, in every session. An install also removes a link named `parley`,
+the start of a build, a table or a line, in every session. OpenCode loads a skill
+with its skill tool, and has no command for these: they carry no `opencode/slash`
+metadata, so the primer names the tool and no command, and the human asks an
+OpenCode session to load the skill if its answer to the primer does not show it
+did. An install also removes a link named `parley`,
 the old name of the build skill, under either root when it points into this
 checkout, and names, without touching, anything else it finds at that name.

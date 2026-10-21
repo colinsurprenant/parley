@@ -68,11 +68,17 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 		{"no harness", "--harness is required", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--checkout", co, "--state-dir", b.base}}
 		}},
-		{"an unknown harness", "the harnesses are claude and codex", func(t *testing.T, b *lineBench, co string) env {
+		{"an unknown harness", "the harnesses are claude, codex and opencode", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "gemini", co)}
 		}},
-		{"opencode", "not supported yet", func(t *testing.T, b *lineBench, co string) env {
-			return env{args: b.ladd("demo", "plan", "opencode", co)}
+		{"an OpenCode model that is not provider/model", "provider/model", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: b.ladd("demo", "plan", "opencode", co, "--model", "gpt-5")}
+		}},
+		{"an OpenCode model with an empty provider", "provider/model", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: b.ladd("demo", "plan", "opencode", co, "--model", "/gpt-5")}
+		}},
+		{"an OpenCode model with an empty name", "provider/model", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: b.ladd("demo", "plan", "opencode", co, "--model", "openai/")}
 		}},
 		{"an empty model", "--model is empty", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "claude", co, "--model", "")}
@@ -213,6 +219,17 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := tr.Write(fakeThread(9)); err != nil {
+				t.Fatal(err)
+			}
+			return env{args: b.ladd("demo", "build", "codex", co)}
+		}},
+		// A leftover record of the other harness's kind is refused the same way.
+		{"a nick with an OpenCode session record, for a Codex session", "already has an OpenCode session record", func(t *testing.T, b *lineBench, co string) env {
+			sr, err := state.OpenSessionRecord(b.base, "build", b.stream("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sr.Write("ses_00000000000000000000000009"); err != nil {
 				t.Fatal(err)
 			}
 			return env{args: b.ladd("demo", "build", "codex", co)}

@@ -29,8 +29,9 @@ import (
 )
 
 const (
-	harnessClaude = "claude"
-	harnessCodex  = "codex"
+	harnessClaude   = "claude"
+	harnessCodex    = "codex"
+	harnessOpenCode = "opencode"
 
 	// seatTurnTimeout bounds one Codex seat's start: a primer is one short turn.
 	seatTurnTimeout = 5 * time.Minute
@@ -146,7 +147,7 @@ func cmdTableNew(args []string) error {
 	chair := fs.String("chair", "", "required: your registered nick on the server, the human who chairs the table")
 	rounds := fs.Int("rounds", 0, "required: rounds the table runs before a checkpoint; the gates' cap is rounds times the number of seats")
 	var seatArgs stringList
-	fs.Var(&seatArgs, "seat", "required, repeatable: a seat as <nick>=<claude|codex>[:<model>], e.g. --seat codex-a=codex:gpt-5 --seat claude-a=claude:opus; a model is at most 128 bytes of letters, digits and . _ - : / @ [ ] +; opencode seats are not supported yet")
+	fs.Var(&seatArgs, "seat", "required, repeatable: a seat as <nick>=<claude|codex>[:<model>], e.g. --seat codex-a=codex:gpt-5 --seat claude-a=claude:opus; a model is at most 128 bytes of letters, digits and . _ - : / @ [ ] +; OpenCode seats are not supported yet (a line takes OpenCode sessions, a table does not)")
 	worktree := fs.String("worktree", "", "the shared worktree to make, an absolute path that does not exist yet (default <state base>/tables/<id>/worktree)")
 	server := fs.String("server", defaultListen, "the loopback IP:port of the IRC server the table uses (a host name is refused)")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ and tables/ (default $XDG_STATE_HOME/parley)")
@@ -432,9 +433,10 @@ func (p *tablePlan) checkIDFree() error {
 }
 
 // parseMember parses one --seat or --peer value (flagName), <nick>=<harness>[:<model>].
-// The harness is claude or codex; OpenCode is not supported yet. The two
-// directories the state base keeps tables and builds in sit beside the per-nick
-// ones, so neither is a nick: stream.ValidNick refuses both.
+// The harness is claude or codex; OpenCode is not supported at a table or a
+// build yet, only on a line. The two directories the state base keeps tables
+// and builds in sit beside the per-nick ones, so neither is a nick:
+// stream.ValidNick refuses both.
 func parseMember(flagName, raw string) (*seatPlan, error) {
 	nick, spec, ok := strings.Cut(raw, "=")
 	if !ok {
@@ -446,8 +448,8 @@ func parseMember(flagName, raw string) (*seatPlan, error) {
 	harness, model, hasModel := strings.Cut(spec, ":")
 	switch harness {
 	case harnessClaude, harnessCodex:
-	case "opencode":
-		return nil, cfgErrf("%s %q: OpenCode %ss are not supported yet; the harnesses are claude and codex", flagName, raw, strings.TrimPrefix(flagName, "--"))
+	case harnessOpenCode:
+		return nil, cfgErrf("%s %q: OpenCode %ss are not supported yet: a line takes OpenCode sessions (parley line add --harness opencode), a table or a build does not; the harnesses here are claude and codex", flagName, raw, strings.TrimPrefix(flagName, "--"))
 	default:
 		return nil, cfgErrf("%s %q: unknown harness %q: the harnesses are claude and codex", flagName, raw, harness)
 	}
@@ -466,18 +468,43 @@ func parseMember(flagName, raw string) (*seatPlan, error) {
 // carry: a control character, a leading '-', more than modelMax bytes, or a
 // character outside modelRune. flagName and raw name where it came from in the
 // refusal: the --seat or --peer value, or the --model value itself.
-func checkModel(flagName, raw, model string) error {
+func checkModel(flagName, raw, model string) error { return checkModelRunes(flagName, raw, model, "") }
+
+// checkOpenCodeModel is checkModel for an OpenCode model, which `opencode run -m`
+// takes as provider/model with an optional #variant (`opencode run --help`: "the
+// format provider/model#variant"), and which line add passes on verbatim. The shape
+// is held to: a provider and a model either side of the first '/', both not empty,
+// and, if there is a '#', one only, with a variant after it that is not empty. The
+// '#' is allowed here and nowhere else: no Claude or Codex model id has one. Whatever
+// else a model is held to, the control characters, the leading '-', the length and
+// the rune set, it is held to as well, the variant included.
+func checkOpenCodeModel(flagName, raw, model string) error {
+	base, variant, hasVariant := strings.Cut(model, "#")
+	if strings.Contains(variant, "#") {
+		return cfgErrf("%s %q: an OpenCode model has at most one '#', before its variant: provider/model#variant", flagName, raw)
+	}
+	if hasVariant && variant == "" {
+		return cfgErrf("%s %q: the variant after '#' is empty: an OpenCode model is provider/model, or provider/model#variant", flagName, raw)
+	}
+	if provider, name, ok := strings.Cut(base, "/"); !ok || provider == "" || name == "" {
+		return cfgErrf("%s %q: an OpenCode model is provider/model, or provider/model#variant, as `opencode models` lists them", flagName, raw)
+	}
+	return checkModelRunes(flagName, raw, model, "#")
+}
+
+// checkModelRunes is checkModel with the characters extra allowed besides modelRune.
+func checkModelRunes(flagName, raw, model, extra string) error {
 	switch {
 	case hasControl(model):
 		return cfgErrf("%s %q: the model holds a control character", flagName, raw)
 	case strings.HasPrefix(model, "-"):
 		return cfgErrf("%s %q: the model begins with '-', which a command line would take for a flag", flagName, raw)
 	case len(model) > modelMax:
-		return cfgErrf("%s: the model is %d bytes, over the %d bytes of the longest model id a harness takes (it is kept in the record, printed into commands and handed to `codex exec -m` and `claude --model`)", flagName, len(model), modelMax)
+		return cfgErrf("%s: the model is %d bytes, over the %d bytes of the longest model id a harness takes (it is kept in the record, printed into commands and handed to `codex exec -m`, `opencode run -m` and `claude --model`)", flagName, len(model), modelMax)
 	}
-	if i := strings.IndexFunc(model, func(r rune) bool { return !modelRune(r) }); i >= 0 {
+	if i := strings.IndexFunc(model, func(r rune) bool { return !modelRune(r) && !strings.ContainsRune(extra, r) }); i >= 0 {
 		bad, _ := utf8.DecodeRuneInString(model[i:])
-		return cfgErrf("%s %q: the model holds %q, which no model id of Claude Code or Codex has: a model is letters, digits and . _ - : / @ [ ] +", flagName, raw, bad)
+		return cfgErrf("%s %q: the model holds %q, which no model id of Claude Code, Codex or OpenCode has: a model is letters, digits and . _ - : / @ [ ] + (and, for OpenCode, one '#' before a variant)", flagName, raw, bad)
 	}
 	return nil
 }

@@ -51,7 +51,7 @@ func goldenWant(t *testing.T, front, target, worktree string) string {
 // its default, prints the golden render, with the facts it was launched with.
 func TestPrimerBuildFormIsByteForByteTheGolden(t *testing.T) {
 	f := launchFacts(t)
-	for _, front := range []string{"claude", "codex"} {
+	for _, front := range []string{"claude", "codex", "opencode"} {
 		want := goldenWant(t, front, f.target, f.worktree)
 		for _, extra := range [][]string{nil, {"--skill", "build"}} {
 			res := mustRun(t, "", append(goldenSample(front, f.target, f.worktree), extra...)...)

@@ -283,7 +283,7 @@ func TestLineRecordCheckRefusesWhatTheVerbsDidNotWrite(t *testing.T) {
 		{"a model with a flag in it", func(r *lineRecord) { r.Sessions[0].Model = "-x" }, "model"},
 		{"a relative checkout", func(r *lineRecord) { r.Sessions[0].Checkout = "co" }, "checkout"},
 		{"a thread that is not a UUID", func(r *lineRecord) { r.Sessions[1].Thread = "nope" }, "UUID"},
-		{"a thread on a Claude session", func(r *lineRecord) { r.Sessions[0].Thread = fakeThread(2) }, "UUID"},
+		{"a thread on a Claude session", func(r *lineRecord) { r.Sessions[0].Thread = fakeThread(2) }, "a Claude session holds no thread"},
 		{"a Codex session with no thread", func(r *lineRecord) { r.Sessions[1].Thread = "" }, "no thread"},
 		{"a reply directory of another line", func(r *lineRecord) { r.Sessions[1].ReplyDir = "/tmp/parley-line-other-123" }, "reply directory"},
 		{"a reply directory on a Claude session", func(r *lineRecord) { r.Sessions[0].ReplyDir = "/tmp/parley-line-demo-1" }, "reply directory"},
@@ -404,7 +404,7 @@ func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{
 		"parley line    new <id> --chair <nick> --cap <n> [--window 10m]",
-		"parley line    add <id> --nick <nick> --harness claude|codex [--model <model>] --checkout <absolute dir>",
+		"parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout <absolute dir>",
 		"parley line    drop <id> <nick> [--force]",
 		"parley line    end <id> [--force]",
 		"line     set up a line, put sessions on it, take them off and take it down",

@@ -145,7 +145,8 @@ say at your terminal what you are waiting for.
 
 There is one way to post, and it is the same on every harness: the `send`
 command your front's connect-time text gave you (the channel server's
-instructions in Claude Code, the primer in Codex). Copy it verbatim. First
+instructions in Claude Code, the primer, your first message, in Codex and
+OpenCode). Copy it verbatim. First
 write each post, with your file-writing tool, to the `--body-file` path it
 names; the body never goes on the command line. Write the file and run the
 send as two steps, one after the other, never in one parallel batch. `send`

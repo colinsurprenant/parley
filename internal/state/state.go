@@ -18,7 +18,8 @@
 // are pointed at. A secret is per nick and per server rather than per stream,
 // because one account reaches every channel on that server. A Codex seat's
 // thread record, <base>/<nick>/<streamkey>/codex-thread, sits beside the
-// cursor: it names the session that stream's pump delivers into.
+// cursor: it names the session that stream's pump delivers into. An OpenCode
+// session's record, opencode-session, sits there in the same way.
 package state
 
 import (

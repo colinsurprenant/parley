@@ -224,7 +224,7 @@ func TestLineNewSetsTheLineUp(t *testing.T) {
 		"/join #demo",
 		"/msg NickServ INFO colin",
 		"/msg NickServ REGISTER <password>",
-		fmt.Sprintf("'%s' line add demo --nick <nick> --harness <claude|codex> [--model <model>] --checkout <absolute dir> --state-dir '%s'", binPath, b.base),
+		fmt.Sprintf("'%s' line add demo --nick <nick> --harness <claude|codex|opencode> [--model <model>] --checkout <absolute dir> --state-dir '%s'", binPath, b.base),
 		fmt.Sprintf("When it is over: '%s' line end demo --state-dir '%s'", binPath, b.base),
 	})
 	if strings.Contains(res.stdout, "doctor:") {

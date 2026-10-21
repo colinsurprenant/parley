@@ -43,10 +43,10 @@ parley table new <id> --target <target> --chair <chair> --rounds 3 \
 ```
 
 `--seat <nick>=<claude|codex>[:<model>]` is repeatable, one per seat. OpenCode
-seats are not supported yet; OpenCode is the next harness on the list. A model
-is at most 128 bytes of ASCII letters and digits and
-`. _ - : / @ [ ] +`, which holds the ids Claude Code and Codex take; it does not
-begin with `-` and holds no control character. It is kept in `table.json`, so the
+seats are not supported for now (a line takes OpenCode sessions, see `docs/line.md`),
+and open to explore. A model is at most 128 bytes of ASCII letters and
+digits and `. _ - : / @ [ ] +`, which holds the ids Claude Code and Codex take; it
+does not begin with `-` and holds no control character. It is kept in `table.json`, so the
 bound is also what keeps that record under the 64 KiB `table end` reads. The
 optional flags: `--worktree <dir>` (default
 `<base>/tables/<id>/worktree`), `--server 127.0.0.1:6667`, `--state-dir <dir>`
@@ -176,10 +176,10 @@ and one lock.
   `<base>/tables/<id>/` for you to fill in. Without one it says where to get it.
 
 **The cap** is rounds times seats, the number after `--cap` in the `.mcp.json`
-and in each pump line: three rounds of three seats is `--cap 9`. Both fronts,
-`parley channel` and `parley codex`, take `--chair` and `--cap` with `--skill
-table` and require both, and `--cap 0` turns the breaker off and keeps the seal.
-What the two rules do is under "What to watch".
+and in each pump line: three rounds of three seats is `--cap 9`. Both fronts a
+table uses, `parley channel` and `parley codex`, take `--chair` and `--cap` with
+`--skill table` and require both, and `--cap 0` turns the breaker off and keeps
+the seal. What the two rules do is under "What to watch".
 
 **If any step fails after the worktree exists** (exit 1), everything the run made
 is taken down: the worktree, the reply directory, the table directory, the thread

@@ -1188,7 +1188,8 @@ func TestUsage(t *testing.T) {
 	for _, want := range []string{"parley send", "parley wait", "parley channel", "parley codex", "parley primer",
 		"--thread", "file:<path>", "irc://host:port/channel", "--state-dir", "--body-file", "irc/<host>_<port>/password",
 		"--front claude|codex", "--reply-file", "--reply-command", "It opens nothing", "the canonical spec",
-		"--thread <thread>|auto", "auto is reserved", "codex-thread", "CODEX_THREAD_ID"} {
+		"--thread <thread>|auto", "auto is reserved", "codex-thread", "CODEX_THREAD_ID",
+		"parley opencode", "--session <ses_id>|auto", "opencode-session"} {
 		if !strings.Contains(res.stdout, want) {
 			t.Fatalf("usage does not mention %q:\n%s", want, res.stdout)
 		}
@@ -1281,6 +1282,44 @@ func TestPrimerPrintsAWrapperAsTheWholeReplyCommand(t *testing.T) {
 	}
 }
 
+// TestPrimerPrintsTheOpenCodeForm: the text that is an OpenCode session's first
+// message. It is the codex form's shape with the OpenCode front paragraph: the
+// facts as values, a reply file placeholder when none is named, the skill loaded
+// with the skill tool and never typed as a command, and no sandbox sentence or
+// Codex's argument bound; it carries the bound and the stub of its own.
+// --reply-command is accepted here as on codex, since this text is a
+// first message too.
+func TestPrimerPrintsTheOpenCodeForm(t *testing.T) {
+	f := launchFacts(t)
+	res := mustRun(t, "", f.verb("primer", "--front", "opencode", "--stream", "irc://127.0.0.1:6667/parley",
+		"--nick", "oc-b", "--state-dir", "./state", "--command", "../../bin/parley")...)
+	for _, want := range []string{"your human partner's registered nick " + f.chair + ";", "target repo " + f.target + ";",
+		"your worktree " + f.worktree + ". The protocol is the parley-build skill, which you load with the skill tool.",
+		"A delivery is posted whole up to about 512 KiB of rendered text", "arrives as a stub in its place"} {
+		if !strings.Contains(res.stdout, want) {
+			t.Fatalf("the opencode primer does not carry %q:\n%s", want, res.stdout)
+		}
+	}
+	for _, unwanted := range []string{"/parley-build", "$parley-build", "sandbox", "one message per call", "one argument", "Codex"} {
+		if strings.Contains(res.stdout, unwanted) {
+			t.Fatalf("the opencode primer carries %q:\n%s", unwanted, res.stdout)
+		}
+	}
+	if !strings.HasPrefix(res.stdout, "This primer is your first message because") || !strings.HasSuffix(res.stdout, "answers that ask in the TUI.\n") {
+		t.Fatalf("the opencode primer does not open with its opening and end with its front paragraph:\n%s", res.stdout)
+	}
+	want := "'../../bin/parley' send --stream 'irc://127.0.0.1:6667/parley' --nick oc-b --state-dir './state' --body-file '<reply file path>'"
+	if got := replyCommandLine(t, res.stdout); got != want {
+		t.Fatalf("the reply command is\n%q\nwant\n%q", got, want)
+	}
+
+	wrapped := mustRun(t, "", f.verb("primer", "--front", "opencode", "--stream", "irc://127.0.0.1:6667/parley",
+		"--nick", "oc-b", "--reply-file", "./reply.txt", "--reply-command", "/opt/parley/send.sh")...)
+	if !strings.Contains(wrapped.stdout, "2. Run this with Bash:\n\n/opt/parley/send.sh\n\n") || strings.Contains(wrapped.stdout, "send --stream") {
+		t.Fatalf("the opencode wrapper primer does not run the wrapper alone:\n%s", wrapped.stdout)
+	}
+}
+
 // TestPrimerPrintsTheClaudeFormReplyFirst: the whole point of the ordering.
 // Claude Code truncates the tail of an instructions string, so the one way to
 // reach the peer stands above everything that can be cut.
@@ -1357,7 +1396,7 @@ func TestPrimerRejectsABadInvocation(t *testing.T) {
 		{"an empty command", []string{"primer", "--front", "codex", "--stream", spec, "--nick", "codex-b", "--command", ""}, "--command must not be empty"},
 		{"a stray argument", []string{"primer", "--front", "codex", "--stream", spec, "--nick", "codex-b", "extra"}, `unexpected argument "extra"`},
 		{"a reply command on the claude front", []string{"primer", "--front", "claude", "--stream", spec, "--nick", "claude-a",
-			"--reply-file", "/tmp/reply.txt", "--reply-command", "/opt/parley/send.sh"}, "--reply-command applies to the codex front only"},
+			"--reply-file", "/tmp/reply.txt", "--reply-command", "/opt/parley/send.sh"}, "--reply-command applies to the codex and opencode fronts only"},
 		{"an empty reply command", []string{"primer", "--front", "codex", "--stream", spec, "--nick", "codex-b",
 			"--reply-command", ""}, "--reply-command must not be empty"},
 		{"a reply command of two lines", []string{"primer", "--front", "codex", "--stream", spec, "--nick", "codex-b",
@@ -1606,13 +1645,13 @@ func TestWaitTakesNeitherTableFlag(t *testing.T) {
 func TestUsageDocumentsTheTableFlags(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{"--chair <nick> --cap <n>", "tables:", "--cap 0 turns the cap", "in this process's memory only", "wait takes neither flag",
-		"[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "it takes no --target or --worktree"} {
+		"[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "they take no --target or --worktree"} {
 		if !strings.Contains(top, want) {
 			t.Fatalf("usage does not mention %q:\n%s", want, top)
 		}
 	}
 	// The per-verb help prints the flags with their own descriptions, on stdout.
-	for front, usage := range map[string]string{"channel": "[--skill build|table --cap <n>]", "codex": "[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]"} {
+	for front, usage := range map[string]string{"channel": "[--skill build|table --cap <n>]", "codex": "[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "opencode": "[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]"} {
 		help := runParley(t, "", front, "-h").stdout
 		for _, want := range []string{"-chair", "-cap", "-skill", usage, "memory only"} {
 			if !strings.Contains(help, want) {

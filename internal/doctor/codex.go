@@ -16,13 +16,20 @@ const (
 	ergoRemedy  = "To try it, run parley doctor --live; if a table or a build misbehaves, install ergo " + ErgoVerified + " (" + ergoVerifiedURL + ")."
 )
 
-// A surface is one codex subcommand parley depends on and the flags it uses
-// there. A flag is spelled as parley spells it on the command line: "--json",
-// or "-C/--cd" when parley uses a short form that has a long one, in which case
-// both must be there.
+// A surface is one subcommand of a harness's CLI that parley depends on, the
+// flags it uses there and the subcommands it runs under it. A flag is spelled as
+// parley spells it on the command line: "--json", or "-C/--cd" when parley uses
+// a short form that has a long one, in which case both must be there. A
+// subcommand is listed in the help of OpenCode's CLI under its SUBCOMMANDS
+// heading, as an indented line that begins with its name.
 type surface struct {
+	// label, when it is not empty, is the surface's name in the report;
+	// otherwise it is the tool and the subcommand, "codex exec". The default
+	// command of a CLI has no subcommand to name it by.
+	label string
 	cmd   []string
 	flags []string
+	subs  []string
 }
 
 // codexSurfaces are the flags of the documented Codex commands parley uses or
@@ -31,10 +38,10 @@ type surface struct {
 // codex front delivers; delete is how a throwaway or abandoned session is
 // removed without a prompt.
 var codexSurfaces = []surface{
-	{[]string{"exec"}, []string{"--json", "-C/--cd", "-s/--sandbox", "-m/--model", "-c/--config", "--skip-git-repo-check"}},
-	{[]string{"resume"}, []string{"-a/--ask-for-approval", "-C/--cd"}},
-	{[]string{"queue"}, []string{"--thread", "--message"}},
-	{[]string{"delete"}, []string{"--force"}},
+	{cmd: []string{"exec"}, flags: []string{"--json", "-C/--cd", "-s/--sandbox", "-m/--model", "-c/--config", "--skip-git-repo-check"}},
+	{cmd: []string{"resume"}, flags: []string{"-a/--ask-for-approval", "-C/--cd"}},
+	{cmd: []string{"queue"}, flags: []string{"--thread", "--message"}},
+	{cmd: []string{"delete"}, flags: []string{"--force"}},
 }
 
 // checkCodex is the static half of the Codex checks: the binary, its version,
@@ -50,35 +57,79 @@ func checkCodex(ctx context.Context, bin string) ([]Result, bool) {
 		checkVersion(ctx, "codex", path, CodexVerified, codexRemedy),
 	}
 	for _, s := range codexSurfaces {
-		rs = append(rs, checkSurface(ctx, path, s))
+		rs = append(rs, checkSurface(ctx, "codex", path, s))
 	}
 	return rs, true
 }
 
-func checkSurface(ctx context.Context, bin string, s surface) Result {
-	name := "codex " + strings.Join(s.cmd, " ")
+// checkSurface reads bin's help for the surface and checks that it lists what
+// parley uses there. A help text is read from both streams: clap prints it on
+// stdout and OpenCode's yargs on stderr.
+func checkSurface(ctx context.Context, tool, bin string, s surface) Result {
 	help := append(append([]string(nil), s.cmd...), "--help")
+	invoked := strings.Join(append([]string{tool}, help...), " ")
+	name := s.label
+	if name == "" {
+		name = tool + " " + strings.Join(s.cmd, " ")
+	}
 	stdout, stderr, err := probe(ctx, bin, help...)
 	if err != nil {
-		return Result{Fail, name, fmt.Sprintf("%s --help: %s", name, describe(err, stdout, stderr))}
+		return Result{Fail, name, fmt.Sprintf("%s: %s", invoked, describe(err, stdout, stderr))}
 	}
-	have := helpFlags(stdout)
+	text := stdout + "\n" + stderr
+	have := helpFlags(text)
 	var missing []string
 	for _, f := range s.flags {
 		if !have.has(f) {
 			missing = append(missing, f)
 		}
 	}
-	if len(missing) > 0 {
-		return Result{Fail, name, fmt.Sprintf("%s --help does not list %s", name, strings.Join(missing, ", "))}
+	for _, sub := range s.subs {
+		if !listsSubcommand(text, sub) {
+			missing = append(missing, "the "+sub+" subcommand")
+		}
 	}
-	return Result{OK, name, strings.Join(s.flags, " ")}
+	if len(missing) > 0 {
+		return Result{Fail, name, fmt.Sprintf("%s does not list %s", invoked, strings.Join(missing, ", "))}
+	}
+	listed := append([]string(nil), s.flags...)
+	for _, sub := range s.subs {
+		listed = append(listed, "subcommand "+sub)
+	}
+	return Result{OK, name, strings.Join(listed, " ")}
+}
+
+// listsSubcommand reports whether an OpenCode help text lists sub in its
+// SUBCOMMANDS section: an indented line whose first column, before two spaces or
+// more, is the name, with aliases after a comma ("upgrade, update"). Prose that
+// mentions the name, and a longer name that begins with it, are not the listing.
+func listsSubcommand(help, sub string) bool {
+	in := false
+	for _, line := range strings.Split(help, "\n") {
+		switch {
+		case strings.TrimSpace(line) == "SUBCOMMANDS":
+			in = true
+		case in && (line == "" || line[0] != ' '):
+			in = false
+		case in:
+			names, _, _ := strings.Cut(strings.TrimSpace(line), "  ")
+			for _, n := range strings.Split(names, ", ") {
+				if n == sub {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // optionLineRE is the head of an option's definition line in clap's help:
 // indented, an optional short spelling, an optional long one. Prose that merely
 // mentions a flag is not at the head of a line, so it is not taken for the flag.
-var optionLineRE = regexp.MustCompile(`^\s+(-[A-Za-z0-9])?(?:, )?(--[A-Za-z0-9][A-Za-z0-9-]*)?(?:[\s=<\[]|$)`)
+//
+// OpenCode 2's help puts the short spelling after the long one, "--session, -s
+// string", and the pattern takes either order.
+var optionLineRE = regexp.MustCompile(`^\s+(-[A-Za-z0-9])?(?:, )?(--[A-Za-z0-9][A-Za-z0-9-]*)?(?:, (-[A-Za-z0-9]))?(?:[\s=<\[]|$)`)
 
 // flagSet is the option definitions in a help text, one entry per definition
 // line, each holding the spellings that line gives.
@@ -88,7 +139,7 @@ func helpFlags(help string) flagSet {
 	var set flagSet
 	for _, line := range strings.Split(help, "\n") {
 		m := optionLineRE.FindStringSubmatch(line)
-		if m == nil || (m[1] == "" && m[2] == "") {
+		if m == nil || (m[1] == "" && m[2] == "" && m[3] == "") {
 			continue
 		}
 		def := map[string]bool{}

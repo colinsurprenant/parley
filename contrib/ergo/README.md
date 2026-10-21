@@ -96,8 +96,8 @@ bytes parley generates, stores 0600 at
 `--state-dir`), and reads back on every later connection. Nobody types it and
 nobody needs to see it.
 
-The account is what makes the reply path work. `parley wait`, `parley channel`
-and `parley codex` hold a nick for as long as they run, and the model's reply
+The account is what makes the reply path work. `parley wait`, `parley channel`,
+`parley codex` and `parley opencode` hold a nick for as long as they run, and the model's reply
 goes out through a separate `parley send` process as the same participant —
 without accounts the server would refuse the second connection with 433. With
 them, both are sessions of one client.

@@ -22,10 +22,10 @@ func lineChannelArgs(root string) []string {
 }
 
 // TestPrimerLineFormIsByteForByteTheGolden: --skill line prints the golden
-// render of the primer package's lineSample(), on both fronts. The line form has
+// render of the primer package's lineSample(), on every front. The line form has
 // no target or worktree, so nothing here is substituted.
 func TestPrimerLineFormIsByteForByteTheGolden(t *testing.T) {
-	for _, front := range []string{"claude", "codex"} {
+	for _, front := range []string{"claude", "codex", "opencode"} {
 		want, err := os.ReadFile(filepath.Join("..", "..", "internal", "primer", "testdata", "line-"+front+".golden"))
 		if err != nil {
 			t.Fatalf("read the golden render: %v", err)
@@ -51,7 +51,8 @@ func linePrimerArgs(front string) []string {
 // the human launched the session with, so nothing is left to fill in, nothing of
 // a build or a table is said, and the skill is invoked the way the front does.
 func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
-	for front, skill := range map[string]string{"claude": "invoked as /parley-line.", "codex": "invoked as $parley-line."} {
+	for front, skill := range map[string]string{"claude": "invoked as /parley-line.", "codex": "invoked as $parley-line.",
+		"opencode": "the parley-line skill, which you load with the skill tool."} {
 		out := mustRun(t, "", linePrimerArgs(front)...).stdout
 		for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or five times that since colin last posted, hold deliveries until colin posts.", skill, "other sessions", "the one named above"} {
 			if !strings.Contains(out, want) {
@@ -344,7 +345,7 @@ func TestUsageDocumentsTheLineSkill(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	flat := strings.Join(strings.Fields(top), " ")
 	for _, want := range []string{"parley channel --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m]",
-		"parley primer --front claude|codex --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m]",
+		"parley primer --front claude|codex|opencode --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m]",
 		"[--skill build|table|line --chair <nick> --cap <n> [--window 10m]]", "lines:", "parley-line skill",
 		"there is no first hold", "--target and --worktree are refused", "--cap is for --skill table and --skill line only",
 		"--window for --skill line only", "Nothing is released by time passing", "more than <n> of them within --window"} {
@@ -352,7 +353,7 @@ func TestUsageDocumentsTheLineSkill(t *testing.T) {
 			t.Fatalf("usage does not mention %q:\n%s", want, top)
 		}
 	}
-	for _, verb := range []string{"channel", "primer", "codex"} {
+	for _, verb := range []string{"channel", "primer", "codex", "opencode"} {
 		help := runParley(t, "", verb, "-h").stdout
 		for _, want := range []string{"--skill line", "-cap", "-window"} {
 			if !strings.Contains(help, want) {
