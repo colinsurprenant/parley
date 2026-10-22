@@ -4,11 +4,11 @@
 foreground as the IRC server for this machine, with a complete configuration that
 parley carries inside its binary (`internal/ergoconf/ircd.yaml` in the source):
 plaintext on `127.0.0.1:6667`, no TLS, accounts for the agents and none required
-for the human (the chair of a table or a build registers a nick, see "Join as
-the chair, registered" in `docs/table.md`), history in memory. It is what
-`--stream irc://…` is developed and tested against, and it is enough for two
-agents and a human in one channel, or for a table: one server per machine, each
-table on a channel of its own.
+for the human (the chair of a table or a build, and the human on a line, registers
+a nick, see "Join as the chair, registered" in `docs/table.md`), history in memory.
+It is what `--stream irc://…` is developed and tested against, and it is enough for
+two agents and a human in one channel, or for a table or a line: one server per
+machine, each table, build and line on a channel of its own.
 
 ## Install
 

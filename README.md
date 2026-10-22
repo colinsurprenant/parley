@@ -31,10 +31,10 @@ What you can count on:
   keeps no stream content beyond the chat server's own history. The work and its
   records stay where they live.
 
-Parley works across harnesses: Claude Code and Codex, and a line takes OpenCode 2
-sessions too, last verified against OpenCode 2.1.0 on a live model; table seats and
-build peers on OpenCode are not supported for now, and open to explore. If every
-session is Claude Code and one-to-one messages are all you need, Claude Code's own
+Parley works across harnesses: Claude Code and Codex, and OpenCode 2 on a line.
+Table seats and build peers on OpenCode are not supported for now, and open to
+explore. If every session is Claude Code and one-to-one messages are all you
+need, Claude Code's own
 [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
 does that natively. If you want one agent handing work to the others, you want an
 orchestrator. [Related projects](#related-projects) names tools of both kinds.
@@ -62,11 +62,12 @@ How it works:
   names as last verified. `contrib/ergo/README.md` installs it.
 - **Claude Code**, **Codex CLI** and/or **OpenCode**, at the versions `parley
   doctor` names as last verified. A different version is a warning from
-  `doctor`, not a failure. OpenCode must be version 2, and only a line takes it:
-  `brew install opencode` (Homebrew core) or `npm i -g @opencode/cli`. The legacy
-  1.x (npm's `opencode-ai`, the installer at opencode.ai/install) has no API
-  parley can speak to, and `doctor` fails it. Parley was last verified against
-  OpenCode 2.1.0 on a live model; a newer 2.x is expected to work.
+  `doctor`, not a failure, with one exception: OpenCode must be version 2, and
+  only a line takes it. Install it with `brew install opencode` (Homebrew core)
+  or `npm i -g @opencode/cli`. The legacy 1.x (npm's `opencode-ai`, the
+  installer at opencode.ai/install) has no API parley can speak to, and
+  `doctor` fails it. Parley was last verified against OpenCode 2.1.0 on a live
+  model; a newer 2.x is expected to work.
   Claude Code has prerequisites of its own for
   [channels](https://code.claude.com/docs/en/channels):
   - a claude.ai login or a Console API key, not Amazon Bedrock, Google Cloud's
@@ -104,10 +105,9 @@ links the three protocol skills, `parley-build`, `parley-table` and
 `parley-line`, into `~/.claude/skills` and `~/.agents/skills`. They are
 symlinks into the checkout, so keep it. `parley doctor` checks ergo, the
 harnesses, the server and those links against the versions on your machine and
-says what to fix. Bare, it checks
-Claude Code and Codex, so on a machine with only one, run
-`bin/parley doctor --harness claude` (or `--harness codex`) to check just that
-one. OpenCode is checked only when named: `--harness opencode`.
+says what to fix. Bare, it checks Claude Code and Codex, so on a machine with
+only one, run `bin/parley doctor --harness claude` (or `--harness codex`) to
+check only that one. OpenCode is checked only when named: `--harness opencode`.
 
 If you want only the binary, `go install
 github.com/colinsurprenant/parley/cmd/parley@latest` builds it, but the skills
@@ -145,6 +145,8 @@ sharing one, and a nick for yourself.
    OpenCode session is `--harness opencode`: `line add` starts a new session for
    it, writes nothing in the checkout, and prints the `opencode -s <id>` line to
    start in that checkout and the `parley opencode` pump line, in that order.
+   OpenCode loads the skill with its skill tool, so there is no command to type
+   there; `line add` prints the check.
 4. Give each session its role, one line each, in the channel:
 
    ```

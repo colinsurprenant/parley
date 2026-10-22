@@ -156,11 +156,10 @@ verbs:
            one per message when the delivery is over the argument bound; the
            peer header is the only mark Codex gets, so it is passed unchanged.
            --thread is a session UUID or an exact session name, or auto: the
-           thread id that "parley table new" or "parley build new" recorded for
-           this nick and stream,
-           in the codex-thread file beside the cursor. auto is reserved, so a
-           session literally named auto is passed by its UUID; with no record
-           it exits 2
+           thread id that "parley table new" or "parley build new" recorded, or
+           "parley line add", for this nick and stream, in the codex-thread
+           file beside the cursor. auto is reserved, so a session literally
+           named auto is passed by its UUID; with no record it exits 2
   opencode run in the foreground and deliver into a live OpenCode session, one
            user message per delivery, over the HTTP API of the OpenCode 2
            server the session runs on: the background service that "opencode -s
@@ -214,8 +213,9 @@ verbs:
            then what a delivery is and what it is worth — for a front whose
            harness has none to hand over, so the text is the session's first
            message: a human pastes it in, or the session is started with it as
-           its first prompt, as "parley table new" starts a Codex seat and
-           "parley build new" a Codex peer.
+           its first prompt, as "parley table new" starts a Codex seat,
+           "parley build new" a Codex peer and "parley line add" a Codex or an
+           OpenCode session.
            --front claude is what "parley channel" sends at connect time;
            --front codex and --front opencode add what is true of each of
            those fronts; OpenCode loads a skill with its skill tool, so its
@@ -230,9 +230,9 @@ verbs:
            your own — a wrapper script holding the run's fixed arguments, where
            an approval rule has to name one command and no suffix; codex and
            opencode only, the fronts whose text is a first message
-  server   run ergo, the per-machine IRC server every table shares, in the
-           foreground: one per machine, each table on a channel of its own. It
-           renders the configuration built into parley into --datastore
+  server   run ergo, the per-machine IRC server every table, build and line
+           shares, in the foreground: one per machine, each on a channel of its
+           own. It renders the configuration built into parley into --datastore
            (default $XDG_DATA_HOME/parley-ergo, else ~/.local/share/parley-ergo,
            which is also used while it exists and the XDG one does not; made
            0700 if missing and otherwise left as it is) and runs ergo there,
@@ -270,7 +270,8 @@ verbs:
            A binary that is missing is a FAIL that links the project's install
            page; a version other than the last verified one is a warn that says
            it may work as it is, and what to install if a table or a build
-           misbehaves. The claude line
+           misbehaves (for OpenCode, which version parley was last verified
+           against, and that a newer 2.x is expected to work). The claude line
            says a launch needs --dangerously-load-development-channels, which
            doctor cannot check. --live also
            spends one tiny Codex turn (none if codex delete has no --force to
@@ -528,8 +529,8 @@ verbs:
            the service, the pump line with --session auto and no port, the skill
            check, notes that OpenCode allows external_directory by default (and
            the rule that makes it ask), on what the run did with permissions, on
-           the service's password, and what OpenCode version parley was last
-           verified against.
+           the service's password, on an interrupt holding deliveries, and what
+           OpenCode version parley was last verified against.
            drop <id> <nick> takes the
            id's lock and the session's nick lock without waiting and refuses,
            exit 1, while either is held. It removes the session's thread record

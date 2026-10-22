@@ -126,11 +126,12 @@ expected to work.
    `--state-dir` only says where to find it. The command refuses, with exit 2 and
    nothing changed, a nick that is invalid, reserved (`tables`, `builds`, `lines`),
    the chair's, or already in the line, all without regard to ASCII case; a model
-   outside the charset `table new` takes, or for OpenCode one that is not `provider/model`
-   or `provider/model#variant` (a `#` is allowed for OpenCode only, with one variant
-   after it); a `<checkout>` that is not an absolute, existing directory,
-   or holds a `$`; a Codex or OpenCode session with `$TMPDIR` inside the checkout;
-   and a launch file that is in the checkout and is not this line's, below. A nick whose lock a running session or pump
+   outside the charset `table new` takes, or for OpenCode one that is not
+   `provider/model` or `provider/model#variant` (a `#` is allowed for OpenCode
+   only, with one variant after it); a `<checkout>` that is not an absolute,
+   existing directory, or holds a `$`; a Codex or OpenCode session with `$TMPDIR`
+   inside the checkout; and a launch file that is in the checkout and is not this
+   line's, below. A nick whose lock a running session or pump
    holds is refused with exit 1, and so is a machine that `parley doctor`'s static
    checks fail on, the `parley-line` skill not being linked under the root the
    harness reads among them, again with nothing changed. The checkout is resolved
@@ -246,14 +247,14 @@ expected to work.
    - It makes the same private reply directory `parley-line-<channel>-*` under
      `$TMPDIR` as for a Codex session (mode 0700, a marker with the line and the
      nick), and the primer carries the path of the session's reply file in it.
-   - **The session id is parley's own.** `opencode run --session <id>` "continues
-     the session, or creates it if it does not exist", so `line add` makes the id
-     the way OpenCode does (`ses_` and 26 letters or digits, newest first) and
-     starts the session with `opencode run --format json --title "parley line
-     <channel> <nick>" --session <id>` in the checkout, `-m <model>` when you gave
-     one (an OpenCode model is `provider/model`, as `opencode models` lists them, with an
-     optional `#variant`, passed on as it is),
-     and a five-minute limit. The primer goes in on stdin, because `opencode run`
+   - **The session id is parley's own.** `opencode run --session <id>` takes a
+     "Session ID to continue, or to create if it does not exist" (its help), so
+     `line add` makes the id the way OpenCode does (`ses_` and 26 letters or
+     digits, newest first) and starts the session with `opencode run --format json
+     --title "parley line <channel> <nick>" --session <id>` in the checkout, `-m
+     <model>` when you gave one (an OpenCode model is `provider/model`, as
+     `opencode models` lists them, with an optional `#variant`, passed on as it
+     is), and a five-minute limit. The primer goes in on stdin, because `opencode run`
      wraps a message argument that holds spaces in double quotes and escapes the
      quotes in it, and the session's first message should be the primer as it is.
      Your environment is passed on as it is. The run must exit 0, every event of it
@@ -507,9 +508,9 @@ before it has read the others', run a table instead: a line has no seal.
 - **An OpenCode session hears nothing while it works.** The pump posts only into
   an idle session, so what arrives during a turn waits in the stream, and goes
   over as one delivery when the turn ends. A turn that waits on a permission ask
-  (the `external_directory` one, if you restored it) or on any other question to
-  you in the TUI holds every delivery behind it until you answer. A TUI that is closed or restarted
-  stops nothing: the service outlives the TUI. A service that is stopped is waited
+  (the `external_directory` one, if you added the rule of step 5) or on any other
+  question to you in the TUI holds every delivery behind it until you answer. A TUI
+  that is closed or restarted stops nothing: the service outlives the TUI. A service that is stopped is waited
   for: `opencode service stop` removes `service.json`, and the service comes back
   with a new pid, address and password while the sessions persist; the pump holds
   the deliveries, finds it again from its file and delivers once it answers.
@@ -638,7 +639,7 @@ inputs a line has.
   it writes outside its working directory, and Codex's workspace-write sandbox
   keeps a session to its roots. OpenCode does not ask before a file tool writes
   outside the checkout (it allows `external_directory` by default; see step 5 for
-  the rule that restores the ask), and its bash tool runs without approval by
+  the rule that makes it ask), and its bash tool runs without approval by
   default, so a session's bash can write anywhere you can.
   If a session should not, tighten its OpenCode permissions yourself. Also out of
   scope for an OpenCode session: another process on this machine that talks to a
