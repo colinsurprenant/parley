@@ -22,10 +22,10 @@ ergo, the skills (`sh skills/install.sh` links `parley-build`, `parley-table` an
 `parley-line`; the build skill is `/parley-build` in Claude Code and `$parley-build` in Codex),
 the `claude` and `codex` harnesses on the `PATH`, and an IRC client for you.
 `parley doctor` checks them (`--harness claude` or `--harness codex`, repeatable,
-limits it to the harnesses you use; without one it checks both, and `--harness
-opencode` adds OpenCode, which a line takes and a build does not yet); `parley build
-new` runs its static checks itself, with the `parley-build` link under the root
-each peer's harness reads.
+limits it to the harnesses you use; without one it checks Claude Code and Codex,
+and `--harness opencode` adds OpenCode, which a line takes and a build does not);
+`parley build new` runs its static checks itself, with the `parley-build` link
+under the root each peer's harness reads.
 
 A build needs two things of the target that a table does not. A table needs
 nothing beyond parley; a build is promoted into Director's ledger, so:

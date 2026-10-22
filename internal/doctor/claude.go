@@ -8,7 +8,7 @@ import (
 // claudeRemedy is what a person does about a Claude Code version that is not
 // the one verified: nothing here can try it, so it is the next table or build
 // that shows.
-const claudeRemedy = "If a table or a build misbehaves, install Claude Code " + ClaudeVerified + " (" + ClaudeInstallURL + ")."
+const claudeRemedy = "If a table, a build or a line misbehaves, install Claude Code " + ClaudeVerified + " (" + ClaudeInstallURL + ")."
 
 // claudeChannelFlag is the flag a Claude Code seat or peer is launched with to
 // load parley's channel server.

@@ -237,7 +237,7 @@ func TestDoctorADifferentVersionIsAWarningNotAFailure(t *testing.T) {
 			strings.Contains(l, "It may work as it is") && strings.Contains(l, "install Claude Code "+doctor.ClaudeVerified+" ("+doctor.ClaudeInstallURL+")")
 	}
 	if !codexWarn || !claudeWarn {
-		t.Errorf("want a warn line for each of the newer codex and claude versions, saying it may work and what to install if a table or a build misbehaves:\n%s", res.stdout)
+		t.Errorf("want a warn line for each of the newer codex and claude versions, saying it may work and what to install if a table, a build or a line misbehaves:\n%s", res.stdout)
 	}
 	if strings.Contains(res.stdout, "bump the verified constant") {
 		t.Errorf("a remedy is the maintainer's step:\n%s", res.stdout)

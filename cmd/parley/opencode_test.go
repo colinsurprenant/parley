@@ -324,7 +324,7 @@ func TestUsageDocumentsTheOpencodeFront(t *testing.T) {
 		"opencode serve --port <n>", "opencode -s <id>", "service.json",
 		"OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD",
 		"parley was " + doctor.OpenCodeVerifiedNote,
-		"the legacy 1.x is told the way to OpenCode 2",
+		"any version other than 2 is told the way to OpenCode 2",
 		"a message that renders to over 128 KiB, and every message once the delivery has 512 KiB, is replaced by a stub",
 		"is made again before every delivery",
 		"opencode-session",

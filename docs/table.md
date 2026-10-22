@@ -30,8 +30,8 @@ directory (`$XDG_STATE_HOME/parley`, by default `~/.local/state/parley`, or
 
 `parley doctor` checks all of this, and everything else parley depends on,
 against the versions on the machine; `--harness claude` or `--harness codex`
-(repeatable) limits it to the harnesses you use, and without one it checks both.
-`parley table new` runs its static checks itself.
+(repeatable) limits it to the harnesses you use, and without one it checks Claude
+Code and Codex. `parley table new` runs its static checks itself.
 
 ## Per table
 

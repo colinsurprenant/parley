@@ -293,11 +293,11 @@ func TestVersionsAgainstTheVerifiedOnes(t *testing.T) {
 
 // wantUserRemedy checks that a version warning speaks to the person running the
 // machine and not to parley's maintainer: it says the version may work, names
-// what to install if a table or a build misbehaves and links where, and says
+// what to install if a table, a build or a line misbehaves and links where, and says
 // nothing of bumping a constant.
 func wantUserRemedy(t *testing.T, r Result, install, url string) {
 	t.Helper()
-	for _, want := range []string{"it may work as it is", "if a table or a build misbehaves, install " + install, "(" + url + ")"} {
+	for _, want := range []string{"it may work as it is", "if a table, a build or a line misbehaves, install " + install, "(" + url + ")"} {
 		if !strings.Contains(strings.ToLower(r.Detail), strings.ToLower(want)) {
 			t.Errorf("%q does not say %q", r, want)
 		}
