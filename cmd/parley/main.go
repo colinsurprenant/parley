@@ -264,14 +264,16 @@ verbs:
            skill-link and --live checks to the harnesses you have, claude and
            codex without it; the server and ergo are checked either way.
            opencode is checked only when named: its version (a 2.x; any other
-           major version, or a version it cannot read, is a FAIL, and the
-           legacy 1.x is told the way to OpenCode 2), the flags and subcommands of its commands that parley
-           uses, and a skill link under either root.
+           major version, or a version it cannot read, is a FAIL, and any
+           version other than 2 is told the way to OpenCode 2), the flags and
+           subcommands of its commands that parley uses, and a skill link under
+           either root.
            A binary that is missing is a FAIL that links the project's install
            page; a version other than the last verified one is a warn that says
-           it may work as it is, and what to install if a table or a build
-           misbehaves (for OpenCode, which version parley was last verified
-           against, and that a newer 2.x is expected to work). The claude line
+           it may work as it is, and what to install if a table, a build or a
+           line misbehaves (for OpenCode, which version parley was last
+           verified against, and that a newer 2.x is expected to work). The
+           claude line
            says a launch needs --dangerously-load-development-channels, which
            doctor cannot check. --live also
            spends one tiny Codex turn (none if codex delete has no --force to

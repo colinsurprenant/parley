@@ -33,7 +33,7 @@ import (
 // steering, cancelling, a service restart, the reply path and the header byte for
 // byte). A different version is not a failure, except an OpenCode of a major
 // version other than 2, which parley does not speak to: the report says it may
-// work and what to do if a table or a build misbehaves; to the maintainer it is
+// work and what to do if a table, a build or a line misbehaves; to the maintainer it is
 // the cue to verify again, and then to move the constant (and the help fixtures
 // under testdata, named for the version they were read from).
 // ErgoVerified is the ergo the embedded configuration (internal/ergoconf/ircd.yaml)
@@ -304,8 +304,8 @@ var versionRE = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?`)
 // checkVersion is the version check the harnesses and ergo share: bin's
 // --version against the one verified. A difference is a warning that says the
 // surface may work as it is; remedy is what a person does about it, written as a
-// sentence of its own, and is what turns a table or a build that misbehaves
-// into something they can act on.
+// sentence of its own, and is what turns a table, a build or a line that
+// misbehaves into something they can act on.
 func checkVersion(ctx context.Context, name, bin, verified, remedy string) Result {
 	surface := name + " version"
 	stdout, stderr, err := probe(ctx, bin, "--version")

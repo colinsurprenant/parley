@@ -9,11 +9,11 @@ import (
 
 // codexRemedy and ergoRemedy are what a person does about a Codex or an ergo
 // version that is not the one verified: the live check exercises both, and
-// going back to the verified one is the way out of a table or a build that
-// misbehaves.
+// going back to the verified one is the way out of a table, a build or a line
+// that misbehaves.
 const (
-	codexRemedy = "To try it, run parley doctor --live; if a table or a build misbehaves, install the Codex CLI " + CodexVerified + " (" + CodexInstallURL + ")."
-	ergoRemedy  = "To try it, run parley doctor --live; if a table or a build misbehaves, install ergo " + ErgoVerified + " (" + ergoVerifiedURL + ")."
+	codexRemedy = "To try it, run parley doctor --live; if a table, a build or a line misbehaves, install the Codex CLI " + CodexVerified + " (" + CodexInstallURL + ")."
+	ergoRemedy  = "To try it, run parley doctor --live; if a table, a build or a line misbehaves, install ergo " + ErgoVerified + " (" + ergoVerifiedURL + ")."
 )
 
 // A surface is one subcommand of a harness's CLI that parley depends on, the
