@@ -380,21 +380,21 @@ func TestTheCodexBuildFormTellsItsPeerToAskForGitEscalationDirectly(t *testing.T
 }
 
 // TestTheCodexLineFormTellsItsSessionToAskForGitEscalationDirectly: Codex keeps a
-// checkout's git directory read-only in its sandbox, so a line's Codex session,
-// which works in a checkout of its own, is told that `git add`, `git commit`,
-// `git merge` and `git reset` are refused there and to ask for escalation for
-// each directly, unless a writable root in its launch config, or in its global
-// Codex config when the launch config lists none, is that git directory. The
-// paragraph is the Codex line form's alone, sits where the build form's does,
-// and does not tell the session to widen its sandbox.
+// working directory's git directory read-only in its sandbox, so a line's Codex
+// session, which works in a working directory of its own, is told that `git
+// add`, `git commit`, `git merge` and `git reset` are refused there and to ask
+// for escalation for each directly, unless a writable root in its launch config,
+// or in its global Codex config when the launch config lists none, is that git
+// directory. The paragraph is the Codex line form's alone, sits where the build
+// form's does, and does not tell the session to widen its sandbox.
 func TestTheCodexLineFormTellsItsSessionToAskForGitEscalationDirectly(t *testing.T) {
 	p := lineSample()
 	p.Front = Codex
 	got := Render(p)
 	for _, want := range []string{
-		"Unless a writable root in your launch config (.codex/config.toml in your checkout) or, when that lists none, in your global Codex config ($CODEX_HOME/config.toml, else ~/.codex/config.toml) is your checkout's git directory,",
+		"Unless a writable root in your launch config (.codex/config.toml in your working directory) or, when that lists none, in your global Codex config ($CODEX_HOME/config.toml, else ~/.codex/config.toml) is your working directory's git directory,",
 		"`git add`", "`git commit`", "`git merge`", "`git reset`", "refused here with Operation not permitted",
-		"because Codex keeps a checkout's git directory read-only in its sandbox",
+		"because Codex keeps a working directory's git directory read-only in its sandbox",
 		"ask for escalation for each of them directly, rather than trying it in the sandbox first."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("the codex line form lacks %q:\n%s", want, got)
