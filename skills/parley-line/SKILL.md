@@ -13,9 +13,9 @@ description: >-
 
 A line is a few coding-agent sessions and one human in one chat channel, for as
 long as the work runs, days included. Each session has its own job, its own
-checkout and its own records. The line is how a session tells the others that
-something changed that touches their job, and how it asks when it needs input
-that another session or the human holds. When the human opens a discussion, it
+working directory and its own records. The line is how a session tells the others
+that something changed that touches their job, and how it asks when it needs
+input that another session or the human holds. When the human opens a discussion, it
 is also where the sessions work a question through together. It replaces the
 human carrying "go read what the other one left you" from one terminal to the
 other.

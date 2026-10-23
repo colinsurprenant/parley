@@ -115,8 +115,8 @@ need the checkout.
 
 ## Quickstart: a first line
 
-You need the sessions you want to connect, each in a git checkout of its own or
-sharing one, and a nick for yourself.
+You need the sessions you want to connect, each in a working directory of its own
+or sharing one, and a nick for yourself.
 
 1. Start the IRC server in a terminal of its own and leave it running:
    `parley server`.
@@ -129,13 +129,16 @@ sharing one, and a nick for yourself.
    Join `#demo` from your IRC client as `yournick` and, once, register that nick
    with NickServ, as it prints.
 3. Add each session. A Claude Code or Codex `line add` writes the launch config
-   into the session's checkout, hidden from `git status`, and prints how to
-   launch it:
+   into the session's working directory, hidden from `git status` in a git
+   repository, and prints how to launch it:
 
    ```
-   parley line add demo --nick plan --harness claude --checkout /path/to/repo
-   parley line add demo --nick build --harness claude --checkout /path/to/repo
+   parley line add demo --nick plan --harness claude --workdir /path/to/repo
+   parley line add demo --nick build --harness claude --workdir /path/to/repo
    ```
+
+   `--workdir` defaults to the current directory when that is the top directory
+   of a git repository.
 
    Launch each session as printed, one at a time, and type `/parley-line` in each.
    A Claude Code conversation that is already under way joins with the same launch
@@ -143,8 +146,9 @@ sharing one, and a nick for yourself.
    `--harness codex`: `line add` starts a new thread for it and prints its pump
    and `codex resume` lines, so run those, and type `$parley-line` there. An
    OpenCode session is `--harness opencode`: `line add` starts a new session for
-   it, writes nothing in the checkout, and prints the `opencode -s <id>` line to
-   start in that checkout and the `parley opencode` pump line, in that order.
+   it, writes nothing in the working directory, and prints the `opencode -s <id>`
+   line to start in that directory and the `parley opencode` pump line, in that
+   order.
    OpenCode loads the skill with its skill tool, so there is no command to type
    there; `line add` prints the check.
 4. Give each session its role, one line each, in the channel:
@@ -168,7 +172,7 @@ and what to watch for.
 ## Lines
 
 A line is a few long-running sessions, each on its own job and in its own
-checkout, and you, on one channel for as long as the work runs, days included.
+working directory, and you, on one channel for as long as the work runs, days included.
 Under the `parley-line` skill the sessions poke each other ("phase 2 is done, see
 record X"), ask when they need input, and work a question through together when
 you open a discussion. The work and its records stay where they live, and the
