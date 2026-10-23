@@ -25,12 +25,12 @@ import (
 )
 
 // codexNetworkNotice is said where `line add` writes a Codex config, and in the
-// docs: the file turns network access on for Codex in that checkout.
-const codexNetworkNotice = "network access is ON for Codex in this checkout: the config.toml this line wrote sets network_access = true under workspace-write, " +
-	"so that parley send can reach the loopback IRC server from inside the sandbox. It applies to every Codex session in the checkout, not only this one."
+// docs: the file turns network access on for Codex in that working directory.
+const codexNetworkNotice = "network access is ON for Codex in this working directory: the config.toml this line wrote sets network_access = true under workspace-write, " +
+	"so that parley send can reach the loopback IRC server from inside the sandbox. It applies to every Codex session in the working directory, not only this one."
 
 // cmdLineAdd puts one session on an existing line: its launch file in its
-// checkout (an OpenCode session has none), for a Codex or an OpenCode session its
+// working directory (an OpenCode session has none), for a Codex or an OpenCode session its
 // reply directory and its thread or session, started on the line's primer and
 // recorded for `parley codex --thread auto` or `parley opencode --session auto`.
 // It prints what is left for that session. Everything it made is taken down again
@@ -45,7 +45,7 @@ func cmdLineAdd(args []string) error {
 	nick := fs.String("nick", "", "required: the session's nick; it must differ from the chair's and from every other session's, without regard to ASCII case")
 	harness := fs.String("harness", "", "required: claude, codex or opencode (OpenCode 2)")
 	model := fs.String("model", "", "the model, at most 128 bytes of letters, digits and . _ - : / @ [ ] +; passed to codex exec -m for a Codex session, to opencode run -m (provider/model, or provider/model#variant) for an OpenCode one, and printed as --model on a Claude one's launch line")
-	checkout := fs.String("checkout", "", "required: the absolute path of the session's own checkout, an existing directory; a Claude session gets .mcp.json there, a Codex session .codex/config.toml, unless this line already wrote that file for another session of the checkout; an OpenCode session gets no file there")
+	workdir := fs.String("workdir", "", "the absolute path of the session's own working directory, an existing directory (default: the current directory, when it is the top directory of a git repository's working tree, a linked worktree's included); a Claude session gets .mcp.json there, a Codex session .codex/config.toml, unless this line already wrote that file for another session of the working directory; an OpenCode session gets no file there")
 	stateDir := fs.String("state-dir", "", "the state directory the line was set up under (default $XDG_STATE_HOME/parley)")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
@@ -56,13 +56,16 @@ func cmdLineAdd(args []string) error {
 	}
 	switch {
 	case len(pos) == 0:
-		return cfgErrf("the line id is required: parley line add <id> --nick <nick> --harness claude|codex|opencode --checkout <absolute dir>")
+		return cfgErrf("the line id is required: parley line add <id> --nick <nick> --harness claude|codex|opencode [--workdir <absolute dir>]")
 	case len(pos) > 1:
 		return cfgErrf("unexpected argument %q", pos[1])
 	}
-	p, err := planLineAdd(lineAddInput{
+	// The context is made before the plan: the default for --workdir asks git.
+	ctx, stop := signalContext()
+	defer stop()
+	p, err := planLineAdd(ctx, lineAddInput{
 		id: pos[0], nick: *nick, nickGiven: given(fs, "nick"), harness: *harness, harnessGiven: given(fs, "harness"),
-		model: *model, modelGiven: given(fs, "model"), checkout: *checkout, checkoutGiven: given(fs, "checkout"),
+		model: *model, modelGiven: given(fs, "model"), workdir: *workdir, workdirGiven: given(fs, "workdir"),
 		stateDir: *stateDir,
 	})
 	if err != nil {
@@ -73,8 +76,6 @@ func cmdLineAdd(args []string) error {
 		return noLineErr(p.base, p.id)
 	}
 
-	ctx, stop := signalContext()
-	defer stop()
 	// The id's lock comes before the record is read, and is held to the end: a
 	// line verb for this id, or a table or build one, is refused while this one
 	// runs, so the record read below is the one that is changed.
@@ -122,30 +123,33 @@ func cmdLineAdd(args []string) error {
 
 // lineAddInput is what planLineAdd validates: the flags as given.
 type lineAddInput struct {
-	id            string
-	nick          string
-	nickGiven     bool
-	harness       string
-	harnessGiven  bool
-	model         string
-	modelGiven    bool
-	checkout      string
-	checkoutGiven bool
-	stateDir      string
+	id           string
+	nick         string
+	nickGiven    bool
+	harness      string
+	harnessGiven bool
+	model        string
+	modelGiven   bool
+	workdir      string
+	workdirGiven bool
+	stateDir     string
 }
 
 // linePlan is everything `line add` has validated; the part that needs the
 // record is bind's, made under the id's lock.
 type linePlan struct {
 	id, nick, harness, model string
-	checkout                 string
-	base, self, tmp          string
+	workdir                  string
+	// workdirDefaulted is whether --workdir was left out and the current directory
+	// stands in for it.
+	workdirDefaulted bool
+	base, self, tmp  string
 
 	rec      lineRecord
 	recBytes []byte
 	window   string
 	// group is the line's sessions that already use the launch file this session
-	// would have: the same harness in the same checkout.
+	// would have: the same harness in the same working directory.
 	group []lineSession
 	// reuse is whether that file is there with the digest the record holds, so
 	// this session shares it and nothing is written.
@@ -164,8 +168,9 @@ type linePlan struct {
 }
 
 // planLineAdd validates everything that needs no look at the line's record. Each
-// refusal is a configuration error, exit 2, and nothing has been created.
-func planLineAdd(in lineAddInput) (*linePlan, error) {
+// refusal is a configuration error, exit 2, and nothing has been created. ctx is
+// for git, which a missing --workdir asks about the current directory.
+func planLineAdd(ctx context.Context, in lineAddInput) (*linePlan, error) {
 	if err := checkLineID(in.id); err != nil {
 		return nil, err
 	}
@@ -205,50 +210,63 @@ func planLineAdd(in lineAddInput) (*linePlan, error) {
 		p.model = in.model
 	}
 
-	if !in.checkoutGiven || in.checkout == "" {
-		return nil, cfgErrf("--checkout is required: the absolute path of the session's own checkout")
+	// What the checks below call the path: the flag, or the current directory
+	// when the flag was left out.
+	what := "--workdir"
+	if in.workdirGiven {
+		if in.workdir == "" {
+			return nil, cfgErrf("--workdir is empty: name the session's working directory, or leave the flag out")
+		}
+	} else {
+		cwd, err := defaultWorkdir(ctx)
+		if err != nil {
+			return nil, err
+		}
+		in.workdir, what = cwd, "the current directory"
+		p.workdirDefaulted = true
 	}
-	if err := checkUTF8(pathField{"--checkout", in.checkout}); err != nil {
+	if err := checkUTF8(pathField{what, in.workdir}); err != nil {
 		return nil, err
 	}
-	if !filepath.IsAbs(in.checkout) {
-		return nil, cfgErrf("--checkout %q must be an absolute path", in.checkout)
+	if !filepath.IsAbs(in.workdir) {
+		return nil, cfgErrf("--workdir %q must be an absolute path", in.workdir)
 	}
-	if strings.Contains(in.checkout, "$") {
-		return nil, cfgErrf("--checkout %q holds a '$': it is printed into commands, and a shell would expand it", in.checkout)
+	if strings.Contains(in.workdir, "$") {
+		return nil, cfgErrf("%s %q holds a '$': it is printed into commands, and a shell would expand it", what, in.workdir)
 	}
-	if hasControl(in.checkout) {
-		return nil, cfgErrf("--checkout %q holds a control character: it is printed into commands and into the text the session reads", in.checkout)
+	if hasControl(in.workdir) {
+		return nil, cfgErrf("%s %q holds a control character: it is printed into commands and into the text the session reads", what, in.workdir)
 	}
-	if fi, err := os.Stat(in.checkout); err != nil {
-		return nil, cfgErrf("--checkout %q: %v", in.checkout, err)
+	if fi, err := os.Stat(in.workdir); err != nil {
+		return nil, cfgErrf("%s %q: %v", what, in.workdir, err)
 	} else if !fi.IsDir() {
-		return nil, cfgErrf("--checkout %q is not a directory", in.checkout)
+		return nil, cfgErrf("%s %q is not a directory", what, in.workdir)
 	}
-	// The checkout is resolved once, here, and the resolved path is the only one
-	// used from now on, recorded and printed: two spellings of one directory (a
-	// symlinked parent, /tmp and /private/tmp) would otherwise be two checkouts to
-	// the record's text and one to its sharing, and the record would not hold. The
-	// path is resolved as spelled, not cleaned first: a ".." after a link climbs
-	// from where the link leads, as the Stat above did, and cleaning it away first
-	// would land on a different directory than the one checked.
-	resolved, err := filepath.EvalSymlinks(in.checkout)
+	// The working directory is resolved once, here, and the resolved path is the
+	// only one used from now on, recorded and printed: two spellings of one
+	// directory (a symlinked parent, /tmp and /private/tmp) would otherwise be two
+	// working directories to the record's text and one to its sharing, and the
+	// record would not hold. The path is resolved as spelled, not cleaned first: a
+	// ".." after a link climbs from where the link leads, as the Stat above did,
+	// and cleaning it away first would land on a different directory than the one
+	// checked.
+	resolved, err := filepath.EvalSymlinks(in.workdir)
 	if err != nil {
-		return nil, cfgErrf("--checkout %q: %v", in.checkout, err)
+		return nil, cfgErrf("%s %q: %v", what, in.workdir, err)
 	}
-	if resolved != filepath.Clean(in.checkout) {
+	if resolved != filepath.Clean(in.workdir) {
 		// What a link led to is held to what was asked of the spelling that led there.
-		if err := checkUTF8(pathField{"--checkout, resolved,", resolved}); err != nil {
+		if err := checkUTF8(pathField{what + ", resolved,", resolved}); err != nil {
 			return nil, err
 		}
 		if strings.Contains(resolved, "$") {
-			return nil, cfgErrf("--checkout %q resolves to %q, which holds a '$': it is printed into commands, and a shell would expand it", in.checkout, resolved)
+			return nil, cfgErrf("%s %q resolves to %q, which holds a '$': it is printed into commands, and a shell would expand it", what, in.workdir, resolved)
 		}
 		if hasControl(resolved) {
-			return nil, cfgErrf("--checkout %q resolves to %q, which holds a control character: it is printed into commands and into the text the session reads", in.checkout, resolved)
+			return nil, cfgErrf("%s %q resolves to %q, which holds a control character: it is printed into commands and into the text the session reads", what, in.workdir, resolved)
 		}
 	}
-	p.checkout = resolved
+	p.workdir = resolved
 
 	base, err := state.ResolveBase(in.stateDir)
 	if err != nil {
@@ -280,19 +298,19 @@ func planLineAdd(in lineAddInput) (*linePlan, error) {
 		}
 	}
 	// The state directory holds every nick's IRC password, and the reply directory
-	// is a Codex or an OpenCode session's scratch: neither belongs in a checkout,
-	// where git status shows them and a careless add commits them.
-	if within(p.checkout, p.base) {
-		return nil, cfgErrf("the state directory %s is inside the checkout %s: it holds the IRC passwords, so name a --state-dir outside it", p.base, p.checkout)
+	// is a Codex or an OpenCode session's scratch: neither belongs in a working
+	// directory, where git status shows them and a careless add commits them.
+	if within(p.workdir, p.base) {
+		return nil, cfgErrf("the state directory %s is inside the working directory %s: it holds the IRC passwords, so name a --state-dir outside it", p.base, p.workdir)
 	}
-	if p.harness != harnessClaude && within(p.checkout, p.tmp) {
-		return nil, cfgErrf("the temp directory ($TMPDIR) %s is inside the checkout %s: the reply directory is made in it, so run with a TMPDIR outside it", p.tmp, p.checkout)
+	if p.harness != harnessClaude && within(p.workdir, p.tmp) {
+		return nil, cfgErrf("the temp directory ($TMPDIR) %s is inside the working directory %s: the reply directory is made in it, so run with a TMPDIR outside it", p.tmp, p.workdir)
 	}
 	return p, nil
 }
 
 // bind reads the line's record, under the id's lock, and checks the session
-// against it: the nick, the launch file in the checkout (an OpenCode session has
+// against it: the nick, the launch file in the working directory (an OpenCode session has
 // none), the Claude launch and the Codex or OpenCode binary. It sets what the
 // machine check and the run need.
 func (p *linePlan) bind() error {
@@ -308,7 +326,7 @@ func (p *linePlan) bind() error {
 		return cfgErrf("--nick %q is already session %q of line %q, and nicks are the same without regard to ASCII case: parley line drop %s %s takes it off first", p.nick, rec.Sessions[i].Nick, p.id, p.id, rec.Sessions[i].Nick)
 	}
 	p.window = rec.Window
-	p.group = rec.sharing(p.harness, p.checkout, -1)
+	p.group = rec.sharing(p.harness, p.workdir, -1)
 
 	if p.harness == harnessCodex {
 		p.codexGiven = rec.CodexBin != ""
@@ -340,7 +358,7 @@ func (p *linePlan) bind() error {
 		if err := p.checkNoStaleRecord(rec.Stream); err != nil {
 			return err
 		}
-		// No launch file: nothing is looked for in the checkout, and nothing will
+		// No launch file: nothing is looked for in the working directory, and nothing will
 		// be written there.
 		return nil
 	}
@@ -393,12 +411,12 @@ func (p *linePlan) checkNoStaleRecord(stream string) error {
 // codexDefault is the codex a line that was made without --codex-bin runs.
 const codexDefault = "codex"
 
-// checkLaunchFile holds the launch file in the checkout to what the line may
+// checkLaunchFile holds the launch file in the working directory to what the line may
 // write over, which is nothing: the file is not there, or it is the one the line
-// wrote for another session of the checkout and still holds the digest the record
+// wrote for another session of the working directory and still holds the digest the record
 // has. Anything else is the user's, and is never overwritten, shared or followed.
 func (p *linePlan) checkLaunchFile() error {
-	path, _ := launchFileOf(p.harness, p.checkout)
+	path, _ := launchFileOf(p.harness, p.workdir)
 	if p.harness == harnessCodex {
 		dir := filepath.Dir(path)
 		if fi, err := os.Lstat(dir); err == nil && !fi.IsDir() {
@@ -414,15 +432,15 @@ func (p *linePlan) checkLaunchFile() error {
 	fi, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		// Absent from the checkout is not enough: a file git still tracks there,
+		// Absent from the working directory is not enough: a file git still tracks there,
 		// moved aside by the user, would come back as a tracked modification,
 		// which no exclude line can hide and a commit could carry.
-		rel, rerr := filepath.Rel(p.checkout, path)
+		rel, rerr := filepath.Rel(p.workdir, path)
 		if rerr != nil {
-			return cfgErrf("place %s in %s: %v", path, p.checkout, rerr)
+			return cfgErrf("place %s in %s: %v", path, p.workdir, rerr)
 		}
-		if tracked(p.checkout, rel) {
-			return cfgErrf("%s is tracked by git in %s, though it is not there now: a file parley wrote at that path would show as a change to it and could be committed; set this session up by hand as docs/line.md describes, or use another checkout", rel, p.checkout)
+		if tracked(p.workdir, rel) {
+			return cfgErrf("%s is tracked by git in %s, though it is not there now: a file parley wrote at that path would show as a change to it and could be committed; set this session up by hand as docs/line.md describes, or use another working directory", rel, p.workdir)
 		}
 		return nil
 	case err != nil:
@@ -433,14 +451,14 @@ func (p *linePlan) checkLaunchFile() error {
 	}
 	want := p.group[0].Files[0].SHA256
 	if !fi.Mode().IsRegular() {
-		return cfgErrf("%s is not a regular file, and it is the file this line wrote for session %s of this checkout: it is not shared or touched", path, p.group[0].Nick)
+		return cfgErrf("%s is not a regular file, and it is the file this line wrote for session %s of this working directory: it is not shared or touched", path, p.group[0].Nick)
 	}
 	got, err := fileDigest(path)
 	if err != nil {
 		return cfgErrf("read %s: %v", path, err)
 	}
 	if got != want {
-		return cfgErrf("%s is not the file this line wrote for session %s of this checkout: its digest is %s and the record has %s, so it was edited or replaced; it is not shared or touched", path, p.group[0].Nick, got, want)
+		return cfgErrf("%s is not the file this line wrote for session %s of this working directory: its digest is %s and the record has %s, so it was edited or replaced; it is not shared or touched", path, p.group[0].Nick, got, want)
 	}
 	p.reuse = true
 	return nil
@@ -468,7 +486,7 @@ func fileDigest(path string) (string, error) {
 	return tableDigest(b), nil
 }
 
-// mcpJSON is the checkout's .mcp.json: one server, parley, whose args are the
+// mcpJSON is the working directory's .mcp.json: one server, parley, whose args are the
 // channel's launch flags with the session's nick left to the environment it is
 // started in.
 func (p *linePlan) mcpJSON() ([]byte, error) {
@@ -571,25 +589,25 @@ func (r *lineAddRun) setUp(ctx context.Context) error {
 	return r.record()
 }
 
-// writeLaunchFile makes the session's launch file in the checkout, unless this
-// line already wrote it for another session there, and puts its line in the
-// checkout's exclude file when it wrote it.
+// writeLaunchFile makes the session's launch file in the working directory,
+// unless this line already wrote it for another session there, and puts its line
+// in the repository's exclude file when it wrote it.
 func (r *lineAddRun) writeLaunchFile(ctx context.Context) error {
 	p := r.plan
-	path, excludeLine := launchFileOf(p.harness, p.checkout)
+	path, excludeLine := launchFileOf(p.harness, p.workdir)
 	if len(p.group) > 0 {
 		r.file = p.group[0].Files[0]
 	}
 	if p.reuse {
-		r.logf("sharing %s with the other session of this checkout", path)
+		r.logf("sharing %s with the other session of this working directory", path)
 		return nil
 	}
 
-	// The checkout was resolved when planning began, and the doctor checks ran
-	// since: a checkout moved and replaced by a link meanwhile would put the file
+	// The working directory was resolved when planning began, and the doctor checks
+	// ran since: one moved and replaced by a link meanwhile would put the file
 	// in another directory, which teardown then refuses. Look again just before
 	// anything is written.
-	if moved := checkoutMoved(p.checkout); moved != "" {
+	if moved := workdirMoved(p.workdir); moved != "" {
 		return fmt.Errorf("session %s: %s; nothing was written there", p.nick, moved)
 	}
 	var data []byte
@@ -609,23 +627,23 @@ func (r *lineAddRun) writeLaunchFile(ctx context.Context) error {
 		if made {
 			r.file.MadeDir = true
 			r.push("directory "+dir, func() error {
-				if moved := checkoutMoved(p.checkout); moved != "" {
+				if moved := workdirMoved(p.workdir); moved != "" {
 					return leftAlone(moved)
 				}
 				return removeEmptyDir(dir)
 			})
 		}
 	}
-	if err := writeNewFileWithin(p.checkout, "the checkout", path, data, 0o644); err != nil {
+	if err := writeNewFileWithin(p.workdir, "the working directory", path, data, 0o644); err != nil {
 		return err
 	}
 	digest := tableDigest(data)
-	r.push("launch file "+path, func() error { return removeIfDigest(path, digest, p.checkout) })
+	r.push("launch file "+path, func() error { return removeIfDigest(path, digest, p.workdir) })
 	r.file.Path, r.file.SHA256 = path, digest
 	r.wrote = true
 	r.logf("wrote %s", path)
 
-	file, note := excludeFileOf(ctx, p.checkout)
+	file, note := excludeFileOf(ctx, p.workdir)
 	if file == "" {
 		r.excludeNote = note
 		return nil
@@ -676,7 +694,7 @@ func (p *linePlan) lineMadeExclude(excludeFile string) bool {
 // records that exclude file.
 func (p *linePlan) excludeOwner(excludeFile, line string) (lineFile, bool) {
 	for _, s := range p.rec.Sessions {
-		_, l := launchFileOf(s.Harness, s.Checkout)
+		_, l := launchFileOf(s.Harness, s.Workdir)
 		if l != line || len(s.Files) != 1 || s.Files[0].ExcludeFile == "" {
 			continue
 		}
@@ -703,17 +721,17 @@ func lineCodexConfig(id string) ([]byte, error) {
 // removeIfDigest removes the file at path if it is a regular file whose bytes
 // hash to digest, which is the proof it is the one this run wrote; anything else
 // there is left alone, and said.
-func removeIfDigest(path, digest, checkout string) error {
-	// The checkout was resolved when the run began; a path above it that became a
-	// link since, or a checkout moved away and replaced, puts the name on another
-	// directory, and a file there is not shown to be this run's.
-	if moved := checkoutMoved(checkout); moved != "" {
+func removeIfDigest(path, digest, workdir string) error {
+	// The working directory was resolved when the run began; a path above it that
+	// became a link since, or the directory moved away and replaced, puts the name
+	// on another directory, and a file there is not shown to be this run's.
+	if moved := workdirMoved(workdir); moved != "" {
 		return leftAlone(moved)
 	}
 	// The same holds for the directory the file is in, .codex for a Codex
 	// config: one replaced by a link since it was written points the name
-	// outside the checkout.
-	if dir := filepath.Dir(path); filepath.Clean(dir) != filepath.Clean(checkout) {
+	// outside the working directory.
+	if dir := filepath.Dir(path); filepath.Clean(dir) != filepath.Clean(workdir) {
 		if di, err := os.Lstat(dir); err == nil && di.Mode()&fs.ModeSymlink != 0 {
 			return leftAlone(dir + " is a symlink now")
 		}
@@ -788,12 +806,12 @@ func (r *lineAddRun) startCodex(ctx context.Context) error {
 		Window:    p.rec.windowDuration(),
 	})
 	thread, answer, err := startCodexSession(ctx, r, codexSession{
-		noun: "session", nick: p.nick, model: p.model, dir: p.checkout,
+		noun: "session", nick: p.nick, model: p.model, dir: p.workdir,
 		bin: p.codexBin, name: p.codexName(), prompt: text, base: p.base, stream: p.rec.Stream,
-		// The primer turn answers a text and posts nothing; in the user's checkout
-		// it has no business writing.
+		// The primer turn answers a text and posts nothing; in the user's working
+		// directory it has no business writing.
 		sandbox: "read-only",
-		// A line's checkout may be a directory that is no git checkout.
+		// A line's working directory may be one that is no git repository.
 		skipGitRepoCheck: true,
 	})
 	if err != nil {
@@ -829,7 +847,7 @@ func (r *lineAddRun) startOpenCode(ctx context.Context) error {
 		return err
 	}
 	id, answer, err := startOpenCodeSession(ctx, r, openCodeSession{
-		nick: p.nick, model: p.model, dir: p.checkout,
+		nick: p.nick, model: p.model, dir: p.workdir,
 		bin: p.openCodeBin, name: p.openCodeName(), sid: sid, title: fmt.Sprintf("parley line %s %s", p.id, p.nick),
 		prompt: text, base: p.base, stream: p.rec.Stream,
 	})
@@ -869,11 +887,11 @@ func (r *lineAddRun) record() error {
 	p := r.plan
 	rec := p.rec
 	rec.Sessions = append([]lineSession(nil), rec.Sessions...)
-	// A launch file rewritten for a checkout whose sessions had lost it has a new
-	// digest, which every session of the checkout holds.
+	// A launch file rewritten for a working directory whose sessions had lost it has
+	// a new digest, which every session of the working directory holds.
 	if r.wrote {
 		for i, s := range rec.Sessions {
-			if s.Harness == p.harness && sameDir(s.Checkout, p.checkout) {
+			if s.Harness == p.harness && sameDir(s.Workdir, p.workdir) {
 				rec.Sessions[i].Files = []lineFile{r.file}
 			}
 		}
@@ -885,7 +903,7 @@ func (r *lineAddRun) record() error {
 		files = []lineFile{r.file}
 	}
 	rec.Sessions = append(rec.Sessions, lineSession{
-		Nick: p.nick, Harness: p.harness, Model: p.model, Checkout: p.checkout,
+		Nick: p.nick, Harness: p.harness, Model: p.model, Workdir: p.workdir,
 		Thread: r.thread, ReplyDir: r.replyDir, Files: files,
 	})
 	dir := lineDirOf(p.base, p.id)
@@ -912,20 +930,24 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 	}
 	cmd := func(line string) { fmt.Fprintf(&b, "    %s\n", line) }
 
-	file, _ := launchFileOf(p.harness, p.checkout)
-	fmt.Fprintf(&b, "Session %s (%s) is added to line %s, checkout %s.\n", p.nick, p.harness, p.id, p.checkout)
+	file, _ := launchFileOf(p.harness, p.workdir)
+	where := p.workdir
+	if p.workdirDefaulted {
+		where += " (the current directory)"
+	}
+	fmt.Fprintf(&b, "Session %s (%s) is added to line %s, working directory %s.\n", p.nick, p.harness, p.id, where)
 	switch {
 	case !hasLaunchFile(p.harness):
-		b.WriteString("Wrote nothing in the checkout.\n")
+		b.WriteString("Wrote nothing in the working directory.\n")
 	case r.wrote:
 		fmt.Fprintf(&b, "Wrote %s.", file)
 		if r.file.ExcludeFile != "" {
-			_, line := launchFileOf(p.harness, p.checkout)
+			_, line := launchFileOf(p.harness, p.workdir)
 			fmt.Fprintf(&b, " Added %s to %s, to keep it out of git status.", line, r.file.ExcludeFile)
 		}
 		b.WriteString("\n")
 	default:
-		fmt.Fprintf(&b, "Shares %s, which this line wrote for another session of the checkout.\n", file)
+		fmt.Fprintf(&b, "Shares %s, which this line wrote for another session of the working directory.\n", file)
 	}
 	if r.excludeNote != "" {
 		fmt.Fprintf(&b, "Note: %s.\n", r.excludeNote)
@@ -937,8 +959,8 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 			launch += " --model " + q(p.model)
 		}
 		b.WriteString("What is left is yours, in this order:\n")
-		next("Launch the session from its checkout, and approve the project server parley when it asks.")
-		cmd("cd " + q(p.checkout))
+		next("Launch the session from its working directory, and approve the project server parley when it asks.")
+		cmd("cd " + q(p.workdir))
 		cmd(launch)
 		b.WriteString("\n   A conversation that is already under way joins the line with the same launch plus --resume <session-id>,\n   and keeps its history:\n\n")
 		cmd(launch + " --resume <session-id>")
@@ -962,7 +984,7 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 	cmd(fmt.Sprintf("%s codex --stream %s --nick %s --state-dir %s --thread auto --skill line --chair %s --cap %d --window %s%s",
 		q(p.self), q(p.rec.Stream), p.nick, q(p.base), p.rec.Chair, p.rec.Cap, p.window, pumpExtra))
 	next("In another, resume its session, then type $parley-line:")
-	cmd(fmt.Sprintf("%s resume %s -C %s -a on-request", p.codexName(), q(r.thread), q(p.checkout)))
+	cmd(fmt.Sprintf("%s resume %s -C %s -a on-request", p.codexName(), q(r.thread), q(p.workdir)))
 	b.WriteString("\n   Check that /status shows workspace-write and network on")
 	if p.model != "" {
 		fmt.Fprintf(&b, ", and its model (%s); the model check is unverified on a resumed session, so confirm it here", p.model)
@@ -993,15 +1015,15 @@ func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
 
 	fmt.Fprintf(&b, "OpenCode session %s.\n", r.thread)
 	b.WriteString("\nWhat is left is yours, in this order:\n")
-	next("In one terminal, start OpenCode on its session, in its checkout. It comes first: it starts OpenCode's background\n   service if none runs, and the pump checks as it starts that the service answers and knows the session. There is no port\n   to choose: the pump finds the service from the file the service writes, service.json in $XDG_STATE_HOME/opencode\n   (~/.local/state/opencode if that is not set), so both commands need the same HOME and XDG_STATE_HOME.")
-	cmd("cd " + q(p.checkout))
+	next("In one terminal, start OpenCode on its session, in its working directory. It comes first: it starts OpenCode's background\n   service if none runs, and the pump checks as it starts that the service answers and knows the session. There is no port\n   to choose: the pump finds the service from the file the service writes, service.json in $XDG_STATE_HOME/opencode\n   (~/.local/state/opencode if that is not set), so both commands need the same HOME and XDG_STATE_HOME.")
+	cmd("cd " + q(p.workdir))
 	cmd(fmt.Sprintf("%s -s %s", p.openCodeName(), q(r.thread)))
 	next("In another, start its pump:")
 	cmd(fmt.Sprintf("%s opencode --stream %s --nick %s --session auto --skill line --chair %s --cap %d --window %s --state-dir %s",
 		q(p.self), q(p.rec.Stream), p.nick, p.rec.Chair, p.rec.Cap, p.window, q(p.base)))
 	next("Check that the session has loaded the parley-line skill. OpenCode loads a skill with its skill tool and has no /parley-line\n   command; if its answer to the primer below does not show it did, ask it to load the skill.")
 	fmt.Fprintf(&b, "Notes:\n")
-	fmt.Fprintf(&b, "  The reply file, %s, is outside the session's checkout. OpenCode allows external_directory by default,\n", q(r.replyFile))
+	fmt.Fprintf(&b, "  The reply file, %s, is outside the session's working directory. OpenCode allows external_directory by default,\n", q(r.replyFile))
 	b.WriteString("  so writing it asks nothing. To be asked, add this rule to your opencode.jsonc and answer for the\n  reply directory when it asks:\n")
 	b.WriteString("    { \"permissions\": [ { \"action\": \"external_directory\", \"resource\": \"*\", \"effect\": \"ask\" } ] }\n")
 	b.WriteString("  The session was made by opencode run --session, which adds no permission rules of its own to the session. A run has no one\n")
@@ -1021,7 +1043,7 @@ func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
 }
 
 // tracked reports whether git's index in dir holds rel. A directory outside any
-// repository, or a git that cannot answer, holds nothing: such a checkout has no
+// repository, or a git that cannot answer, holds nothing: such a directory has no
 // index a written file could become a change to.
 func tracked(dir, rel string) bool {
 	args := append(append([]string(nil), wtGitFlags...), "ls-files", "--", filepath.ToSlash(rel))

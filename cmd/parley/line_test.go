@@ -71,7 +71,7 @@ func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 		if !strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\n\n") {
 			t.Fatalf("the %s line primer does not end in exactly one newline", front)
 		}
-		// Codex keeps a checkout's git directory read-only in its sandbox, so only
+		// Codex keeps a working directory's git directory read-only in its sandbox, so only
 		// the codex front is told to ask for escalation for git's writes.
 		if has := strings.Contains(out, "ask for escalation for each of them directly"); has != (front == "codex") {
 			t.Fatalf("the %s line primer carries the git escalation paragraph = %v:\n%s", front, has, out)

@@ -14,8 +14,8 @@ import (
 	"github.com/colinsurprenant/parley/internal/state"
 )
 
-// What `line add` and `line drop` do to a checkout's info/exclude: the exclude
-// file every checkout of a repository shares, which keeps the launch file out of
+// What `line add` and `line drop` do to a repository's info/exclude: the exclude
+// file every worktree of a repository shares, which keeps the launch file out of
 // `git status` without touching a tracked file. It is the user's file, not
 // parley's state, so it is only ever appended to and then, when the line added
 // the line itself, that one line is taken out again; a link in its place is
@@ -30,28 +30,54 @@ const excludeMax = 4 << 20
 // leaves such a file alone and says so, rather than fail.
 var errExcludeUnsafe = errors.New("not touched")
 
-// excludeFileOf asks git, from the checkout, where its info/exclude is. It
-// returns "" and a note for the human when there is none to use: the checkout is
-// not a git checkout, or it is a directory inside one (the anchored line would
-// not match the launch file there).
-func excludeFileOf(ctx context.Context, checkout string) (path, note string) {
+// excludeFileOf asks git, from the working directory, where its info/exclude is.
+// It returns "" and a note for the human when there is none to use: the directory
+// is in no git repository, or it is a directory inside one but not its top (the
+// anchored line would not match the launch file there).
+func excludeFileOf(ctx context.Context, workdir string) (path, note string) {
 	args := append(append([]string(nil), wtGitFlags...), "rev-parse", "--show-toplevel", "--git-path", "info/exclude")
-	out, _, err := runGit(ctx, checkout, gitEnv(), args, args)
+	out, _, err := runGit(ctx, workdir, gitEnv(), args, args)
 	if err != nil {
-		return "", fmt.Sprintf("no exclude line added: %s is not a git checkout (%s)", checkout, firstLine(err.Error()))
+		return "", fmt.Sprintf("no exclude line added: %s is not in a git repository (%s)", workdir, firstLine(err.Error()))
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 2 || lines[0] == "" || lines[1] == "" {
-		return "", fmt.Sprintf("no exclude line added: git said something else than a top directory and an exclude file for %s", checkout)
+		return "", fmt.Sprintf("no exclude line added: git said something else than a top directory and an exclude file for %s", workdir)
 	}
-	if resolveExisting(lines[0]) != resolveExisting(checkout) {
-		return "", fmt.Sprintf("no exclude line added: %s is inside the repository at %s and is not its root, where the anchored line would not match", checkout, lines[0])
+	if resolveExisting(lines[0]) != resolveExisting(workdir) {
+		return "", fmt.Sprintf("no exclude line added: %s is inside the git repository at %s and is not its top directory, where the anchored line would not match", workdir, lines[0])
 	}
 	path = lines[1]
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(checkout, path)
+		path = filepath.Join(workdir, path)
 	}
 	return filepath.Clean(path), ""
+}
+
+// defaultWorkdir is the directory `line add` runs a session in when --workdir is
+// left out: the current directory, if git names it as the top of a working tree,
+// a main checkout's or a linked worktree's. A directory outside any repository, a
+// subdirectory of one, and a git that cannot answer are refused rather than
+// guessed at: the session's launch file and its exclude line are meant for a
+// repository's top.
+func defaultWorkdir(ctx context.Context) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", cfgErrf("--workdir is not given and the current directory cannot be found (%v): pass --workdir <absolute dir>", err)
+	}
+	args := append(append([]string(nil), wtGitFlags...), "rev-parse", "--show-toplevel")
+	out, _, err := runGit(ctx, cwd, gitEnv(), args, args[len(wtGitFlags):])
+	if err != nil {
+		return "", cfgErrf("--workdir is not given, and the current directory %s is not the top of a git repository (%s): pass --workdir <absolute dir>", cwd, firstLine(err.Error()))
+	}
+	top := strings.TrimSuffix(out, "\n")
+	if top == "" {
+		return "", cfgErrf("--workdir is not given, and git named no top directory for the current directory %s: pass --workdir <absolute dir>", cwd)
+	}
+	if resolveExisting(top) != resolveExisting(cwd) {
+		return "", cfgErrf("--workdir is not given, and the current directory %s is inside the git repository at %s and is not its top directory: pass --workdir <absolute dir>", cwd, top)
+	}
+	return cwd, nil
 }
 
 // readExclude reads the exclude file at path, a regular file and not a link. A
@@ -236,14 +262,15 @@ func removeExcludeLine(path, line string, sep, made bool) (removed bool, err err
 	return true, nil
 }
 
-// worktreeRoots are the roots of the worktrees of the repository the checkout is
-// in, as git lists them, the main one and the linked ones. It asks git from the
-// checkout when that is there and otherwise from the common git directory the
-// exclude file sits in (<common>/info/exclude). ok is false when git cannot say,
-// or names a path it quotes: nothing is then known of the other worktrees.
-func worktreeRoots(ctx context.Context, checkout, excludeFile string) (roots []string, ok bool) {
+// worktreeRoots are the roots of the worktrees of the repository the working
+// directory is in, as git lists them, the main one and the linked ones. It asks
+// git from the working directory when that is there and otherwise from the
+// common git directory the exclude file sits in (<common>/info/exclude). ok is
+// false when git cannot say, or names a path it quotes: nothing is then known of
+// the other worktrees.
+func worktreeRoots(ctx context.Context, workdir, excludeFile string) (roots []string, ok bool) {
 	// The worktrees are listed through the git directory that owns the recorded
-	// exclude file, <common>/info/exclude, never through the checkout: a checkout
+	// exclude file, <common>/info/exclude, never through the working directory: a
 	// path reused by another repository would list that repository's worktrees
 	// while the line edits the original's exclude file. A listing cut short at
 	// gitOutputMax is not taken as the whole, since a missing worktree could be
@@ -275,8 +302,8 @@ func worktreeRoots(ctx context.Context, checkout, excludeFile string) (roots []s
 // worktree that could not be looked at (only a not-exist error shows a worktree has
 // no such file; any other leaves the line kept, naming the error), or git, which
 // could not list the worktrees.
-func excludeLineStillNeeded(ctx context.Context, checkout, excludeFile, line string) (needed bool, why string) {
-	roots, ok := worktreeRoots(ctx, checkout, excludeFile)
+func excludeLineStillNeeded(ctx context.Context, workdir, excludeFile, line string) (needed bool, why string) {
+	roots, ok := worktreeRoots(ctx, workdir, excludeFile)
 	if !ok {
 		return true, "git cannot list the worktrees of the repository, so nothing shows the line is not needed"
 	}

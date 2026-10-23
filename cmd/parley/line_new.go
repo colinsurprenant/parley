@@ -269,7 +269,7 @@ func lineRunbook(rec lineRecord, serverDown bool, self string) string {
 	b.WriteString("\n   An unregistered chair nick could be taken by a session's process, and the breaker would then\n   release on that session's posts as if they were yours.\n")
 
 	next("Add each session, one `parley line add` per session, then launch it as that command prints:")
-	cmd(fmt.Sprintf("%s line add %s --nick <nick> --harness <claude|codex|opencode> [--model <model>] --checkout <absolute dir> --state-dir %s", q(self), rec.ID, q(rec.StateDir)))
+	cmd(fmt.Sprintf("%s line add %s --nick <nick> --harness <claude|codex|opencode> [--model <model>] [--workdir <absolute dir>] --state-dir %s", q(self), rec.ID, q(rec.StateDir)))
 
 	fmt.Fprintf(&b, "\nWhen it is over: %s line end %s --state-dir %s\n", q(self), rec.ID, q(rec.StateDir))
 	return b.String()

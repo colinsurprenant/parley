@@ -125,7 +125,7 @@ usage:
   parley build   end <id> [--force] [--state-dir <dir>]
   parley line    new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]
                  [--opencode-bin opencode]
-  parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout <absolute dir> [--state-dir <dir>]
+  parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>] [--state-dir <dir>]
   parley line    drop <id> <nick> [--force] [--state-dir <dir>]
   parley line    end <id> [--force] [--state-dir <dir>]
   parley version
@@ -163,7 +163,7 @@ verbs:
   opencode run in the foreground and deliver into a live OpenCode session, one
            user message per delivery, over the HTTP API of the OpenCode 2
            server the session runs on: the background service that "opencode -s
-           <id>" starts in the session's checkout, or a server started with
+           <id>" starts in the session's working directory, or a server started with
            "opencode serve --port <n>". Without --port the pump finds the
            service from the file it writes, service.json in
            $XDG_STATE_HOME/opencode (~/.local/state/opencode if unset), after
@@ -435,8 +435,8 @@ verbs:
            session: it prints the kept branches and the git branch -D line for
            each, and a codex delete line for each Codex peer
   line     set up a line, put sessions on it, take them off and take it down.
-           A line is a few long-running sessions, each in a checkout of its
-           own, and one human on one channel, under --skill line: no seal, a
+           A line is a few long-running sessions, each in a working directory of
+           its own, and one human on one channel, under --skill line: no seal, a
            rate breaker, no target and no worktree. Its record is
            lines/<id>/line.json under the state base. new <id> checks its flags
            (the id as a table's, one namespace with the tables and the builds;
@@ -455,20 +455,25 @@ verbs:
            server when nothing answers, the chair's join and NickServ steps, and
            that each session is added with line add. add <id> adds one session
            and inherits the chair, cap, window, server and state directory from
-           the record (--state-dir only finds the record). It refuses, exit 2
-           and nothing changed: an unknown line; a nick that is invalid,
+           the record (--state-dir only finds the record). --workdir, when left
+           out, is the current directory if git says that is the top directory of
+           a repository's working tree (a linked worktree counts), and the output
+           says so; it then goes through the checks of a given one. It refuses,
+           exit 2 and nothing changed: an unknown line; a nick that is invalid,
            reserved (tables, builds, lines), the chair's or already in the line,
            without regard to ASCII case; a model over 128 bytes or outside
-           letters, digits and . _ - : / @ [ ] + ; a --checkout that is not an
+           letters, digits and . _ - : / @ [ ] + ; a --workdir that is not an
            absolute existing directory, holds or resolves to a path that holds
            a '$' or a control character, or is not UTF-8 (as is the binary,
-           state and temp path; the checkout is resolved, links and all, and
-           the resolved path is the one recorded and printed); a state directory
-           inside the checkout, and for a Codex or an OpenCode session $TMPDIR
-           inside it; an OpenCode model that is not provider/model or
-           provider/model#variant; a Claude
-           session's .mcp.json that is in the
-           checkout and is not the one this line wrote (the record holds the
+           state and temp path; the working directory is resolved, links and
+           all, and the resolved path is the one recorded and printed); an empty
+           --workdir; a current directory, with --workdir left out, that is not
+           the top directory of a git repository's working tree, or that git
+           cannot place; a state directory inside the working directory, and for
+           a Codex or an OpenCode session $TMPDIR inside it; an OpenCode model
+           that is not provider/model or provider/model#variant; a Claude
+           session's .mcp.json that is in the working directory and is not the
+           one this line wrote (the record holds the
            sha256 of its exact bytes), and a Codex session's
            .codex/config.toml likewise, or a .codex that is not a real
            directory; a Claude launch whose instructions are over
@@ -478,31 +483,31 @@ verbs:
            changed: a machine on which doctor's static checks fail, the
            parley-line skill missing under the root the harness reads among them,
            and a nick whose lock a running session or pump holds. A Claude session
-           gets a .mcp.json in its checkout with one server, parley, whose args
-           are the channel's launch flags with --nick ${PARLEY_NICK}, --skill
-           line, the chair, --cap and --window; a second Claude session in the
-           same checkout shares the file. A Codex session gets
-           .codex/config.toml (workspace-write, on-request and network_access =
-           true, which turns network on for Codex in that checkout, behind a
-           first comment line naming the line and carrying a nonce, so that its
-           digest proves the line wrote it), a reply
+           gets a .mcp.json in its working directory with one server, parley,
+           whose args are the channel's launch flags with --nick
+           ${PARLEY_NICK}, --skill line, the chair, --cap and --window; a second
+           Claude session in the same working directory shares the file. A Codex
+           session gets .codex/config.toml (workspace-write, on-request and
+           network_access = true, which turns network on for Codex in that working directory,
+           behind a first comment line naming the line and carrying a nonce, so
+           that its digest proves the line wrote it), a reply
            directory parley-line-<id>-* under $TMPDIR at 0700 with a marker naming
            the line and the nick, and a thread started by codex exec --json on
-           the line's primer in a read-only sandbox (-s read-only, the checkout
-           being the user's own) with stdin closed, network off for that turn,
+           the line's primer in a read-only sandbox (-s read-only, the working
+           directory being the user's own) with stdin closed, network off for that turn,
            -m when a model is given and a 5-minute limit, recorded in the
            codex-thread file --thread auto reads. Files are created with no
-           overwrite and never through a link. When the checkout is the root of
-           a git checkout, /.mcp.json or /.codex/config.toml is appended to the
+           overwrite and never through a link. When the working directory is the
+           top directory of a git repository, /.mcp.json or /.codex/config.toml is appended to the
            file git rev-parse --git-path info/exclude names (created if the
            repository has none), unless the line is there already; the record
            says whether the line added it, and a line put there by another
            session of the line, as in another worktree of the repository, is
            taken as the line's own. An OpenCode session gets no launch file and
-           nothing else written in its checkout; it gets the same kind of reply
+           nothing else written in its working directory; it gets the same kind of reply
            directory as a Codex one, and a session started by opencode run
            --format json --title "parley line <id> <nick>" --session <id> in the
-           checkout (-m provider/model, or provider/model#variant, when a model is given), where <id> is an
+           working directory (-m provider/model, or provider/model#variant, when a model is given), where <id> is an
            id parley makes the way OpenCode does (ses_ and 26 letters or digits)
            and the run creates the session under, with the primer on stdin, so
            that it reaches the model as it is, stdin otherwise closed, the
@@ -516,7 +521,7 @@ verbs:
            in the opencode-session file --session auto reads. A failure or an
            interrupt takes down what the run made, a started Codex thread
            (codex delete --force) or the OpenCode session (opencode session
-           delete, run from the checkout, whatever the run did: the id is known
+           delete, run from the working directory, whatever the run did: the id is known
            before it, and an answer of "Session not found" for a run that
            failed before it made the session is not a failure). The run adds no rule to the session, and rejects the
            permission asks and cancels the questions of its own turn. It starts
@@ -539,7 +544,7 @@ verbs:
            or session record (only if it holds the recorded thread or session), its
            reply directory (only if
            directly in $TMPDIR, named for the line, with the marker), and, when
-           no other session of the line uses that checkout with that harness,
+           no other session of the line uses that working directory with that harness,
            the launch file (only if its bytes still hash to the recorded digest
            and its directory is not a link; otherwise it refuses, exit 1,
            naming it, and --force leaves the file and its exclude line in place
@@ -777,7 +782,7 @@ func (k skillFlags) resolve(fs *flag.FlagSet, nick string) (launch, error) {
 	if skill == primer.SkillLine {
 		for _, name := range []string{"target", "worktree"} {
 			if given(fs, name) {
-				return launch{}, cfgErrf("--%s is not taken with --skill line: a line has no target repo and no worktree of the session's, the session works in its own checkout", name)
+				return launch{}, cfgErrf("--%s is not taken with --skill line: a line has no target repo and no worktree of the session's, the session works in its own working directory", name)
 			}
 		}
 	} else {

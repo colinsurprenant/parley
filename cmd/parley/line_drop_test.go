@@ -16,11 +16,11 @@ func (b *lineBench) mustAdd(t *testing.T, id, nick, harness, co string, extra ..
 
 // TestLineDropClaudeKeepsTheSharedFileUntilTheLastSessionGoes: two Claude sessions
 // share one .mcp.json and one exclude line; the first to go leaves both, the last
-// takes both, and the checkout is as it was.
+// takes both, and the working directory is as it was.
 func TestLineDropClaudeKeepsTheSharedFileUntilTheLastSessionGoes(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	pristine := treeListing(t, co)
 	b.mustAdd(t, "demo", "plan", "claude", co)
 	b.mustAdd(t, "demo", "review", "claude", co)
@@ -34,7 +34,7 @@ func TestLineDropClaudeKeepsTheSharedFileUntilTheLastSessionGoes(t *testing.T) {
 	if !strings.Contains(readExcludeForTest(t, co), "/.mcp.json\n") {
 		t.Error("the first drop removed the shared exclude line")
 	}
-	if !strings.Contains(res.stdout, "Kept, because the line still needs them") || !strings.Contains(res.stdout, "session review of the checkout still uses it") {
+	if !strings.Contains(res.stdout, "Kept, because the line still needs them") || !strings.Contains(res.stdout, "session review of the working directory still uses it") {
 		t.Errorf("stdout does not say the file is kept:\n%s", res.stdout)
 	}
 	rec := b.record(t, "demo")
@@ -48,7 +48,7 @@ func TestLineDropClaudeKeepsTheSharedFileUntilTheLastSessionGoes(t *testing.T) {
 		t.Error("the last drop left the file")
 	}
 	if got := treeListing(t, co); got != pristine {
-		t.Errorf("the checkout is not as it was.\nbefore:\n%s\nafter:\n%s", pristine, got)
+		t.Errorf("the working directory is not as it was.\nbefore:\n%s\nafter:\n%s", pristine, got)
 	}
 	for _, want := range []string{path, "the line /.mcp.json in " + filepath.Join(co, ".git", "info", "exclude")} {
 		if !strings.Contains(res.stdout, want) {
@@ -69,7 +69,7 @@ func TestLineDropClaudeKeepsTheSharedFileUntilTheLastSessionGoes(t *testing.T) {
 func TestLineDropCodexSessionRemovesWhatAddMade(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	before := b.lsnap(t, co)
 	b.mustAdd(t, "demo", "build", "codex", co)
 	rec := b.record(t, "demo")
@@ -113,7 +113,7 @@ func TestLineDropCodexSessionRemovesWhatAddMade(t *testing.T) {
 func TestLineDropKeepsADotCodexDirectoryItDidNotMake(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	if err := os.Mkdir(filepath.Join(co, ".codex"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestLineDropKeepsADotCodexDirectoryItDidNotMake(t *testing.T) {
 	}
 
 	// One the line made but that holds something else now stays too.
-	co2 := b.gitCheckout(t, "co2")
+	co2 := b.gitWorkdir(t, "co2")
 	b.mustAdd(t, "demo", "ops", "codex", co2)
 	extra := filepath.Join(co2, ".codex", "notes.txt")
 	if err := os.WriteFile(extra, []byte("mine"), 0o644); err != nil {
@@ -165,7 +165,7 @@ func TestLineDropKeepsEveryOtherExcludeLineByteForByte(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			exclude := filepath.Join(co, ".git", "info", "exclude")
 			if err := os.WriteFile(exclude, []byte(content), 0o640); err != nil {
 				t.Fatal(err)
@@ -195,7 +195,7 @@ func TestLineDropKeepsEveryOtherExcludeLineByteForByte(t *testing.T) {
 func TestLineDropLeavesAnExcludeLineItDidNotAdd(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	exclude := filepath.Join(co, ".git", "info", "exclude")
 	if err := os.WriteFile(exclude, []byte("/.mcp.json\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestLineDropLeavesAnExcludeLineItDidNotAdd(t *testing.T) {
 func TestLineDropRemovesOnlyTheLinesOwnExcludeLine(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	exclude := filepath.Join(co, ".git", "info", "exclude")
 	b.mustAdd(t, "demo", "plan", "claude", co)
 	f, err := os.OpenFile(exclude, os.O_APPEND|os.O_WRONLY, 0)
@@ -234,19 +234,19 @@ func TestLineDropRefusesWhileTheSessionIsRunning(t *testing.T) {
 		t.Run(harness, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
-			b.mustAdd(t, "demo", "other", "claude", b.gitCheckout(t, "co-other"))
+			co := b.gitWorkdir(t, "co")
+			b.mustAdd(t, "demo", "other", "claude", b.gitWorkdir(t, "co-other"))
 			b.mustAdd(t, "demo", "worker", harness, co)
 			l, err := state.LockNick(b.base, "worker")
 			if err != nil {
 				t.Fatal(err)
 			}
-			before := b.lsnap(t, b.checkoutDirs(t)...)
+			before := b.lsnap(t, b.workdirs(t)...)
 			res := b.run(t, b.ldrop("demo", "worker", "--force")...)
 			if res.code != 1 || !strings.Contains(res.stderr, `"worker"`) || !strings.Contains(res.stderr, "still running") {
 				t.Fatalf("exit %d, want 1 naming worker\n%s", res.code, res.stderr)
 			}
-			b.wantLineUnchanged(t, before, b.checkoutDirs(t)...)
+			b.wantLineUnchanged(t, before, b.workdirs(t)...)
 			// A refusal holds nothing: the other session's lock is free again.
 			free, err := state.LockNick(b.base, "other")
 			if err != nil {
@@ -275,7 +275,7 @@ func TestLineDropRefusesAFileThatIsNotTheLines(t *testing.T) {
 	cases := []struct {
 		name    string
 		harness string
-		// tamper changes the checkout and returns the file outside it that the change
+		// tamper changes the working directory and returns the file outside it that the change
 		// points at, or "".
 		tamper func(t *testing.T, b *lineBench, co string) string
 		file   string
@@ -347,11 +347,11 @@ func TestLineDropRefusesAFileThatIsNotTheLines(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			b.mustAdd(t, "demo", "worker", c.harness, co)
 			pointedAt := c.tamper(t, b, co)
-			before := b.lsnap(t, b.checkoutDirs(t)...)
-			// The file outside the checkout that a link points at is never touched.
+			before := b.lsnap(t, b.workdirs(t)...)
+			// The file outside the working directory that a link points at is never touched.
 			var pointedAtBytes []byte
 			if pointedAt != "" {
 				pointedAtBytes = mustRead(t, pointedAt)
@@ -361,7 +361,7 @@ func TestLineDropRefusesAFileThatIsNotTheLines(t *testing.T) {
 			if res.code != 1 || !strings.Contains(res.stderr, c.file) || !strings.Contains(res.stderr, c.why) || !strings.Contains(res.stderr, "--force") {
 				t.Fatalf("exit %d, want 1 naming the file and why, and --force\n%s", res.code, res.stderr)
 			}
-			b.wantLineUnchanged(t, before, b.checkoutDirs(t)...)
+			b.wantLineUnchanged(t, before, b.workdirs(t)...)
 
 			res = mustLine(t, b, b.ldrop("demo", "worker", "--force")...)
 			t.Logf("stdout:\n%s", res.stdout)
@@ -396,12 +396,12 @@ func TestLineDropRefusesAFileThatIsNotTheLines(t *testing.T) {
 }
 
 // TestLineDropOfOneSessionNeedsOnlyItsOwnFileToBeTheLines: a session whose
-// checkout-mate still uses a modified file goes without a word about it; the file
+// session of the same working directory still uses a modified file goes without a word about it; the file
 // is the last one's to answer for.
 func TestLineDropOfASharingSessionLeavesTheFileToTheLastOne(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.mustAdd(t, "demo", "plan", "claude", co)
 	b.mustAdd(t, "demo", "review", "claude", co)
 	if err := os.WriteFile(filepath.Join(co, ".mcp.json"), []byte("{}"), 0o644); err != nil {
@@ -419,7 +419,7 @@ func TestLineDropOfASharingSessionLeavesTheFileToTheLastOne(t *testing.T) {
 func TestLineDropWhenWhatItMadeIsAlreadyGone(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.mustAdd(t, "demo", "build", "codex", co)
 	s := b.record(t, "demo").Sessions[0]
 	tr, _ := state.OpenThreadRecord(b.base, "build", b.stream("demo"))
@@ -450,7 +450,7 @@ func TestLineDropLeavesAThreadRecordThatIsNotTheSessions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			b.mustAdd(t, "demo", "build", "codex", co)
 			tr, _ := state.OpenThreadRecord(b.base, "build", b.stream("demo"))
 			if err := os.WriteFile(tr.Path(), []byte(content), 0o600); err != nil {
@@ -512,7 +512,7 @@ func TestLineDropRefusesAReplyDirectoryItCannotShowIsTheSessions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			b.mustAdd(t, "demo", "build", "codex", co)
 			dir := b.record(t, "demo").Sessions[0].ReplyDir
 			env := tamper(t, b, dir)
@@ -530,7 +530,7 @@ func TestLineDropRefusesAReplyDirectoryItCannotShowIsTheSessions(t *testing.T) {
 func TestLineDropConfigurationErrors(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	b.mustAdd(t, "demo", "plan", "claude", b.gitCheckout(t, "co"))
+	b.mustAdd(t, "demo", "plan", "claude", b.gitWorkdir(t, "co"))
 	for _, c := range []struct {
 		args []string
 		want string
@@ -560,11 +560,11 @@ func TestLineDropConfigurationErrors(t *testing.T) {
 }
 
 // TestLineAddAfterDropGivesTheNickBackItsPlace: nothing a drop left is in the
-// way of the same nick, in the same checkout, joining again.
+// way of the same nick, in the same working directory, joining again.
 func TestLineAddAfterDropGivesTheNickBackItsPlace(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.mustAdd(t, "demo", "build", "codex", co)
 	mustLine(t, b, b.ldrop("demo", "build")...)
 	res := b.mustAdd(t, "demo", "build", "codex", co)
@@ -577,11 +577,11 @@ func TestLineAddAfterDropGivesTheNickBackItsPlace(t *testing.T) {
 }
 
 // TestLineEndTakesTheLineDown: every session's things and the line's directory go,
-// the checkouts are as they were, and each Codex session's delete line is printed.
+// the working directories are as they were, and each Codex session's delete line is printed.
 func TestLineEndTakesTheLineDown(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo", "--codex-bin", b.codex)
-	co1, co2, co3 := b.gitCheckout(t, "co1"), b.gitCheckout(t, "co2"), b.plainCheckout(t, "co3")
+	co1, co2, co3 := b.gitWorkdir(t, "co1"), b.gitWorkdir(t, "co2"), b.plainWorkdir(t, "co3")
 	pristine := treeListing(t, co1) + treeListing(t, co2) + treeListing(t, co3)
 	b.mustAdd(t, "demo", "plan", "claude", co1)
 	b.mustAdd(t, "demo", "review", "claude", co1)
@@ -594,7 +594,7 @@ func TestLineEndTakesTheLineDown(t *testing.T) {
 	res := mustLine(t, b, b.lend("demo")...)
 	t.Logf("stdout:\n%s", res.stdout)
 	if got := treeListing(t, co1) + treeListing(t, co2) + treeListing(t, co3); got != pristine {
-		t.Errorf("the checkouts are not as they were.\nbefore:\n%s\nafter:\n%s", pristine, got)
+		t.Errorf("the working directories are not as they were.\nbefore:\n%s\nafter:\n%s", pristine, got)
 	}
 	if _, err := os.Stat(filepath.Join(b.base, "lines", "demo")); err == nil {
 		t.Error("the line's directory is still there")
@@ -648,19 +648,19 @@ func TestLineEndOfALineWithNoSessions(t *testing.T) {
 func TestLineEndRefusesWhileAnySessionIsRunning(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	b.mustAdd(t, "demo", "plan", "claude", b.gitCheckout(t, "co1"))
-	b.mustAdd(t, "demo", "build", "codex", b.gitCheckout(t, "co2"))
-	b.mustAdd(t, "demo", "review", "claude", b.gitCheckout(t, "co3"))
+	b.mustAdd(t, "demo", "plan", "claude", b.gitWorkdir(t, "co1"))
+	b.mustAdd(t, "demo", "build", "codex", b.gitWorkdir(t, "co2"))
+	b.mustAdd(t, "demo", "review", "claude", b.gitWorkdir(t, "co3"))
 	l, err := state.LockNick(b.base, "review")
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := b.lsnap(t, b.checkoutDirs(t)...)
+	before := b.lsnap(t, b.workdirs(t)...)
 	res := b.run(t, b.lend("demo", "--force")...)
 	if res.code != 1 || !strings.Contains(res.stderr, `"review"`) || !strings.Contains(res.stderr, "still running") {
 		t.Fatalf("exit %d, want 1 naming review\n%s", res.code, res.stderr)
 	}
-	b.wantLineUnchanged(t, before, b.checkoutDirs(t)...)
+	b.wantLineUnchanged(t, before, b.workdirs(t)...)
 	for _, nick := range []string{"plan", "build"} {
 		free, err := state.LockNick(b.base, nick)
 		if err != nil {
@@ -680,19 +680,19 @@ func TestLineEndRefusesWhileAnySessionIsRunning(t *testing.T) {
 func TestLineEndJudgesEverySessionBeforeRemovingAny(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co1, co2 := b.gitCheckout(t, "co1"), b.gitCheckout(t, "co2")
+	co1, co2 := b.gitWorkdir(t, "co1"), b.gitWorkdir(t, "co2")
 	b.mustAdd(t, "demo", "plan", "claude", co1)
 	b.mustAdd(t, "demo", "build", "codex", co2)
-	b.mustAdd(t, "demo", "review", "claude", b.gitCheckout(t, "co3"))
+	b.mustAdd(t, "demo", "review", "claude", b.gitWorkdir(t, "co3"))
 	if err := os.WriteFile(filepath.Join(co2, ".codex", "config.toml"), []byte("mine = 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	before := b.lsnap(t, b.checkoutDirs(t)...)
+	before := b.lsnap(t, b.workdirs(t)...)
 	res := b.run(t, b.lend("demo")...)
 	if res.code != 1 || !strings.Contains(res.stderr, "config.toml") || !strings.Contains(res.stderr, "--force") {
 		t.Fatalf("exit %d, want 1 naming the config\n%s", res.code, res.stderr)
 	}
-	b.wantLineUnchanged(t, before, b.checkoutDirs(t)...)
+	b.wantLineUnchanged(t, before, b.workdirs(t)...)
 
 	res = mustLine(t, b, b.lend("demo", "--force")...)
 	if !strings.Contains(res.stdout, "Left in place") || !strings.Contains(res.stdout, filepath.Join(co2, ".codex", "config.toml")) {
@@ -709,7 +709,7 @@ func TestLineEndJudgesEverySessionBeforeRemovingAny(t *testing.T) {
 	}
 }
 
-// TestLineEndAfterAPartialFailureFinishesOnTheSecondRun: a session whose checkout
+// TestLineEndAfterAPartialFailureFinishesOnTheSecondRun: a session whose working directory
 // cannot be written is the failure; the first session's things are gone, the record
 // lists the second, and the next run takes it down.
 func TestLineEndAfterAPartialFailureFinishesOnTheSecondRun(t *testing.T) {
@@ -718,10 +718,10 @@ func TestLineEndAfterAPartialFailureFinishesOnTheSecondRun(t *testing.T) {
 	}
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co1, co2 := b.gitCheckout(t, "co1"), b.gitCheckout(t, "co2")
+	co1, co2 := b.gitWorkdir(t, "co1"), b.gitWorkdir(t, "co2")
 	b.mustAdd(t, "demo", "first", "claude", co1)
 	b.mustAdd(t, "demo", "second", "claude", co2)
-	b.mustAdd(t, "demo", "third", "codex", b.gitCheckout(t, "co3"))
+	b.mustAdd(t, "demo", "third", "codex", b.gitWorkdir(t, "co3"))
 	if err := os.Chmod(co2, 0o555); err != nil {
 		t.Fatal(err)
 	}
@@ -773,7 +773,7 @@ func TestLineEndAfterAPartialFailureFinishesOnTheSecondRun(t *testing.T) {
 func TestLineDropDoesNotFollowAnExcludeFileThatBecameALink(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.mustAdd(t, "demo", "plan", "claude", co)
 	exclude := filepath.Join(co, ".git", "info", "exclude")
 	target := filepath.Join(b.root, "shared-excludes")
@@ -816,7 +816,7 @@ func TestLineDropExcludeSeparatorStaysWhenAnotherLineFollowsIt(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			exclude := filepath.Join(co, ".git", "info", "exclude")
 			if err := os.WriteFile(exclude, []byte("a\nb"), 0o644); err != nil {
 				t.Fatal(err)

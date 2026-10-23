@@ -19,12 +19,13 @@ import (
 	"github.com/colinsurprenant/parley/internal/stream"
 )
 
-// A line is a few long-running sessions, each in a checkout of its own, and one
-// human on one channel, under --skill line. What `line new` keeps of it is
+// A line is a few long-running sessions, each in a working directory of its own,
+// and one human on one channel, under --skill line. What `line new` keeps of it is
 // <state base>/lines/<id>/line.json, the record `line add`, `line drop` and `line
 // end` read and write; the rest is elsewhere: each session's launch file in its
-// checkout (.mcp.json or .codex/config.toml, and a line in the checkout's
-// info/exclude; an OpenCode session has none), a Codex session's thread record or
+// working directory (.mcp.json or .codex/config.toml, and a line in the
+// repository's info/exclude when the directory is a repository's top; an OpenCode
+// session has none), a Codex session's thread record or
 // an OpenCode session's session record under its own nick's directory of the
 // base, its reply directory under $TMPDIR, and the id's lock
 // <base>/.ids/<id>.lock. "lines" sits beside the per-nick directories of the
@@ -38,25 +39,26 @@ import (
 //     made 0700; the thread records, cursors and lock files under the nicks' own
 //     directories of the base; the id's lock), and the flags the human gives.
 //     A deliberate hand edit of that state is out of scope.
-//   - Not parley's state: the user's checkouts. A launch file there is the
+//   - Not parley's state: the user's working directories. A launch file there is the
 //     line's only if its bytes still hash to the digest the record holds, and
-//     only that proof lets `line drop` delete it. Nothing in a checkout is
+//     only that proof lets `line drop` delete it. Nothing in a working directory is
 //     overwritten, written through a link or removed on any other ground.
 //   - Untrusted: Codex's output and the thread id it announces (checked to be a
 //     UUID), OpenCode's output and the session id it announces (checked to have
 //     the shape of one, and to be the one every event of the turn carries),
-//     git's output, and what a session wrote in its checkout.
+//     git's output, and what a session wrote in its working directory.
 //   - Not parley's to police: what an OpenCode session does with its harness's
 //     permissions. Its bash tool runs without approval by default, and its
-//     file tools ask only before writing outside the checkout; parley is not a
-//     sandbox, and `line add` writes nothing in an OpenCode session's checkout.
+//     file tools ask only before writing outside the working directory; parley is
+//     not a sandbox, and `line add` writes nothing in an OpenCode session's
+//     working directory.
 const (
 	linesDirName    = state.LinesDir
 	lineRecordName  = "line.json"
 	lineReplyMarker = ".parley-line"
 
 	// lineMCPName and lineCodexConfigName are the launch files, relative to the
-	// checkout, and the lines `line add` puts in info/exclude for them.
+	// working directory, and the lines `line add` puts in info/exclude for them.
 	lineMCPName         = ".mcp.json"
 	lineCodexDirName    = ".codex"
 	lineCodexConfigName = ".codex/config.toml"
@@ -122,7 +124,7 @@ func lineUsage(w io.Writer) {
 
 const (
 	lineUsageNew  = "usage: parley line new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]"
-	lineUsageAdd  = "usage: parley line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout <absolute dir> [--state-dir <dir>]"
+	lineUsageAdd  = "usage: parley line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>] [--state-dir <dir>]"
 	lineUsageDrop = "usage: parley line drop <id> <nick> [--force] [--state-dir <dir>]"
 	lineUsageEnd  = "usage: parley line end <id> [--force] [--state-dir <dir>]"
 )
@@ -173,27 +175,32 @@ type lineRecord struct {
 // id. Files is the one launch file of a Claude or Codex session, and empty for an
 // OpenCode session, which has none.
 type lineSession struct {
-	Nick     string     `json:"nick"`
-	Harness  string     `json:"harness"`
-	Model    string     `json:"model,omitempty"`
-	Checkout string     `json:"checkout"`
+	Nick    string `json:"nick"`
+	Harness string `json:"harness"`
+	Model   string `json:"model,omitempty"`
+	// Workdir is the session's working directory. The key stays "checkout", its
+	// name before the flag became --workdir: a record is read with plain
+	// json.Unmarshal, and a renamed key would load as empty from the records of
+	// lines already running.
+	Workdir  string     `json:"checkout"`
 	Thread   string     `json:"thread,omitempty"`
 	ReplyDir string     `json:"reply_dir,omitempty"`
 	Files    []lineFile `json:"files"`
 }
 
-// lineFile is a launch file the line wrote in a checkout: its path, the digest
-// of its exact bytes, and what else the line made for it. Every session of one
-// checkout and harness lists the same file, and the same entry for it; the
+// lineFile is a launch file the line wrote in a working directory: its path, the
+// digest of its exact bytes, and what else the line made for it. Every session of
+// one working directory and harness lists the same file, and the same entry for it; the
 // file is the line's until the last of them is dropped.
 type lineFile struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
-	// ExcludeFile is the exclude file (the checkout's info/exclude, which every
+	// ExcludeFile is the exclude file (the repository's info/exclude, which every
 	// worktree of a repository shares) that holds the file's line because the line
 	// put it there: this session appended it, or another session of the line had.
-	// It is empty when the line added none: there was no git checkout, or the line
-	// was in the file already and no session of the line had put it there.
+	// It is empty when the line added none: the working directory was not a git
+	// repository's top, or the line was in the file already and no session of the
+	// line had put it there.
 	ExcludeFile string `json:"exclude_file,omitempty"`
 	// ExcludeSep is whether the exclude file did not end in a newline, so that the
 	// line had to end its last line first. That newline goes with the line when the
@@ -224,15 +231,15 @@ func (r lineRecord) session(nick string) (int, bool) {
 }
 
 // sharing is the sessions of the record, but skip (an index, or -1), that use the
-// launch file harness has in checkout: the same harness, the same directory. A
+// launch file harness has in workdir: the same harness, the same directory. A
 // harness with no launch file shares nothing.
-func (r lineRecord) sharing(harness, checkout string, skip int) []lineSession {
+func (r lineRecord) sharing(harness, workdir string, skip int) []lineSession {
 	if !hasLaunchFile(harness) {
 		return nil
 	}
 	var out []lineSession
 	for i, s := range r.Sessions {
-		if i != skip && s.Harness == harness && sameDir(s.Checkout, checkout) {
+		if i != skip && s.Harness == harness && sameDir(s.Workdir, workdir) {
 			out = append(out, s)
 		}
 	}
@@ -244,20 +251,20 @@ func (r lineRecord) sharing(harness, checkout string, skip int) []lineSession {
 func sameDir(a, b string) bool { return resolveExisting(a) == resolveExisting(b) }
 
 // hasLaunchFile is whether a session of this harness has a launch file in its
-// checkout. An OpenCode session has none: nothing like .mcp.json or
+// working directory. An OpenCode session has none: nothing like .mcp.json or
 // .codex/config.toml is written for it, so there is no file for the verbs to
 // share, to prove by its digest, to exclude from git or to remove.
 func hasLaunchFile(harness string) bool { return harness == harnessClaude || harness == harnessCodex }
 
-// launchFileOf is the launch file a session of this harness has in checkout, and
+// launchFileOf is the launch file a session of this harness has in workdir, and
 // the line `line add` appends to the exclude file for it; both are empty for a
 // harness with none.
-func launchFileOf(harness, checkout string) (path, excludeLine string) {
+func launchFileOf(harness, workdir string) (path, excludeLine string) {
 	switch harness {
 	case harnessCodex:
-		return filepath.Join(checkout, lineCodexDirName, "config.toml"), "/" + lineCodexConfigName
+		return filepath.Join(workdir, lineCodexDirName, "config.toml"), "/" + lineCodexConfigName
 	case harnessClaude:
-		return filepath.Join(checkout, lineMCPName), "/" + lineMCPName
+		return filepath.Join(workdir, lineMCPName), "/" + lineMCPName
 	}
 	return "", ""
 }
@@ -413,8 +420,8 @@ func (s lineSession) check(r lineRecord) error {
 			return err
 		}
 	}
-	if !filepath.IsAbs(s.Checkout) {
-		return fmt.Errorf("checkout %q is not an absolute path", s.Checkout)
+	if !filepath.IsAbs(s.Workdir) {
+		return fmt.Errorf("working directory %q is not an absolute path", s.Workdir)
 	}
 	switch s.Harness {
 	case harnessOpenCode:
@@ -451,7 +458,7 @@ func (s lineSession) check(r lineRecord) error {
 		return fmt.Errorf("it lists %d launch files, and a session of the line has exactly one", len(s.Files))
 	}
 	f := s.Files[0]
-	if want, _ := launchFileOf(s.Harness, s.Checkout); filepath.Clean(f.Path) != want {
+	if want, _ := launchFileOf(s.Harness, s.Workdir); filepath.Clean(f.Path) != want {
 		return fmt.Errorf("launch file %q is not %q", f.Path, want)
 	}
 	if !sha256DigestRE.MatchString(f.SHA256) {
