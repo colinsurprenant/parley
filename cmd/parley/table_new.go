@@ -946,7 +946,7 @@ func writeNewFileIn(root, path string, data []byte, mode os.FileMode) error {
 }
 
 // writeNewFileWithin is writeNewFileIn for a root that is not a worktree (a line
-// session's checkout): what names root in the refusal.
+// session's working directory): what names root in the refusal.
 func writeNewFileWithin(root, what, path string, data []byte, mode os.FileMode) error {
 	if err := checkParentIn(root, what, path); err != nil {
 		return err
