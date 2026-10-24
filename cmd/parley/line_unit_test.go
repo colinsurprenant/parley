@@ -225,12 +225,41 @@ func goodLineRecord(base string) lineRecord {
 		ID: "demo", Stream: "irc://127.0.0.1:6667/#demo", Server: "127.0.0.1:6667", StateDir: base,
 		Chair: "colin", Cap: 8, Window: "10m", Created: "2026-01-01T00:00:00Z",
 		Sessions: []lineSession{
-			{Nick: "plan", Harness: "claude", Model: "opus", Checkout: co,
+			{Nick: "plan", Harness: "claude", Model: "opus", Workdir: co,
 				Files: []lineFile{{Path: co + "/.mcp.json", SHA256: "sha256:" + strings.Repeat("a", 64), ExcludeFile: co + "/.git/info/exclude"}}},
-			{Nick: "build", Harness: "codex", Checkout: co, Thread: fakeThread(1),
+			{Nick: "build", Harness: "codex", Workdir: co, Thread: fakeThread(1),
 				ReplyDir: "/tmp/parley-line-demo-123",
 				Files:    []lineFile{{Path: co + "/.codex/config.toml", SHA256: "sha256:" + strings.Repeat("b", 64), MadeDir: true}}},
 		},
+	}
+}
+
+// TestLineRecordKeepsItsCheckoutKey: a session's working directory is the
+// record's "checkout" key, as earlier versions wrote it, so that the records of
+// lines already running keep loading (a record is read with plain json.Unmarshal,
+// and a renamed key would load as empty).
+func TestLineRecordKeepsItsCheckoutKey(t *testing.T) {
+	base := t.TempDir()
+	raw, err := json.Marshal(goodLineRecord(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"checkout":"/work/co"`) || strings.Contains(string(raw), `"workdir"`) {
+		t.Fatalf("the record names the working directory under another key:\n%s", raw)
+	}
+	dir := filepath.Join(base, "lines", "demo")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "line.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, err := readLineRecord(base, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.Sessions[0].Workdir; got != "/work/co" {
+		t.Errorf("the working directory loads as %q, want /work/co", got)
 	}
 }
 
@@ -281,7 +310,7 @@ func TestLineRecordCheckRefusesWhatTheVerbsDidNotWrite(t *testing.T) {
 		{"a session nick that is reserved", func(r *lineRecord) { r.Sessions[0].Nick = "lines" }, "nick"},
 		{"an unknown harness", func(r *lineRecord) { r.Sessions[0].Harness = "gemini" }, "harness"},
 		{"a model with a flag in it", func(r *lineRecord) { r.Sessions[0].Model = "-x" }, "model"},
-		{"a relative checkout", func(r *lineRecord) { r.Sessions[0].Checkout = "co" }, "checkout"},
+		{"a relative working directory", func(r *lineRecord) { r.Sessions[0].Workdir = "co" }, "working directory"},
 		{"a thread that is not a UUID", func(r *lineRecord) { r.Sessions[1].Thread = "nope" }, "UUID"},
 		{"a thread on a Claude session", func(r *lineRecord) { r.Sessions[0].Thread = fakeThread(2) }, "a Claude session holds no thread"},
 		{"a Codex session with no thread", func(r *lineRecord) { r.Sessions[1].Thread = "" }, "no thread"},
@@ -353,7 +382,7 @@ func TestWriteLineRecordRefusesOneTheReadersWouldRefuse(t *testing.T) {
 	dir := t.TempDir()
 	rec := goodLineRecord(dir)
 	long := "/" + strings.Repeat("c", lineRecordMax)
-	rec.Sessions[0].Checkout = long
+	rec.Sessions[0].Workdir = long
 	rec.Sessions[0].Files[0].Path = long + "/.mcp.json"
 	if _, err := writeLineRecord(dir, rec); err == nil || !strings.Contains(err.Error(), "over the") {
 		t.Fatalf("writeLineRecord = %v, want a refusal for its size", err)
@@ -362,9 +391,9 @@ func TestWriteLineRecordRefusesOneTheReadersWouldRefuse(t *testing.T) {
 		t.Errorf("a refused write left %d entries", len(ents))
 	}
 	// A record the reader would call not valid is refused before it is written: a
-	// checkout that is not the one its launch file is in.
+	// working directory that is not the one its launch file is in.
 	rec = goodLineRecord(dir)
-	rec.Sessions[0].Checkout = "/work/elsewhere"
+	rec.Sessions[0].Workdir = "/work/elsewhere"
 	if _, err := writeLineRecord(dir, rec); err == nil || !strings.Contains(err.Error(), "would not be valid") || !strings.Contains(err.Error(), "launch file") {
 		t.Fatalf("writeLineRecord = %v, want a refusal for a record the readers would refuse", err)
 	}
@@ -404,13 +433,13 @@ func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{
 		"parley line    new <id> --chair <nick> --cap <n> [--window 10m]",
-		"parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout <absolute dir>",
+		"parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>]",
 		"parley line    drop <id> <nick> [--force]",
 		"parley line    end <id> [--force]",
 		"line     set up a line, put sessions on it, take them off and take it down",
 		"lines/<id>/line.json under the state base",
 		"sha256 of its exact bytes",
-		"turns network on for Codex in that checkout",
+		"turns network on for Codex in that working directory",
 		"codex-thread file --thread auto reads",
 		"git rev-parse --git-path info/exclude",
 		"exact line and nothing else",

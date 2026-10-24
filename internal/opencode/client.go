@@ -123,8 +123,8 @@ const ServiceUser = "opencode"
 // SessionInfo is the part of a session the front needs.
 type SessionInfo struct {
 	ID string
-	// Directory is the absolute directory the session belongs to: the checkout
-	// it was started in.
+	// Directory is the absolute directory the session belongs to: the working
+	// directory it was started in.
 	Directory string
 }
 

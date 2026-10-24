@@ -19,13 +19,13 @@ import (
 
 // cmdLineDrop takes one session off a line: its thread record (a Codex session's)
 // or session record (an OpenCode session's), its reply directory and, when no
-// other session of its checkout and harness still uses it, the launch file the
-// line wrote there and the exclude line it added for it; an OpenCode session has
-// no launch file. It deletes only what it can show is the line's: the record it
-// reads is parley's state, but a checkout is the user's, and a file there is the
-// line's only if its bytes still hash to the digest the record holds. It never
-// touches a Codex or an OpenCode session; it prints the command that would, for
-// the human to run if the history is not wanted.
+// other session of its working directory and harness still uses it, the launch
+// file the line wrote there and the exclude line it added for it; an OpenCode
+// session has no launch file. It deletes only what it can show is the line's: the
+// record it reads is parley's state, but a working directory is the user's, and a
+// file there is the line's only if its bytes still hash to the digest the record
+// holds. It never touches a Codex or an OpenCode session; it prints the command
+// that would, for the human to run if the history is not wanted.
 func cmdLineDrop(args []string) error {
 	fs := flag.NewFlagSet("parley line drop", flag.ContinueOnError)
 	fs.Usage = func() {
@@ -160,7 +160,7 @@ func takeLineDown(id, nick, stateDir string, force bool) error {
 		var remaining []lineSession
 		if nick == "" {
 			// A whole line goes in record order: what a later session of the same
-			// checkout and harness still uses is kept until it is the last one.
+			// working directory and harness still uses is kept until it is the last one.
 			remaining = rec.Sessions[ti+1:]
 		} else {
 			remaining = append(append([]lineSession(nil), rec.Sessions[:ti]...), rec.Sessions[ti+1:]...)
@@ -201,7 +201,7 @@ func sessionList(rec lineRecord) string {
 type fileAction int
 
 const (
-	// fileKept: another session of the checkout and harness still uses the file.
+	// fileKept: another session of the working directory and harness still uses the file.
 	fileKept fileAction = iota
 	// fileRemove: the file is there and is shown to be the line's.
 	fileRemove
@@ -335,19 +335,19 @@ func claimSession(base string, rec lineRecord, s lineSession, remaining []lineSe
 	return c, nil
 }
 
-// checkoutMoved says, in words that complete "it ...", what a recorded checkout
-// now resolves to when that is not the path recorded, which was resolved when the
-// session was added; "" when it still is, and when there is nothing at the path
-// any more, since nothing is then there to remove.
-func checkoutMoved(checkout string) string {
-	now, err := filepath.EvalSymlinks(checkout)
+// workdirMoved says, in words that complete "it ...", what a recorded working
+// directory now resolves to when that is not the path recorded, which was
+// resolved when the session was added; "" when it still is, and when there is
+// nothing at the path any more, since nothing is then there to remove.
+func workdirMoved(workdir string) string {
+	now, err := filepath.EvalSymlinks(workdir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return ""
 	case err != nil:
-		return fmt.Sprintf("its checkout %s cannot be resolved (%v)", checkout, err)
-	case now != filepath.Clean(checkout):
-		return fmt.Sprintf("its checkout %s now resolves to %s: a directory on the way, or the checkout, was replaced by a link or moved, so what is behind the recorded path is not shown to be the line's", checkout, now)
+		return fmt.Sprintf("its working directory %s cannot be resolved (%v)", workdir, err)
+	case now != filepath.Clean(workdir):
+		return fmt.Sprintf("its working directory %s now resolves to %s: a directory on the way, or the working directory, was replaced by a link or moved, so what is behind the recorded path is not shown to be the line's", workdir, now)
 	}
 	return ""
 }
@@ -360,7 +360,7 @@ func sharingOf(of []lineSession, s lineSession) []lineSession {
 	}
 	var out []lineSession
 	for _, o := range of {
-		if o.Harness == s.Harness && sameDir(o.Checkout, s.Checkout) {
+		if o.Harness == s.Harness && sameDir(o.Workdir, s.Workdir) {
 			out = append(out, o)
 		}
 	}
@@ -372,11 +372,11 @@ func sharingOf(of []lineSession, s lineSession) []lineSession {
 // digest in a directory that is a real one, and otherwise a problem, in words
 // that complete "it ...", for the caller to refuse or to leave the file for.
 func claimLaunchFile(s lineSession, f lineFile) (act fileAction, problem string, err error) {
-	// The record holds the checkout resolved, so a path above it that has since
-	// become a link, or a checkout that was moved and replaced, is a different
-	// directory behind the same name: nothing at the recorded path is shown to be
-	// the line's.
-	if moved := checkoutMoved(s.Checkout); moved != "" {
+	// The record holds the working directory resolved, so a path above it that has
+	// since become a link, or a directory that was moved and replaced, is a
+	// different directory behind the same name: nothing at the recorded path is
+	// shown to be the line's.
+	if moved := workdirMoved(s.Workdir); moved != "" {
 		return 0, moved, nil
 	}
 	dir := filepath.Dir(f.Path)
@@ -481,7 +481,7 @@ func (t *teardown) drop(c sessionClaim) error {
 	switch c.fileAct {
 	case fileKept:
 		if !t.whole {
-			t.kept = append(t.kept, fmt.Sprintf("%s: session %s of the checkout still uses it", f.Path, c.fileWhy))
+			t.kept = append(t.kept, fmt.Sprintf("%s: session %s of the working directory still uses it", f.Path, c.fileWhy))
 		}
 	case fileLeft:
 		t.left = append(t.left, fmt.Sprintf("%s: %s; it is not deleted, and neither is its exclude line", f.Path, c.fileWhy))
@@ -501,9 +501,9 @@ func (t *teardown) drop(c sessionClaim) error {
 func (t *teardown) removeLaunchFile(s lineSession, f lineFile, act fileAction) error {
 	if act == fileRemove {
 		// Looked at again, as close to the removal as can be: the file is only the
-		// line's if the checkout is still where it was recorded and the file still
+		// line's if the working directory is still where it was recorded and the file still
 		// hashes to the digest.
-		if moved := checkoutMoved(s.Checkout); moved != "" {
+		if moved := workdirMoved(s.Workdir); moved != "" {
 			return fmt.Errorf("will not remove %s: %s", f.Path, moved)
 		}
 		if got, err := fileDigest(f.Path); errors.Is(err, fs.ErrNotExist) {
@@ -534,12 +534,12 @@ func (t *teardown) removeLaunchFile(s lineSession, f lineFile, act fileAction) e
 	}
 
 	if f.ExcludeFile != "" {
-		_, line := launchFileOf(s.Harness, s.Checkout)
+		_, line := launchFileOf(s.Harness, s.Workdir)
 		// The exclude file is the repository's, shared by all its worktrees: the
 		// line hides the launch files of the others, and goes only when no worktree
 		// has a file at its path any more, this line's, another line's or the user's.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		needed, why := excludeLineStillNeeded(ctx, s.Checkout, f.ExcludeFile, line)
+		needed, why := excludeLineStillNeeded(ctx, s.Workdir, f.ExcludeFile, line)
 		cancel()
 		if needed {
 			// A whole line takes its other sessions next, and the last of them to
@@ -573,7 +573,7 @@ func (t *teardown) otherOwner(s lineSession, excludeFile, line string) bool {
 		if stream.NickEqual(o.Nick, s.Nick) || len(o.Files) != 1 || o.Files[0].ExcludeFile == "" {
 			continue
 		}
-		if _, l := launchFileOf(o.Harness, o.Checkout); l == line && resolveExisting(o.Files[0].ExcludeFile) == resolveExisting(excludeFile) {
+		if _, l := launchFileOf(o.Harness, o.Workdir); l == line && resolveExisting(o.Files[0].ExcludeFile) == resolveExisting(excludeFile) {
 			return true
 		}
 	}

@@ -213,11 +213,11 @@ type codexSession struct {
 	base, stream string // where the thread is recorded
 	// sandbox is the -s of the turn, workspace-write when empty: a table's seat or
 	// a build's peer runs in a worktree parley made for it, a line's session in the
-	// user's own checkout.
+	// user's own working directory.
 	sandbox string
-	// skipGitRepoCheck passes --skip-git-repo-check: a line session's checkout need
-	// not be in git, and codex exec refuses a directory that is not unless told not
-	// to look.
+	// skipGitRepoCheck passes --skip-git-repo-check: a line session's working
+	// directory need not be in git, and codex exec refuses a directory that is not
+	// unless told not to look.
 	skipGitRepoCheck bool
 }
 

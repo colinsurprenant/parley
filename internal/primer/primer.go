@@ -14,7 +14,7 @@
 // peer's launch config, or its global Codex config when the launch config lists
 // none, is the target's git directory (see codexBuildText), and the table's codex
 // form leaves it out; the line form on codex adds a paragraph of its own about
-// git, for a session's checkout (see codexLineText). A sentence that differs
+// git, for a session's working directory (see codexLineText). A sentence that differs
 // between the fronts is rendered from one place, with the front choosing which clause it
 // carries; no paragraph is written twice, here or anywhere else.
 //
@@ -369,7 +369,7 @@ const tableFacts = "Set by your human partner at launch, not the channel: chair 
 // lineFacts is the line form's one paragraph of facts, then the skill line: the
 // human's registered nick and the breaker, as set by the human at launch. A line
 // has no target repo, no worktree of the session's and no TABLE line to wait
-// for: the session works in its own checkout as usual. The breaker is a rate, a
+// for: the session works in its own working directory as usual. The breaker is a rate, a
 // number of posts within a window, that the front holds deliveries by; the text
 // states it in a clause and the skill, which says what the breaker does and what
 // to do when it holds, is the authority on what it means.
@@ -454,27 +454,27 @@ const codexBuildText = "Unless a writable root in your launch config (.codex/con
 	"each of them directly, rather than trying it in the sandbox first."
 
 // codexLineText is codexBuildText for a line's Codex session, which works in a
-// checkout of its own: Codex keeps <root>/.git read-only even under a writable
-// root, per its seatbelt rules at rust-v0.161.0
+// working directory of its own: Codex keeps <root>/.git read-only even under a
+// writable root, per its seatbelt rules at rust-v0.161.0
 // (codex-rs/sandboxing/src/seatbelt.rs, lines 540-580), so an index, a commit, a
-// merge or a reset is refused whether the checkout is a repo's main one, whose
-// .git is under the sandbox's root, or a linked worktree, whose git directory is
-// outside it. Trying each in the sandbox first costs a turn and a refusal per
-// command; the session asks for the escalation directly.
+// merge or a reset is refused whether the working directory is a repo's main
+// one, whose .git is under the sandbox's root, or a linked worktree, whose git
+// directory is outside it. Trying each in the sandbox first costs a turn and a
+// refusal per command; the session asks for the escalation directly.
 //
-// The one exception is a writable root that is the checkout's git directory
-// itself, in the launch config or, when that lists none, in the global Codex
-// config, and the text puts it to the session as a condition it can read for
-// itself: the primer is rendered without the roots. It does not tell the session
-// to widen its sandbox; the roots are the human's.
+// The one exception is a writable root that is the working directory's git
+// directory itself, in the launch config or, when that lists none, in the global
+// Codex config, and the text puts it to the session as a condition it can read
+// for itself: the primer is rendered without the roots. It does not tell the
+// session to widen its sandbox; the roots are the human's.
 //
 // It sits ahead of codexFrontText, in the same place codexBuildText holds in a
 // build's form, and the claude form carries neither: it has no room for it under
 // its cap.
-const codexLineText = "Unless a writable root in your launch config (.codex/config.toml in your checkout) or, when that " +
-	"lists none, in your global Codex config ($CODEX_HOME/config.toml, else ~/.codex/config.toml) is your checkout's git " +
+const codexLineText = "Unless a writable root in your launch config (.codex/config.toml in your working directory) or, when that " +
+	"lists none, in your global Codex config ($CODEX_HOME/config.toml, else ~/.codex/config.toml) is your working directory's git " +
 	"directory, `git add`, `git commit`, `git merge` and `git reset` are refused here with Operation not permitted, " +
-	"because Codex keeps a checkout's git directory read-only in its sandbox: ask for escalation for each of them " +
+	"because Codex keeps a working directory's git directory read-only in its sandbox: ask for escalation for each of them " +
 	"directly, rather than trying it in the sandbox first."
 
 // codexFrontText is what is true of the Codex front and of no other: the pump,

@@ -12,8 +12,8 @@ import (
 	"github.com/colinsurprenant/parley/internal/state"
 )
 
-// checkoutDirs are the checkouts a test of the add made, for the snapshot.
-func (b *lineBench) checkoutDirs(t *testing.T) []string {
+// workdirs are the working directories a test of the add made, for the snapshot.
+func (b *lineBench) workdirs(t *testing.T) []string {
 	t.Helper()
 	ents, err := os.ReadDir(b.root)
 	if err != nil {
@@ -29,7 +29,7 @@ func (b *lineBench) checkoutDirs(t *testing.T) []string {
 }
 
 // TestLineAddRefusesBeforeAnyChange: each refusal is a configuration error, exit
-// 2, and the base, the checkouts, $TMPDIR and the record are as they were.
+// 2, and the base, the working directories, $TMPDIR and the record are as they were.
 func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 	longBase := func(b *lineBench) string {
 		return filepath.Join(b.root, strings.Repeat("a", 200), strings.Repeat("b", 200))
@@ -37,6 +37,8 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 	type env struct {
 		args []string
 		env  []string
+		// dir is the current directory of the run ("" for the test's own).
+		dir string
 	}
 	cases := []struct {
 		name  string
@@ -44,7 +46,7 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 		setup func(t *testing.T, b *lineBench, co string) env
 	}{
 		{"no nick", "--nick is required", func(t *testing.T, b *lineBench, co string) env {
-			return env{args: []string{"line", "add", "demo", "--harness", "claude", "--checkout", co, "--state-dir", b.base}}
+			return env{args: []string{"line", "add", "demo", "--harness", "claude", "--workdir", co, "--state-dir", b.base}}
 		}},
 		{"a nick with a dot", "nick", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "a.b", "claude", co)}
@@ -62,11 +64,11 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 			return env{args: b.ladd("demo", "Colin", "claude", co)}
 		}},
 		{"a nick that is already in the line", "already session", func(t *testing.T, b *lineBench, co string) env {
-			mustLine(t, b, b.ladd("demo", "plan", "claude", b.gitCheckout(t, "co-plan"))...)
+			mustLine(t, b, b.ladd("demo", "plan", "claude", b.gitWorkdir(t, "co-plan"))...)
 			return env{args: b.ladd("demo", "PLAN", "claude", co)}
 		}},
 		{"no harness", "--harness is required", func(t *testing.T, b *lineBench, co string) env {
-			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--checkout", co, "--state-dir", b.base}}
+			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--workdir", co, "--state-dir", b.base}}
 		}},
 		{"an unknown harness", "the harnesses are claude, codex and opencode", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "gemini", co)}
@@ -95,29 +97,42 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 		{"a model with a character no id has", "which no model id", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "claude", co, "--model", "opus;rm")}
 		}},
-		{"no checkout", "--checkout is required", func(t *testing.T, b *lineBench, co string) env {
-			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--harness", "claude", "--state-dir", b.base}}
+		{"no --workdir, in a directory that is no git repository", "is not the top of a git repository", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--harness", "claude", "--state-dir", b.base}, dir: b.plainWorkdir(t, "co-plain")}
 		}},
-		{"a relative checkout", "absolute", func(t *testing.T, b *lineBench, co string) env {
+		{"no --workdir, in a subdirectory of a repository", "is inside the git repository at", func(t *testing.T, b *lineBench, co string) env {
+			sub := filepath.Join(co, "sub")
+			if err := os.Mkdir(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--harness", "codex", "--state-dir", b.base}, dir: sub}
+		}},
+		{"--workdir given empty, in a repository's top directory", "--workdir is empty", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--harness", "claude", "--workdir", "", "--state-dir", b.base}, dir: co}
+		}},
+		{"the flag's old name, --checkout", "flag provided but not defined: -checkout", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: []string{"line", "add", "demo", "--nick", "plan", "--harness", "claude", "--checkout", co, "--state-dir", b.base}, dir: co}
+		}},
+		{"a relative working directory", "absolute", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "claude", "rel/co")}
 		}},
-		{"a checkout that is not there", "no such file", func(t *testing.T, b *lineBench, co string) env {
+		{"a working directory that is not there", "no such file", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "claude", filepath.Join(b.root, "nope"))}
 		}},
-		{"a checkout that is a file", "not a directory", func(t *testing.T, b *lineBench, co string) env {
+		{"a working directory that is a file", "not a directory", func(t *testing.T, b *lineBench, co string) env {
 			f := filepath.Join(b.root, "a-file")
 			if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			return env{args: b.ladd("demo", "plan", "claude", f)}
 		}},
-		{"a $ in the checkout", "'$'", func(t *testing.T, b *lineBench, co string) env {
-			return env{args: b.ladd("demo", "plan", "claude", b.gitCheckout(t, "co$x"))}
+		{"a $ in the working directory", "'$'", func(t *testing.T, b *lineBench, co string) env {
+			return env{args: b.ladd("demo", "plan", "claude", b.gitWorkdir(t, "co$x"))}
 		}},
-		{"a control character in the checkout", "control character", func(t *testing.T, b *lineBench, co string) env {
+		{"a control character in the working directory", "control character", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "claude", filepath.Join(b.root, "co\tx"))}
 		}},
-		{"a checkout that is not UTF-8", "not valid UTF-8", func(t *testing.T, b *lineBench, co string) env {
+		{"a working directory that is not UTF-8", "not valid UTF-8", func(t *testing.T, b *lineBench, co string) env {
 			return env{args: b.ladd("demo", "plan", "claude", co+"/bad\xffname")}
 		}},
 		{"a state directory that is not UTF-8", "not valid UTF-8", func(t *testing.T, b *lineBench, co string) env {
@@ -132,14 +147,14 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 				t.Fatal(err)
 			}
 			mustLine(t, b, "line", "new", "demo2", "--chair", "colin", "--cap", "8", "--state-dir", base, "--server", b.db.server)
-			return env{args: []string{"line", "add", "demo2", "--nick", "plan", "--harness", "claude", "--checkout", co, "--state-dir", base}}
+			return env{args: []string{"line", "add", "demo2", "--nick", "plan", "--harness", "claude", "--workdir", co, "--state-dir", base}}
 		}},
-		{"a state directory inside the checkout", "inside the checkout", func(t *testing.T, b *lineBench, co string) env {
+		{"a state directory inside the working directory", "inside the working directory", func(t *testing.T, b *lineBench, co string) env {
 			base := filepath.Join(co, "state")
 			mustLine(t, b, "line", "new", "demo2", "--chair", "colin", "--cap", "8", "--state-dir", base, "--server", b.db.server)
-			return env{args: []string{"line", "add", "demo2", "--nick", "plan", "--harness", "claude", "--checkout", co, "--state-dir", base}}
+			return env{args: []string{"line", "add", "demo2", "--nick", "plan", "--harness", "claude", "--workdir", co, "--state-dir", base}}
 		}},
-		{"a temp directory inside the checkout of a Codex session", "inside the checkout", func(t *testing.T, b *lineBench, co string) env {
+		{"a temp directory inside the working directory of a Codex session", "inside the working directory", func(t *testing.T, b *lineBench, co string) env {
 			tmp := filepath.Join(co, "tmp")
 			if err := os.Mkdir(tmp, 0o755); err != nil {
 				t.Fatal(err)
@@ -252,21 +267,21 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 		{"a Claude launch over Claude Code's cap", "over Claude Code's cap", func(t *testing.T, b *lineBench, co string) env {
 			base := longBase(b)
 			mustLine(t, b, "line", "new", "demo2", "--chair", "colin", "--cap", "8", "--state-dir", base, "--server", b.db.server)
-			return env{args: []string{"line", "add", "demo2", "--nick", "plan", "--harness", "claude", "--checkout", co, "--state-dir", base}}
+			return env{args: []string{"line", "add", "demo2", "--nick", "plan", "--harness", "claude", "--workdir", co, "--state-dir", base}}
 		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			e := c.setup(t, b, co)
-			before := b.lsnap(t, b.checkoutDirs(t)...)
+			before := b.lsnap(t, b.workdirs(t)...)
 			beforeLong := ""
 			if strings.Contains(c.name, "cap") {
 				beforeLong = treeListing(t, filepath.Join(b.root, strings.Repeat("a", 200)))
 			}
-			res := runParleyEnvIn(t, "", append(b.env(), e.env...), e.args...)
+			res := runParleyEnvIn(t, e.dir, append(b.env(), e.env...), e.args...)
 			// A missing skill link is doctor's FAIL, which fails the run with exit
 			// 1, as table new's does; every other case is a refusal, exit 2.
 			code := 2
@@ -279,10 +294,14 @@ func TestLineAddRefusesBeforeAnyChange(t *testing.T) {
 			if !strings.Contains(res.stderr, c.want) {
 				t.Errorf("stderr does not say %q:\n%s", c.want, res.stderr)
 			}
+			// A refused default tells the human how to name the directory.
+			if strings.HasPrefix(c.name, "no --workdir") && !strings.Contains(res.stderr, "pass --workdir <absolute dir>") {
+				t.Errorf("stderr does not name --workdir:\n%s", res.stderr)
+			}
 			if res.stdout != "" {
 				t.Errorf("a refused run printed on stdout: %q", res.stdout)
 			}
-			b.wantLineUnchanged(t, before, b.checkoutDirs(t)...)
+			b.wantLineUnchanged(t, before, b.workdirs(t)...)
 			if beforeLong != "" {
 				if after := treeListing(t, filepath.Join(b.root, strings.Repeat("a", 200))); after != beforeLong {
 					t.Errorf("the run changed the long state directory.\nbefore:\n%s\nafter:\n%s", beforeLong, after)
@@ -300,7 +319,7 @@ func TestLineAddRefusesANickWhoseLockIsHeld(t *testing.T) {
 		t.Run(harness, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			l, err := state.LockNick(b.base, "plan")
 			if err != nil {
 				t.Fatal(err)
@@ -329,13 +348,13 @@ func TestLineAddReadsOnlyTheRootItsHarnessReads(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(b.db.home, ".agents")); err != nil {
 		t.Fatal(err)
 	}
-	mustLine(t, b, b.ladd("demo", "plan", "claude", b.gitCheckout(t, "co1"))...)
+	mustLine(t, b, b.ladd("demo", "plan", "claude", b.gitWorkdir(t, "co1"))...)
 	b2 := newLineBench(t)
 	lineUp(t, b2, "demo")
 	if err := os.RemoveAll(filepath.Join(b2.db.home, ".claude")); err != nil {
 		t.Fatal(err)
 	}
-	mustLine(t, b2, b2.ladd("demo", "build", "codex", b2.gitCheckout(t, "co1"))...)
+	mustLine(t, b2, b2.ladd("demo", "build", "codex", b2.gitWorkdir(t, "co1"))...)
 	b3 := newLineBench(t)
 	lineUp(t, b3, "demo")
 	for _, root := range []string{".claude", ".agents"} {
@@ -345,7 +364,7 @@ func TestLineAddReadsOnlyTheRootItsHarnessReads(t *testing.T) {
 			}
 		}
 	}
-	mustLine(t, b3, b3.ladd("demo", "plan", "claude", b3.gitCheckout(t, "co1"))...)
+	mustLine(t, b3, b3.ladd("demo", "plan", "claude", b3.gitWorkdir(t, "co1"))...)
 }
 
 // TestLineAddDoctorFailRefusesBeforeAnyChange: a machine that cannot host the
@@ -355,7 +374,7 @@ func TestLineAddDoctorFailRefusesBeforeAnyChange(t *testing.T) {
 	t.Run("no claude", func(t *testing.T) {
 		b := newLineBench(t)
 		lineUp(t, b, "demo")
-		co := b.gitCheckout(t, "co")
+		co := b.gitWorkdir(t, "co")
 		before := b.lsnap(t, co)
 		res := runParleyEnvIn(t, "", b.envWithPath(b.pathWith(t, "codex", "ergo", "git", "cat", "mv")), b.ladd("demo", "plan", "claude", co)...)
 		if res.code != 1 || !strings.Contains(res.stderr, "FAIL") || !strings.Contains(res.stderr, "claude") {
@@ -366,7 +385,7 @@ func TestLineAddDoctorFailRefusesBeforeAnyChange(t *testing.T) {
 	t.Run("a codex flag gone", func(t *testing.T) {
 		b := newLineBench(t)
 		lineUp(t, b, "demo")
-		co := b.gitCheckout(t, "co")
+		co := b.gitWorkdir(t, "co")
 		script := mustRead(t, b.codex)
 		patched := strings.Replace(string(script), `--help) cat`, `--help) if [ "$1" = delete ]; then echo "      --nothing"; exit 0; fi; cat`, 1)
 		if err := os.WriteFile(b.codex, []byte(patched), 0o755); err != nil {
@@ -383,7 +402,7 @@ func TestLineAddDoctorFailRefusesBeforeAnyChange(t *testing.T) {
 
 // TestLineAddFailureRollsEverythingBack: a codex that fails, announces no thread,
 // or ends without a completed turn is exit 1 and a machine as it was, the
-// checkout, its exclude file and the record included, with every thread it did
+// working directory, its exclude file and the record included, with every thread it did
 // start deleted.
 func TestLineAddFailureRollsEverythingBack(t *testing.T) {
 	cases := []struct {
@@ -406,8 +425,8 @@ func TestLineAddFailureRollsEverythingBack(t *testing.T) {
 		name  string
 		setup func(t *testing.T, b *lineBench, co string)
 	}{
-		{"a fresh checkout", func(t *testing.T, b *lineBench, co string) {}},
-		{"a checkout with a .codex directory and an exclude file of its own", func(t *testing.T, b *lineBench, co string) {
+		{"a fresh working directory", func(t *testing.T, b *lineBench, co string) {}},
+		{"a working directory with a .codex directory and an exclude file of its own", func(t *testing.T, b *lineBench, co string) {
 			if err := os.Mkdir(filepath.Join(co, ".codex"), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -420,7 +439,7 @@ func TestLineAddFailureRollsEverythingBack(t *testing.T) {
 			t.Run(shape.name+"/"+c.name, func(t *testing.T) {
 				b := newLineBench(t)
 				lineUp(t, b, "demo")
-				co := b.gitCheckout(t, "co")
+				co := b.gitWorkdir(t, "co")
 				shape.setup(t, b, co)
 				b.setMode(t, 1, c.mode)
 				before := b.lsnap(t, co)
@@ -469,7 +488,7 @@ func TestLineAddRollsBackAClaudeSessionWhenTheRecordCannotBeWritten(t *testing.T
 	}
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	dir := filepath.Join(b.base, "lines", "demo")
 	before := b.lsnap(t, co)
 	if err := os.Chmod(dir, 0o500); err != nil {
@@ -492,7 +511,7 @@ func TestLineAddRollsBackAClaudeSessionWhenTheRecordCannotBeWritten(t *testing.T
 func TestLineAddInterruptedRollsEverythingBack(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	script := string(mustRead(t, b.codex))
 	hold := "\techo '{\"type\":\"turn.started\"}'\n\tif [ -f \"$d/items\" ]"
 	// The fake marks "announced" once it has printed thread.started, so the
