@@ -617,7 +617,7 @@ func TestLineAddSecondClaudeSessionSharesTheFile(t *testing.T) {
 // recorded (the shell may stand in the directory through a link), the output says
 // the directory is the current one, and the rest is what a given --workdir does.
 func TestLineAddWithoutWorkdirUsesTheCurrentDirectory(t *testing.T) {
-	for _, kind := range []string{"main", "linked", "via a link"} {
+	for _, kind := range []string{"main", "linked", "via a link", "up from a link"} {
 		t.Run(kind, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
@@ -630,6 +630,19 @@ func TestLineAddWithoutWorkdirUsesTheCurrentDirectory(t *testing.T) {
 				co, spelled = linked, linked
 			case "via a link":
 				spelled = filepath.Join(b.linkedRoot(t), "co")
+			case "up from a link":
+				// lnk leads into co/sub, so lnk/.. is co; cleaning the spelling
+				// before resolving it would make it lnk's own parent instead.
+				sub, side := filepath.Join(co, "sub"), filepath.Join(b.root, "side")
+				for _, d := range []string{sub, side} {
+					if err := os.Mkdir(d, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Symlink(sub, filepath.Join(side, "lnk")); err != nil {
+					t.Fatal(err)
+				}
+				spelled = side + "/lnk/.."
 			}
 			// PWD is how a shell that stands in a link tells its children, and what
 			// os.Getwd reports when it names the directory the child is in.

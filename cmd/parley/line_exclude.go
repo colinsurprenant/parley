@@ -74,7 +74,15 @@ func defaultWorkdir(ctx context.Context) (string, error) {
 	if top == "" {
 		return "", cfgErrf("--workdir is not given, and git named no top directory for the current directory %s: pass --workdir <absolute dir>", cwd)
 	}
-	if resolveExisting(top) != resolveExisting(cwd) {
+	// os.Getwd can hand back $PWD as the shell spelled it, ".." after a link
+	// included, so the directory is resolved as spelled, the way planLineAdd
+	// resolves it: resolveExisting cleans first, and would climb from the link
+	// rather than from where it leads.
+	resolved, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return "", cfgErrf("--workdir is not given, and the current directory %s cannot be resolved (%v): pass --workdir <absolute dir>", cwd, err)
+	}
+	if resolveExisting(top) != resolved {
 		return "", cfgErrf("--workdir is not given, and the current directory %s is inside the git repository at %s and is not its top directory: pass --workdir <absolute dir>", cwd, top)
 	}
 	return cwd, nil
