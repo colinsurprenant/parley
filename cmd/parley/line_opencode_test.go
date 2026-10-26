@@ -291,11 +291,11 @@ func idOfRun(t *testing.T, b *ocLineBench) string {
 // TestLineAddOpenCodeSession is the acceptance run for an OpenCode session on the
 // fake opencode: the session id is parley's own and goes to the run with
 // --session, it is the id recorded, printed and checked in the events, nothing is
-// written in the checkout, and the runbook has no port.
+// written in the working directory, and the runbook has no port.
 func TestLineAddOpenCodeSession(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co-build")
+	co := b.gitWorkdir(t, "co-build")
 	treeBefore := treeListing(t, co)
 	res := runParleyEnvIn(t, "", b.env(), b.ladd("demo", "build", "opencode", co, "--model", "anthropic/claude-sonnet-4-5")...)
 	if res.code != 0 {
@@ -303,7 +303,7 @@ func TestLineAddOpenCodeSession(t *testing.T) {
 	}
 	stream := b.stream("demo")
 	if after := treeListing(t, co); after != treeBefore {
-		t.Errorf("the checkout changed.\nbefore:\n%s\nafter:\n%s", treeBefore, after)
+		t.Errorf("the working directory changed.\nbefore:\n%s\nafter:\n%s", treeBefore, after)
 	}
 
 	// One run, with the id parley chose; nothing was listed or deleted.
@@ -317,7 +317,7 @@ func TestLineAddOpenCodeSession(t *testing.T) {
 		t.Errorf("opencode argv %q, want %q", got, want)
 	}
 	if got := strings.TrimSpace(b.file(t, "cwd-1")); got != co {
-		t.Errorf("opencode ran in %q, want the checkout %q", got, co)
+		t.Errorf("opencode ran in %q, want the working directory %q", got, co)
 	}
 	if prompt := b.file(t, "stdin-1"); !strings.HasPrefix(prompt, "This primer is your first message") {
 		t.Errorf("the primer is not on stdin:\n%q", prompt)
@@ -339,8 +339,8 @@ func TestLineAddOpenCodeSession(t *testing.T) {
 	// without --port, and the notes for 2.x.
 	pump := "'" + binPath + "' opencode --stream '" + stream + "' --nick build --session auto --skill line --chair colin --cap 8 --window 10m --state-dir '" + b.base + "'"
 	wantInOrder(t, res.stdout, []string{
-		"Session build (opencode) is added to line demo, checkout " + co + ".",
-		"Wrote nothing in the checkout.",
+		"Session build (opencode) is added to line demo, working directory " + co + ".",
+		"Wrote nothing in the working directory.",
 		"OpenCode session " + id + ".",
 		"What is left is yours, in this order:",
 		"cd '" + co + "'",
@@ -382,7 +382,7 @@ func TestLineAddOpenCodeSession(t *testing.T) {
 func TestLineAddOpenCodeARunThatFailsLikeASimulatedTurnRollsBackTheChosenID(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.setMode(t, 1, "simfail")
 	before := b.snap(t, co)
 	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
@@ -396,9 +396,9 @@ func TestLineAddOpenCodeARunThatFailsLikeASimulatedTurnRollsBackTheChosenID(t *t
 		}
 	}
 	b.wantDeletes(t, 1, id)
-	// The delete ran from the checkout.
+	// The delete ran from the working directory.
 	if got := strings.TrimSpace(b.file(t, "cwd-2")); got != co {
-		t.Errorf("the delete ran in %q, want the checkout %q", got, co)
+		t.Errorf("the delete ran in %q, want the working directory %q", got, co)
 	}
 	if got := b.snap(t, co); got != before {
 		t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
@@ -418,7 +418,7 @@ func TestLineAddOpenCodeARunThatFailsLikeASimulatedTurnRollsBackTheChosenID(t *t
 func TestLineAddOpenCodeARunThatMadeNoSessionIsNotAFailureToRollBack(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.setMode(t, 1, "unsaid")
 	b.setMode(t, 2, "gone")
 	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
@@ -437,7 +437,7 @@ func TestLineAddOpenCodeARunThatMadeNoSessionIsNotAFailureToRollBack(t *testing.
 func TestLineAddOpenCodeADeleteThatFailsIsToldWithTheCommand(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.setMode(t, 1, "failafter")
 	b.setMode(t, 2, "faildelete")
 	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
@@ -456,7 +456,7 @@ func TestLineAddOpenCodeADeleteThatFailsIsToldWithTheCommand(t *testing.T) {
 func TestLineAddOpenCodeEventsNamingAnotherSessionFailTheTurn(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.write(t, "id", "ses_00000000000000000000000042")
 	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
 	if res.code != 1 {
@@ -477,7 +477,7 @@ func TestLineAddOpenCodeEventsNamingAnotherSessionFailTheTurn(t *testing.T) {
 func TestLineAddOpenCodeInterruptedDeletesTheChosenID(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.setMode(t, 1, "hold")
 
 	cmd := exec.Command(binPath, b.ladd("demo", "build", "opencode", co)...)
@@ -578,21 +578,21 @@ func TestLineAddOpenCodeAnswersWithTheLastStep(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
 	b.setMode(t, 1, "multistep")
-	res := mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
+	res := mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitWorkdir(t, "co"))...)
 	if !strings.Contains(res.stdout, "ready, waiting") || strings.Contains(res.stdout, "let me look") {
 		t.Errorf("stdout:\n%s", res.stdout)
 	}
 }
 
-// TestLineAddOpenCodeWorksInACheckoutThatIsNoGitCheckout: a plain directory is
+// TestLineAddOpenCodeWorksInAWorkdirThatIsNoGitRepository: a plain directory is
 // fine, and nothing is written in it.
-func TestLineAddOpenCodeWorksInACheckoutThatIsNoGitCheckout(t *testing.T) {
+func TestLineAddOpenCodeWorksInAWorkdirThatIsNoGitRepository(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.plainCheckout(t, "co")
+	co := b.plainWorkdir(t, "co")
 	mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", co)...)
 	if ents, err := os.ReadDir(co); err != nil || len(ents) != 0 {
-		t.Errorf("the checkout holds %v (%v), want it empty", ents, err)
+		t.Errorf("the working directory holds %v (%v), want it empty", ents, err)
 	}
 }
 
@@ -640,7 +640,7 @@ func TestLineAddOpenCodeReadsEitherSkillRoot(t *testing.T) {
 			if err := os.RemoveAll(filepath.Join(b.db.home, gone)); err != nil {
 				t.Fatal(err)
 			}
-			mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
+			mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitWorkdir(t, "co"))...)
 		})
 	}
 }
@@ -665,7 +665,7 @@ func TestLineAddOpenCodeBinIsTheLinesOwn(t *testing.T) {
 	}
 	// The default opencode is out of reach: the line's own is the only one used.
 	env := b.envWithPath(b.pathWith(t, "claude", "codex", "ergo", "git", "cat", "mv"))
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	add := runParleyEnvIn(t, "", env, b.ladd("demo", "build", "opencode", co)...)
 	if add.code != 0 {
 		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", add.code, add.stdout, add.stderr)
@@ -680,7 +680,7 @@ func TestLineAddOpenCodeBinIsTheLinesOwn(t *testing.T) {
 }
 
 // TestLineAddOpenCodeRefusesBeforeAnyChange: each refusal that is an OpenCode
-// session's own leaves the base, the checkout and $TMPDIR as they were, with
+// session's own leaves the base, the working directory and $TMPDIR as they were, with
 // opencode never run.
 func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 	cases := []struct {
@@ -689,17 +689,17 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 		want  string
 		setup func(t *testing.T, b *ocLineBench, co string) (args, env []string)
 	}{
-		{"a temp directory inside the checkout", 2, "inside the checkout", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+		{"a temp directory inside the working directory", 2, "inside the working directory", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			tmp := filepath.Join(co, "tmp")
 			if err := os.Mkdir(tmp, 0o755); err != nil {
 				t.Fatal(err)
 			}
 			return b.ladd("demo", "build", "opencode", co), []string{"TMPDIR=" + tmp}
 		}},
-		{"a state directory inside the checkout", 2, "inside the checkout", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+		{"a state directory inside the working directory", 2, "inside the working directory", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			base := filepath.Join(co, "state")
 			mustLine(t, b.lineBench, "line", "new", "demo2", "--chair", "colin", "--cap", "8", "--state-dir", base, "--server", b.db.server)
-			return []string{"line", "add", "demo2", "--nick", "build", "--harness", "opencode", "--checkout", co, "--state-dir", base}, nil
+			return []string{"line", "add", "demo2", "--nick", "build", "--harness", "opencode", "--workdir", co, "--state-dir", base}, nil
 		}},
 		{"a nick with a session record of its own", 2, "already has an OpenCode session record", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			sr, err := state.OpenSessionRecord(b.base, "build", b.stream("demo"))
@@ -722,7 +722,7 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 			return b.ladd("demo", "build", "opencode", co), nil
 		}},
 		{"a nick that is already in the line", 2, "already session", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
-			mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co-other"))...)
+			mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitWorkdir(t, "co-other"))...)
 			return b.ladd("demo", "BUILD", "opencode", co), nil
 		}},
 		{"a model that is not provider/model", 2, "provider/model", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
@@ -746,7 +746,7 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 		{"a model with a variant that holds a character no model has", 2, "holds ' '", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			return b.ladd("demo", "build", "opencode", co, "--model", "a/b#c d"), nil
 		}},
-		{"a checkout that is not UTF-8", 2, "not valid UTF-8", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
+		{"a working directory that is not UTF-8", 2, "not valid UTF-8", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
 			return b.ladd("demo", "build", "opencode", co+"/bad\xffname"), nil
 		}},
 		{"no opencode on the machine", 2, "install OpenCode 2", func(t *testing.T, b *ocLineBench, co string) ([]string, []string) {
@@ -777,9 +777,9 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			b := newOCLineBench(t)
 			lineUp(t, b.lineBench, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			args, extra := c.setup(t, b, co)
-			before := b.snap(t, b.checkoutDirs(t)...)
+			before := b.snap(t, b.workdirs(t)...)
 			calls := b.callCount()
 			res := runParleyEnvIn(t, "", append(b.env(), extra...), args...)
 			if res.code != c.code {
@@ -791,7 +791,7 @@ func TestLineAddOpenCodeRefusesBeforeAnyChange(t *testing.T) {
 			if res.stdout != "" {
 				t.Errorf("a refused run printed on stdout: %q", res.stdout)
 			}
-			if got := b.snap(t, b.checkoutDirs(t)...); got != before {
+			if got := b.snap(t, b.workdirs(t)...); got != before {
 				t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
 			}
 			if b.callCount() != calls {
@@ -808,7 +808,7 @@ func TestLineAddOpenCodeModelWithAVariantReachesTheRunVerbatim(t *testing.T) {
 	const model = "kimi-code-plan-global/k3#high"
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", co, "--model", model)...)
 	argv := b.call(t, 1)
 	found := false
@@ -832,7 +832,7 @@ func TestLineAddOpenCodeModelWithAVariantReachesTheRunVerbatim(t *testing.T) {
 func TestLineAddCodexAndClaudeModelsStillRefuseAHash(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	for _, harness := range []string{"claude", "codex"} {
 		for _, model := range []string{"opus#high", "gpt-5#high", "a/b#high"} {
 			res := runParleyEnvIn(t, "", b.env(), b.ladd("demo", harness, harness, co, "--model", model)...)
@@ -851,7 +851,7 @@ func TestLineAddOpenCodeAcceptsATurnWhoseFinalStepWasNeverPrinted(t *testing.T) 
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
 	b.setMode(t, 1, "dropped")
-	res := mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
+	res := mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitWorkdir(t, "co"))...)
 	if !strings.Contains(res.stdout, "ready, waiting for the first delivery") {
 		t.Errorf("stdout does not carry the answer of the last step:\n%s", res.stdout)
 	}
@@ -876,7 +876,7 @@ func TestLineAddOpenCodeCertifiesAcrossPagesOfTheHistory(t *testing.T) {
 	b.svc.set(func() {
 		b.svc.history = append(append([]ocHist(nil), ocLiveTurn...), ocHist{kind: "skill"}, ocHist{kind: "skill"}, ocHist{kind: "skill"}, ocHist{kind: "skill"}, ocHist{kind: "skill"}, ocHist{kind: "skill"})
 	})
-	mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
+	mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitWorkdir(t, "co"))...)
 	b.svc.mu.Lock()
 	reads := b.svc.historyReads
 	b.svc.mu.Unlock()
@@ -923,7 +923,7 @@ func TestLineAddOpenCodeTurnTheServiceDoesNotCertifyRollsBack(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			b := newOCLineBench(t)
 			lineUp(t, b.lineBench, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			c.setup(b)
 			before := b.snap(t, co)
 			res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
@@ -965,7 +965,7 @@ func TestLineAddOpenCodeTurnTheServiceDoesNotCertifyRollsBack(t *testing.T) {
 
 // TestLineAddOpenCodeFailureRollsEverythingBack: an opencode that fails, names a
 // session other than the one it was given or none, or ends without a completed
-// turn is exit 1 and a machine as it was, the checkout, the record and $TMPDIR
+// turn is exit 1 and a machine as it was, the working directory, the record and $TMPDIR
 // included, with the session it was given the id of deleted whatever it did.
 func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 	cases := []struct {
@@ -993,7 +993,7 @@ func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			b := newOCLineBench(t)
 			lineUp(t, b.lineBench, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			b.setMode(t, 1, c.mode)
 			before := b.snap(t, co)
 			res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
@@ -1018,7 +1018,7 @@ func TestLineAddOpenCodeFailureRollsEverythingBack(t *testing.T) {
 				t.Errorf("the rollback does not name the session it deleted:\n%s", res.stderr)
 			}
 			if got := strings.TrimSpace(b.file(t, "cwd-2")); got != co {
-				t.Errorf("the delete ran in %q, want the checkout %q", got, co)
+				t.Errorf("the delete ran in %q, want the working directory %q", got, co)
 			}
 			if got := b.snap(t, co); got != before {
 				t.Fatalf("the run left a trace.\nbefore:\n%s\nafter:\n%s", before, got)
@@ -1036,7 +1036,7 @@ func TestLineAddOpenCodeRollsBackWhenTheRecordCannotBeWritten(t *testing.T) {
 	}
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	dir := filepath.Join(b.base, "lines", "demo")
 	before := b.snap(t, co)
 	if err := os.Chmod(dir, 0o500); err != nil {
@@ -1087,7 +1087,7 @@ func TestOpenCodeDeleteStopsTheWholeProcessGroup(t *testing.T) {
 	t.Cleanup(func() { openCodeDeleteTimeout = old })
 	b := newOCLineBench(t)
 	b.setMode(t, 1, "holdcmd")
-	co := b.plainCheckout(t, "co")
+	co := b.plainWorkdir(t, "co")
 	if err := openCodeDelete(b.db.opencode, "opencode", "ses_000000000000000000000000AA", co); err == nil {
 		t.Fatal("a command that never ended was taken for a success")
 	}
@@ -1107,7 +1107,7 @@ func TestOpenCodeDeleteStopsTheWholeProcessGroup(t *testing.T) {
 func TestLineAddOpenCodeKillsAChildTheLauncherLeft(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	b.setMode(t, 1, "orphan")
 	before := b.snap(t, co)
 	res := b.run(t, b.ladd("demo", "build", "opencode", co)...)
@@ -1155,7 +1155,7 @@ func (e *ocEnvRecorder) mkdirAll(dir string) error {
 func TestStartOpenCodeSessionEndsAHungTurnAndRegistersItsSession(t *testing.T) {
 	b := newOCLineBench(t)
 	b.setMode(t, 1, "hold")
-	co := b.plainCheckout(t, "co")
+	co := b.plainWorkdir(t, "co")
 	env := &ocEnvRecorder{}
 	start := time.Now()
 	_, _, err := startOpenCodeSession(context.Background(), env, openCodeSession{
@@ -1258,7 +1258,7 @@ func TestLineSessionCheckForOpenCode(t *testing.T) {
 	good := func() lineRecord {
 		rec := goodLineRecord(base)
 		rec.Sessions = append([]lineSession(nil), rec.Sessions...)
-		rec.Sessions = append(rec.Sessions, lineSession{Nick: "oc", Harness: "opencode", Model: "openai/gpt-5", Checkout: "/work/co",
+		rec.Sessions = append(rec.Sessions, lineSession{Nick: "oc", Harness: "opencode", Model: "openai/gpt-5", Workdir: "/work/co",
 			Thread: ocSampleID, ReplyDir: "/tmp/parley-line-demo-456", Files: []lineFile{}})
 		return rec
 	}
@@ -1301,11 +1301,11 @@ func TestLineSessionCheckForOpenCode(t *testing.T) {
 }
 
 // TestLineDropOpenCodeSession: the session record and the reply directory go,
-// nothing in the checkout is touched, the delete line is printed and never run.
+// nothing in the working directory is touched, the delete line is printed and never run.
 func TestLineDropOpenCodeSession(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", co)...)
 	s := sessionByNick(t, b.record(t, "demo"), "build")
 	sr, err := state.OpenSessionRecord(b.base, "build", b.stream("demo"))
@@ -1322,7 +1322,7 @@ func TestLineDropOpenCodeSession(t *testing.T) {
 		}
 	}
 	if got := treeListing(t, co); got != treeBefore {
-		t.Errorf("the drop touched the checkout.\nbefore:\n%s\nafter:\n%s", treeBefore, got)
+		t.Errorf("the drop touched the working directory.\nbefore:\n%s\nafter:\n%s", treeBefore, got)
 	}
 	if rec := b.record(t, "demo"); len(rec.Sessions) != 0 {
 		t.Errorf("sessions left: %+v", rec.Sessions)
@@ -1350,7 +1350,7 @@ func TestLineDropOpenCodeJudgesItsRecordBeforeRemovingIt(t *testing.T) {
 	setup := func(t *testing.T) (*ocLineBench, lineSession, *state.SessionRecord) {
 		b := newOCLineBench(t)
 		lineUp(t, b.lineBench, "demo")
-		mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitCheckout(t, "co"))...)
+		mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", b.gitWorkdir(t, "co"))...)
 		sr, err := state.OpenSessionRecord(b.base, "build", b.stream("demo"))
 		if err != nil {
 			t.Fatal(err)
@@ -1415,14 +1415,14 @@ func TestLineDropOpenCodeJudgesItsRecordBeforeRemovingIt(t *testing.T) {
 }
 
 // TestLineEndTakesDownEverySession: a Claude, a Codex and two OpenCode sessions,
-// two of them in one checkout. The OpenCode sessions share no launch file with
+// two of them in one working directory. The OpenCode sessions share no launch file with
 // anyone, so the Claude session's .mcp.json goes with the Claude session whichever
 // order they leave in, and an OpenCode session never keeps it.
 func TestLineEndTakesDownEverySession(t *testing.T) {
 	b := newOCLineBench(t)
 	lineUp(t, b.lineBench, "demo")
-	shared := b.gitCheckout(t, "co-shared")
-	other := b.gitCheckout(t, "co-other")
+	shared := b.gitWorkdir(t, "co-shared")
+	other := b.gitWorkdir(t, "co-other")
 	mustLine(t, b.lineBench, b.ladd("demo", "oc-a", "opencode", shared)...)
 	mustLine(t, b.lineBench, b.ladd("demo", "plan", "claude", shared)...)
 	mustLine(t, b.lineBench, b.ladd("demo", "oc-b", "opencode", shared)...)
@@ -1476,7 +1476,7 @@ func TestLineEndTakesDownEverySession(t *testing.T) {
 		t.Errorf("the exclude line was left: %q", got)
 	}
 	if status := gitIn(t, shared, "status", "--porcelain"); status != "" {
-		t.Errorf("the shared checkout is not clean: %s", status)
+		t.Errorf("the shared working directory is not clean: %s", status)
 	}
 }
 
@@ -1491,7 +1491,7 @@ func TestLineAddOpenCodePumpFindsTheRecordedSession(t *testing.T) {
 	b := newOCLineBench(t)
 	b.db.server = addr
 	lineUp(t, b.lineBench, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	res := mustLine(t, b.lineBench, b.ladd("demo", "build", "opencode", co)...)
 	recorded := sessionByNick(t, b.record(t, "demo"), "build").Thread
 	if !ocIDRE.MatchString(recorded) {

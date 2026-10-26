@@ -35,9 +35,9 @@ func connectOpenCode(ctx context.Context, getenv func(string) string, port int, 
 }
 
 // tui is how a session is started in OpenCode, for the errors below: in the
-// session's checkout, which starts the background service if none runs.
+// session's working directory, which starts the background service if none runs.
 func tui(session string) string {
-	return fmt.Sprintf("`opencode -s %s` in the session's checkout, which starts OpenCode's service if none runs", session)
+	return fmt.Sprintf("`opencode -s %s` in the session's working directory, which starts OpenCode's service if none runs", session)
 }
 
 // tuiOn is how a session is started in OpenCode on the server `opencode serve
@@ -45,7 +45,7 @@ func tui(session string) string {
 // TUI is pointed at the server, with the password it was started with in
 // OPENCODE_PASSWORD.
 func tuiOn(port int, session string) string {
-	return fmt.Sprintf("`opencode --server %s -s %s` in the session's checkout, with OPENCODE_PASSWORD set to the password the server was started with", opencode.LoopbackURL(port), session)
+	return fmt.Sprintf("`opencode --server %s -s %s` in the session's working directory, with OPENCODE_PASSWORD set to the password the server was started with", opencode.LoopbackURL(port), session)
 }
 
 // discoverService is connectOpenCode without a port: OpenCode's background

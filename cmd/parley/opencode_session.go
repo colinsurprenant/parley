@@ -58,7 +58,7 @@ var openCodeCertifyTimeout = 15 * time.Second
 // openCodeSession is one OpenCode session to start on its primer.
 type openCodeSession struct {
 	nick, model string
-	dir         string // the checkout: where opencode runs, and so the session's project
+	dir         string // the working directory: where opencode runs, and so the session's project
 	bin, name   string // the resolved opencode, and how the human spells it
 	// sid is the session's id, which parley chose: ses_ and 26 letters or digits,
 	// as OpenCode makes them (opencode.NewSessionID).
@@ -350,7 +350,8 @@ func runOpenCodeTurn(ctx context.Context, bin, dir string, args []string, stdin 
 }
 
 // existingDir is dir if it is a directory now, else "" (the caller's own): a
-// checkout that is gone by the time a rollback runs must not stop the rollback.
+// working directory that is gone by the time a rollback runs must not stop the
+// rollback.
 func existingDir(dir string) string {
 	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
 		return dir
@@ -359,11 +360,12 @@ func existingDir(dir string) string {
 }
 
 // openCodeDelete removes the OpenCode session this run was given the id of, from
-// the checkout it was made in. The caller's cancellation is not honoured: an
-// interrupted run is the one most likely to have a session to delete. A delete that
-// is answered "Session not found" (exit 1) found nothing to remove, which is the
-// session never having been made, and not a failure. name is how the failure
-// spells bin to the human, who is told the command to run by hand.
+// the working directory it was made in. The caller's cancellation is not
+// honoured: an interrupted run is the one most likely to have a session to
+// delete. A delete that is answered "Session not found" (exit 1) found nothing to
+// remove, which is the session never having been made, and not a failure. name is
+// how the failure spells bin to the human, who is told the command to run by
+// hand.
 func openCodeDelete(bin, name, id, dir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), openCodeDeleteTimeout)
 	defer cancel()

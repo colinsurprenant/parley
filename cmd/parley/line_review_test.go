@@ -21,18 +21,18 @@ func (b *lineBench) linkedRoot(t *testing.T) string {
 	return link
 }
 
-// TestLineAddTwoSpellingsOfOneCheckoutShareTheFileAndKeepTheRecordWhole: the
-// checkout is recorded as the directory it resolves to, so a session added
+// TestLineAddTwoSpellingsOfOneWorkdirShareTheFileAndKeepTheRecordWhole: the
+// working directory is recorded as the directory it resolves to, so a session added
 // through a symlinked parent shares the first one's file, the record still holds,
 // and drop and end both finish.
-func TestLineAddTwoSpellingsOfOneCheckoutShareTheFileAndKeepTheRecordWhole(t *testing.T) {
+func TestLineAddTwoSpellingsOfOneWorkdirShareTheFileAndKeepTheRecordWhole(t *testing.T) {
 	for _, harness := range []string{"claude", "codex"} {
 		for _, first := range []string{"real", "link"} {
 			for _, verb := range []string{"drop", "end"} {
 				t.Run(harness+"/first via "+first+"/"+verb, func(t *testing.T) {
 					b := newLineBench(t)
 					lineUp(t, b, "demo")
-					real := b.gitCheckout(t, "co")
+					real := b.gitWorkdir(t, "co")
 					viaLink := filepath.Join(b.linkedRoot(t), "co")
 					spellings := []string{real, viaLink}
 					if first == "link" {
@@ -48,8 +48,8 @@ func TestLineAddTwoSpellingsOfOneCheckoutShareTheFileAndKeepTheRecordWhole(t *te
 					}
 					rec := b.record(t, "demo")
 					for _, s := range rec.Sessions {
-						if s.Checkout != real {
-							t.Errorf("session %s is recorded at %s, want the resolved %s", s.Nick, s.Checkout, real)
+						if s.Workdir != real {
+							t.Errorf("session %s is recorded at %s, want the resolved %s", s.Nick, s.Workdir, real)
 						}
 					}
 					if verb == "drop" {
@@ -71,11 +71,11 @@ func TestLineAddTwoSpellingsOfOneCheckoutShareTheFileAndKeepTheRecordWhole(t *te
 
 // TestLineAddRefusesToWriteARecordItsReadersWouldRefuse is the guard behind it
 // all: an add that would leave a record nothing can read fails and rolls back.
-// A checkout whose resolved path holds a '$' is refused before anything is made.
-func TestLineAddRefusesACheckoutThatResolvesToAPathWithADollar(t *testing.T) {
+// A working directory whose resolved path holds a '$' is refused before anything is made.
+func TestLineAddRefusesAWorkdirThatResolvesToAPathWithADollar(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	target := b.gitCheckout(t, "co$x")
+	target := b.gitWorkdir(t, "co$x")
 	link := filepath.Join(b.root, "co-link")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
@@ -90,25 +90,25 @@ func TestLineAddRefusesACheckoutThatResolvesToAPathWithADollar(t *testing.T) {
 
 // TestLineAddResolvesADotDotAfterALinkWhereTheLinkLeads: a ".." after a link
 // climbs from where the link leads, as the filesystem has it. side/lnk/.. is the
-// checkout, not side, and the session is recorded and its file written there.
+// working directory, not side, and the session is recorded and its file written there.
 func TestLineAddResolvesADotDotAfterALinkWhereTheLinkLeads(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	real := b.gitCheckout(t, "co")
+	real := b.gitWorkdir(t, "co")
 	if err := os.Mkdir(filepath.Join(real, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	side := b.plainCheckout(t, "side")
+	side := b.plainWorkdir(t, "side")
 	if err := os.Symlink(filepath.Join(real, "sub"), filepath.Join(side, "lnk")); err != nil {
 		t.Fatal(err)
 	}
 	b.mustAdd(t, "demo", "plan", "claude", side+"/lnk/..")
 	rec := b.record(t, "demo")
-	if len(rec.Sessions) != 1 || rec.Sessions[0].Checkout != real {
+	if len(rec.Sessions) != 1 || rec.Sessions[0].Workdir != real {
 		t.Fatalf("sessions = %+v, want plan recorded at %s", rec.Sessions, real)
 	}
 	if _, err := os.Lstat(filepath.Join(real, ".mcp.json")); err != nil {
-		t.Errorf("no .mcp.json in the checkout: %v", err)
+		t.Errorf("no .mcp.json in the working directory: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(side, ".mcp.json")); err == nil {
 		t.Errorf("an .mcp.json was written into %s, the directory the spelling cleans to", side)
@@ -132,7 +132,7 @@ func TestLineDropKeepsTheExcludeLineWhileAnotherWorktreeNeedsIt(t *testing.T) {
 		t.Run(strings.Join(order, " then "), func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			wt2 := b.worktreeOf(t, co, "co-wt2")
 			pristine := readExcludeForTest(t, co)
 			b.mustAdd(t, "demo", "plan", "claude", co)
@@ -177,7 +177,7 @@ func TestLineDropKeepsTheExcludeLineWhileAnotherWorktreeNeedsIt(t *testing.T) {
 func TestLineEndTakesTheSharedExcludeLineOutOnceAndSaysNothingOfIt(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	wt2 := b.worktreeOf(t, co, "co-wt2")
 	pristine := readExcludeForTest(t, co)
 	b.mustAdd(t, "demo", "plan", "claude", co)
@@ -199,7 +199,7 @@ func TestLineEndTakesTheSharedExcludeLineOutOnceAndSaysNothingOfIt(t *testing.T)
 func TestLineDropLeavesTheExcludeLineForAFileAnotherLineOrTheUserOwns(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	wt2 := b.worktreeOf(t, co, "co-wt2")
 	b.mustAdd(t, "demo", "plan", "claude", co)
 	mine := filepath.Join(wt2, ".mcp.json")
@@ -215,10 +215,10 @@ func TestLineDropLeavesTheExcludeLineForAFileAnotherLineOrTheUserOwns(t *testing
 	}
 }
 
-// TestLineDropFindsTheOtherWorktreesWhenItsOwnCheckoutIsGone: the session's
-// checkout may have been removed; git is then asked from the common directory the
+// TestLineDropFindsTheOtherWorktreesWhenItsOwnWorkdirIsGone: the session's
+// working directory may have been removed; git is then asked from the common directory the
 // exclude file sits in, and a worktree that is gone needs nothing.
-func TestLineDropFindsTheOtherWorktreesWhenItsOwnCheckoutIsGone(t *testing.T) {
+func TestLineDropFindsTheOtherWorktreesWhenItsOwnWorkdirIsGone(t *testing.T) {
 	for _, otherHasFile := range []bool{false, true} {
 		name := "nothing else needs the line"
 		if otherHasFile {
@@ -227,7 +227,7 @@ func TestLineDropFindsTheOtherWorktreesWhenItsOwnCheckoutIsGone(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			wt2 := b.worktreeOf(t, co, "co-wt2")
 			pristine := readExcludeForTest(t, co)
 			b.mustAdd(t, "demo", "review", "claude", wt2)
@@ -260,7 +260,7 @@ func TestLineAddCreatesAMissingExcludeFileAndDropRemovesIt(t *testing.T) {
 		t.Run("extra "+extra, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			exclude := filepath.Join(co, ".git", "info", "exclude")
 			if err := os.Remove(exclude); err != nil {
 				t.Fatal(err)
@@ -298,7 +298,7 @@ func TestLineAddCreatesAMissingExcludeFileAndDropRemovesIt(t *testing.T) {
 func TestLineAddRollbackRemovesAnExcludeFileItMade(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	if err := os.Remove(filepath.Join(co, ".git", "info", "exclude")); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestLineAddRollbackRemovesAnExcludeFileItMade(t *testing.T) {
 func TestLineAddWritesTheCodexConfigWithANonceAndDropRefusesALookalike(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co1, co2 := b.gitCheckout(t, "co1"), b.gitCheckout(t, "co2")
+	co1, co2 := b.gitWorkdir(t, "co1"), b.gitWorkdir(t, "co2")
 	b.mustAdd(t, "demo", "build", "codex", co1)
 	b.mustAdd(t, "demo", "ops", "codex", co2)
 	n1 := wantCodexConfig(t, string(mustRead(t, filepath.Join(co1, ".codex", "config.toml"))), "demo")
@@ -335,12 +335,12 @@ func TestLineAddWritesTheCodexConfigWithANonceAndDropRefusesALookalike(t *testin
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{b.ldrop("demo", "build"), b.lend("demo")} {
-		before := b.lsnap(t, b.checkoutDirs(t)...)
+		before := b.lsnap(t, b.workdirs(t)...)
 		res := b.run(t, args...)
 		if res.code != 1 || !strings.Contains(res.stderr, cfg) || !strings.Contains(res.stderr, "edited or replaced") {
 			t.Fatalf("%v: exit %d, want 1 refusing the lookalike\n%s", args[:2], res.code, res.stderr)
 		}
-		b.wantLineUnchanged(t, before, b.checkoutDirs(t)...)
+		b.wantLineUnchanged(t, before, b.workdirs(t)...)
 	}
 }
 
@@ -373,7 +373,7 @@ func TestLineEndClearsALineDirectoryThatHasNoRecord(t *testing.T) {
 			if res.code != 2 || !strings.Contains(res.stderr, "parley line end demo") {
 				t.Fatalf("line new: exit %d, want 2 saying to run line end\n%s", res.code, res.stderr)
 			}
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			res = b.run(t, b.ladd("demo", "plan", "claude", co)...)
 			if res.code != 2 || !strings.Contains(res.stderr, "parley line end demo") {
 				t.Fatalf("line add: exit %d, want 2 pointing to line end\n%s", res.code, res.stderr)
@@ -401,18 +401,18 @@ func TestLineEndClearsALineDirectoryThatHasNoRecord(t *testing.T) {
 	}
 }
 
-// TestLineDropRefusesACheckoutThatWasMovedAndReplacedByALink: the record holds the
-// checkout resolved, so a checkout renamed and replaced by a link to the moved
+// TestLineDropRefusesAWorkdirThatWasMovedAndReplacedByALink: the record holds the
+// working directory resolved, so a working directory renamed and replaced by a link to the moved
 // directory (or a link put in a directory above it) is another directory behind
-// the same name. drop and end refuse, naming the checkout and what it resolves to,
+// the same name. drop and end refuse, naming the working directory and what it resolves to,
 // before anything is removed; --force leaves the session's files where they are.
-func TestLineDropRefusesACheckoutThatWasMovedAndReplacedByALink(t *testing.T) {
+func TestLineDropRefusesAWorkdirThatWasMovedAndReplacedByALink(t *testing.T) {
 	for _, harness := range []string{"claude", "codex"} {
 		for _, verb := range []string{"drop", "end"} {
 			t.Run(harness+"/"+verb, func(t *testing.T) {
 				b := newLineBench(t)
 				lineUp(t, b, "demo")
-				co := b.gitCheckout(t, "co")
+				co := b.gitWorkdir(t, "co")
 				b.mustAdd(t, "demo", "worker", harness, co)
 				file := filepath.Join(co, ".mcp.json")
 				if harness == "codex" {
@@ -433,7 +433,7 @@ func TestLineDropRefusesACheckoutThatWasMovedAndReplacedByALink(t *testing.T) {
 				}
 				res := b.run(t, args...)
 				if res.code != 1 || !strings.Contains(res.stderr, co) || !strings.Contains(res.stderr, "now resolves to "+moved) || !strings.Contains(res.stderr, "--force") {
-					t.Fatalf("exit %d, want 1 naming the checkout and where it leads, and --force\n%s", res.code, res.stderr)
+					t.Fatalf("exit %d, want 1 naming the working directory and where it leads, and --force\n%s", res.code, res.stderr)
 				}
 				b.wantLineUnchanged(t, before, moved)
 
@@ -455,12 +455,12 @@ func TestLineDropRefusesACheckoutThatWasMovedAndReplacedByALink(t *testing.T) {
 	}
 }
 
-// TestLineDropOfACheckoutThatIsGoneIsNotARefusal: a checkout that is simply gone has no
+// TestLineDropOfAWorkdirThatIsGoneIsNotARefusal: a working directory that is simply gone has no
 // file to remove, and is not a refusal.
-func TestLineDropOfACheckoutThatIsGoneIsNotARefusal(t *testing.T) {
+func TestLineDropOfAWorkdirThatIsGoneIsNotARefusal(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.plainCheckout(t, "co")
+	co := b.plainWorkdir(t, "co")
 	b.mustAdd(t, "demo", "worker", "claude", co)
 	if err := os.RemoveAll(co); err != nil {
 		t.Fatal(err)
@@ -468,11 +468,11 @@ func TestLineDropOfACheckoutThatIsGoneIsNotARefusal(t *testing.T) {
 	mustLine(t, b, b.ldrop("demo", "worker")...)
 }
 
-// TestLineAddRollbackLeavesAFileAloneWhenTheCheckoutWasMoved is the same guard in
+// TestLineAddRollbackLeavesAFileAloneWhenTheWorkdirWasMoved is the same guard in
 // the add's rollback.
-func TestLineAddRollbackLeavesAFileAloneWhenTheCheckoutWasMoved(t *testing.T) {
+func TestLineAddRollbackLeavesAFileAloneWhenTheWorkdirWasMoved(t *testing.T) {
 	b := newLineBench(t)
-	co := b.plainCheckout(t, "co")
+	co := b.plainWorkdir(t, "co")
 	file := filepath.Join(co, ".mcp.json")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -493,7 +493,7 @@ func TestLineAddRollbackLeavesAFileAloneWhenTheCheckoutWasMoved(t *testing.T) {
 	}
 	var left leftAlone
 	if err := removeIfDigest(file, digest, co); !errors.As(err, &left) || !strings.Contains(string(left), "now resolves to "+moved) {
-		t.Fatalf("removeIfDigest = %v, want it left alone, naming where the checkout leads", err)
+		t.Fatalf("removeIfDigest = %v, want it left alone, naming where the working directory leads", err)
 	}
 	if _, err := os.Lstat(filepath.Join(moved, ".mcp.json")); err != nil {
 		t.Errorf("the file was removed: %v", err)
@@ -501,12 +501,12 @@ func TestLineAddRollbackLeavesAFileAloneWhenTheCheckoutWasMoved(t *testing.T) {
 }
 
 // TestLineAddRollbackLeavesAConfigAloneWhenItsDirectoryBecameALink: a .codex
-// moved out of the checkout and replaced by a link while the add ran leaves the
-// checkout's own path unchanged, so only the parent check keeps rollback from
+// moved out of the working directory and replaced by a link while the add ran leaves the
+// working directory's own path unchanged, so only the parent check keeps rollback from
 // removing the config through the link.
 func TestLineAddRollbackLeavesAConfigAloneWhenItsDirectoryBecameALink(t *testing.T) {
 	b := newLineBench(t)
-	co := b.plainCheckout(t, "co")
+	co := b.plainWorkdir(t, "co")
 	dir := filepath.Join(co, ".codex")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -528,7 +528,7 @@ func TestLineAddRollbackLeavesAConfigAloneWhenItsDirectoryBecameALink(t *testing
 		t.Fatalf("removeIfDigest = %v, want it left alone, naming the linked directory", err)
 	}
 	if _, err := os.Lstat(filepath.Join(outside, "config.toml")); err != nil {
-		t.Errorf("the config outside the checkout was removed: %v", err)
+		t.Errorf("the config outside the working directory was removed: %v", err)
 	}
 }
 
@@ -541,7 +541,7 @@ func TestLineDropKeepsTheExcludeLineForAWorktreeItCannotLookAt(t *testing.T) {
 	}
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	wt2 := b.worktreeOf(t, co, "co-wt2")
 	b.mustAdd(t, "demo", "plan", "claude", co)
 	if err := os.Chmod(wt2, 0o000); err != nil {
@@ -557,13 +557,13 @@ func TestLineDropKeepsTheExcludeLineForAWorktreeItCannotLookAt(t *testing.T) {
 	}
 }
 
-// TestLineAddCodexInANonGitCheckoutSkipsCodexsGitCheck: codex exec refuses a
-// directory that is no git checkout unless told not to look, and a line accepts
+// TestLineAddCodexInANonGitWorkdirSkipsCodexsGitCheck: codex exec refuses a
+// directory that is no git repository unless told not to look, and a line accepts
 // one. Only a line session's turn carries the flag.
-func TestLineAddCodexInANonGitCheckoutSkipsCodexsGitCheck(t *testing.T) {
+func TestLineAddCodexInANonGitWorkdirSkipsCodexsGitCheck(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.plainCheckout(t, "plain")
+	co := b.plainWorkdir(t, "plain")
 	mustLine(t, b, b.ladd("demo", "build", "codex", co)...)
 	argv := b.call(t, 1)
 	if len(argv) < 4 || argv[0] != "exec" || argv[1] != "--json" || argv[2] != "--skip-git-repo-check" || argv[3] != "-C" || argv[4] != co {
@@ -584,7 +584,7 @@ func TestLineAddCodexInANonGitCheckoutSkipsCodexsGitCheck(t *testing.T) {
 // worktrees, since the exclude file the line edits is the original's.
 func TestWorktreeRootsListsTheExcludeFilesRepository(t *testing.T) {
 	b := newLineBench(t)
-	repo := b.gitCheckout(t, "repo")
+	repo := b.gitWorkdir(t, "repo")
 	wt := b.worktreeOf(t, repo, "wt")
 	exclude, _ := excludeFileOf(context.Background(), wt)
 	if exclude == "" {
@@ -610,7 +610,7 @@ func TestWorktreeRootsListsTheExcludeFilesRepository(t *testing.T) {
 // omit the worktree that still needs the line, so the line is kept.
 func TestWorktreeRootsTakesACutListingAsUnknown(t *testing.T) {
 	b := newLineBench(t)
-	repo := b.gitCheckout(t, "repo")
+	repo := b.gitWorkdir(t, "repo")
 	exclude, _ := excludeFileOf(context.Background(), repo)
 	defer func(old int) { gitOutputMax = old }(gitOutputMax)
 	gitOutputMax = 10
@@ -623,14 +623,14 @@ func TestWorktreeRootsTakesACutListingAsUnknown(t *testing.T) {
 }
 
 // TestLineAddRefusesALaunchPathGitStillTracks: a tracked launch file the user
-// moved aside is absent from the checkout, but a file written there would be a
+// moved aside is absent from the working directory, but a file written there would be a
 // change to a tracked file, which no exclude line hides.
 func TestLineAddRefusesALaunchPathGitStillTracks(t *testing.T) {
 	for _, harness := range []string{"claude", "codex"} {
 		t.Run(harness, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			rel := ".mcp.json"
 			if harness == "codex" {
 				rel = filepath.Join(".codex", "config.toml")
@@ -708,7 +708,7 @@ func TestLineTeardownRemovesAnExcludeFileTheLineMadeWhateverTheOrder(t *testing.
 		t.Run(name, func(t *testing.T) {
 			b := newLineBench(t)
 			lineUp(t, b, "demo")
-			co := b.gitCheckout(t, "co")
+			co := b.gitWorkdir(t, "co")
 			exclude := filepath.Join(co, ".git", "info", "exclude")
 			if err := os.Remove(exclude); err != nil {
 				t.Fatal(err)
@@ -736,7 +736,7 @@ func TestLineTeardownRemovesAnExcludeFileTheLineMadeWhateverTheOrder(t *testing.
 // a linked worktree, whose .git is a file.
 func TestTreeListingSeesTheExcludeFileAndALinkedWorktreesLaunchFile(t *testing.T) {
 	b := newLineBench(t)
-	repo := b.gitCheckout(t, "repo")
+	repo := b.gitWorkdir(t, "repo")
 	wt := b.worktreeOf(t, repo, "wt")
 	exclude := filepath.Join(repo, ".git", "info", "exclude")
 	for _, dir := range []string{repo, wt} {

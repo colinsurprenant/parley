@@ -21,7 +21,7 @@ import (
 	"github.com/colinsurprenant/parley/internal/state"
 )
 
-// lineBench is a tableBench with the extras the line verbs need: checkouts for
+// lineBench is a tableBench with the extras the line verbs need: working directories for
 // sessions to live in, the line's args, and a snapshot that covers them.
 type lineBench struct{ *tableBench }
 
@@ -31,8 +31,8 @@ func (b *lineBench) lnew(id string, extra ...string) []string {
 	return append([]string{"line", "new", id, "--chair", "colin", "--cap", "8", "--state-dir", b.base, "--server", b.db.server}, extra...)
 }
 
-func (b *lineBench) ladd(id, nick, harness, checkout string, extra ...string) []string {
-	return append([]string{"line", "add", id, "--nick", nick, "--harness", harness, "--checkout", checkout, "--state-dir", b.base}, extra...)
+func (b *lineBench) ladd(id, nick, harness, workdir string, extra ...string) []string {
+	return append([]string{"line", "add", id, "--nick", nick, "--harness", harness, "--workdir", workdir, "--state-dir", b.base}, extra...)
 }
 
 func (b *lineBench) ldrop(id, nick string, extra ...string) []string {
@@ -43,8 +43,8 @@ func (b *lineBench) lend(id string, extra ...string) []string {
 	return append([]string{"line", "end", id, "--state-dir", b.base}, extra...)
 }
 
-// gitCheckout is a git checkout of its own for a session.
-func (b *lineBench) gitCheckout(t *testing.T, name string) string {
+// gitWorkdir is a git repository of its own for a session.
+func (b *lineBench) gitWorkdir(t *testing.T, name string) string {
 	t.Helper()
 	dir := filepath.Join(b.root, name)
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -54,8 +54,8 @@ func (b *lineBench) gitCheckout(t *testing.T, name string) string {
 	return dir
 }
 
-// plainCheckout is a directory that is no git checkout.
-func (b *lineBench) plainCheckout(t *testing.T, name string) string {
+// plainWorkdir is a directory that is no git repository.
+func (b *lineBench) plainWorkdir(t *testing.T, name string) string {
 	t.Helper()
 	dir := filepath.Join(b.root, name)
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -224,7 +224,7 @@ func TestLineNewSetsTheLineUp(t *testing.T) {
 		"/join #demo",
 		"/msg NickServ INFO colin",
 		"/msg NickServ REGISTER <password>",
-		fmt.Sprintf("'%s' line add demo --nick <nick> --harness <claude|codex|opencode> [--model <model>] --checkout <absolute dir> --state-dir '%s'", binPath, b.base),
+		fmt.Sprintf("'%s' line add demo --nick <nick> --harness <claude|codex|opencode> [--model <model>] [--workdir <absolute dir>] --state-dir '%s'", binPath, b.base),
 		fmt.Sprintf("When it is over: '%s' line end demo --state-dir '%s'", binPath, b.base),
 	})
 	if strings.Contains(res.stdout, "doctor:") {
@@ -409,7 +409,7 @@ func TestLineNewFailureRollsBack(t *testing.T) {
 func TestLineVerbsHoldTheIDLock(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	l, err := state.LockID(b.base, "demo")
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +436,7 @@ func TestLineVerbsHoldTheIDLock(t *testing.T) {
 // for an id that was never a line.
 func TestLineVerbsOnALineThatIsNotThereTakeNoLock(t *testing.T) {
 	b := newLineBench(t)
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	for _, args := range [][]string{b.ladd("nope", "plan", "claude", co), b.ldrop("nope", "plan"), b.lend("nope")} {
 		res := b.run(t, args...)
 		if res.code != 2 || !strings.Contains(res.stderr, `no line "nope"`) {
@@ -474,7 +474,7 @@ func readExcludeForTest(t *testing.T, co string) string {
 func TestLineAddClaudeSession(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co-plan")
+	co := b.gitWorkdir(t, "co-plan")
 	excludeBefore := readExcludeForTest(t, co)
 	res := mustLine(t, b, b.ladd("demo", "plan", "claude", co, "--model", "opus")...)
 	t.Logf("stdout:\n%s", res.stdout)
@@ -522,7 +522,7 @@ func TestLineAddClaudeSession(t *testing.T) {
 		t.Errorf("info/exclude = %q, want %q and /.mcp.json", got, excludeBefore)
 	}
 	if got := gitIn(t, co, "status", "--porcelain"); got != "" {
-		t.Errorf("the checkout is not clean: %s", got)
+		t.Errorf("the working directory is not clean: %s", got)
 	}
 
 	// The record.
@@ -530,7 +530,7 @@ func TestLineAddClaudeSession(t *testing.T) {
 	if len(rec.Sessions) != 1 {
 		t.Fatalf("sessions %+v", rec.Sessions)
 	}
-	want := lineSession{Nick: "plan", Harness: "claude", Model: "opus", Checkout: co,
+	want := lineSession{Nick: "plan", Harness: "claude", Model: "opus", Workdir: co,
 		Files: []lineFile{{Path: path, SHA256: fileDigestOf(t, path), ExcludeFile: exclude}}}
 	if fmt.Sprint(rec.Sessions[0]) != fmt.Sprint(want) {
 		t.Errorf("session %+v, want %+v", rec.Sessions[0], want)
@@ -572,12 +572,12 @@ func TestLineAddClaudeSession(t *testing.T) {
 	}
 }
 
-// TestLineAddSecondClaudeSessionSharesTheFile: two sessions in one checkout share
+// TestLineAddSecondClaudeSessionSharesTheFile: two sessions in one working directory share
 // the .mcp.json the first wrote and the one exclude line.
 func TestLineAddSecondClaudeSessionSharesTheFile(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	mustLine(t, b, b.ladd("demo", "plan", "claude", co)...)
 	path := filepath.Join(co, ".mcp.json")
 	before := treeListing(t, co)
@@ -587,7 +587,7 @@ func TestLineAddSecondClaudeSessionSharesTheFile(t *testing.T) {
 	}
 	res := mustLine(t, b, b.ladd("demo", "review", "claude", co)...)
 	if after := treeListing(t, co); after != before {
-		t.Errorf("the second session changed the checkout.\nbefore:\n%s\nafter:\n%s", before, after)
+		t.Errorf("the second session changed the working directory.\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 	if st2, err := os.Stat(path); err != nil || !os.SameFile(st, st2) {
 		t.Errorf("the .mcp.json was replaced: %v", err)
@@ -603,34 +603,94 @@ func TestLineAddSecondClaudeSessionSharesTheFile(t *testing.T) {
 	if fmt.Sprint(a.Files) != fmt.Sprint(c.Files) || a.Files[0].ExcludeFile == "" {
 		t.Errorf("the sessions record %+v and %+v, want the same file entry with its exclude file", a.Files, c.Files)
 	}
-	// A third in another checkout gets a file of its own.
-	other := b.gitCheckout(t, "co2")
+	// A third in another working directory gets a file of its own.
+	other := b.gitWorkdir(t, "co2")
 	mustLine(t, b, b.ladd("demo", "third", "claude", other)...)
 	if _, err := os.Stat(filepath.Join(other, ".mcp.json")); err != nil {
-		t.Errorf("no .mcp.json in the other checkout: %v", err)
+		t.Errorf("no .mcp.json in the other working directory: %v", err)
 	}
 }
 
-// TestLineAddNonGitCheckoutGetsNoExcludeLine: a directory that is no git
-// checkout is allowed, and its file is the line's all the same.
-func TestLineAddNonGitCheckoutGetsNoExcludeLine(t *testing.T) {
+// TestLineAddWithoutWorkdirUsesTheCurrentDirectory: with --workdir left out, the
+// session runs in the current directory when git names it as the top of a working
+// tree, a linked worktree's as well as a main one's. The resolved path is
+// recorded (the shell may stand in the directory through a link), the output says
+// the directory is the current one, and the rest is what a given --workdir does.
+func TestLineAddWithoutWorkdirUsesTheCurrentDirectory(t *testing.T) {
+	for _, kind := range []string{"main", "linked", "via a link", "up from a link"} {
+		t.Run(kind, func(t *testing.T) {
+			b := newLineBench(t)
+			lineUp(t, b, "demo")
+			co := b.gitWorkdir(t, "co")
+			spelled := co
+			switch kind {
+			case "linked":
+				linked := filepath.Join(b.root, "co-linked")
+				gitIn(t, co, "worktree", "add", "-q", "--detach", linked, "HEAD")
+				co, spelled = linked, linked
+			case "via a link":
+				spelled = filepath.Join(b.linkedRoot(t), "co")
+			case "up from a link":
+				// lnk leads into co/sub, so lnk/.. is co; cleaning the spelling
+				// before resolving it would make it lnk's own parent instead.
+				sub, side := filepath.Join(co, "sub"), filepath.Join(b.root, "side")
+				for _, d := range []string{sub, side} {
+					if err := os.Mkdir(d, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Symlink(sub, filepath.Join(side, "lnk")); err != nil {
+					t.Fatal(err)
+				}
+				spelled = side + "/lnk/.."
+			}
+			// PWD is how a shell that stands in a link tells its children, and what
+			// os.Getwd reports when it names the directory the child is in.
+			res := runParleyEnvIn(t, spelled, append(b.env(), "PWD="+spelled),
+				"line", "add", "demo", "--nick", "plan", "--harness", "claude", "--state-dir", b.base)
+			if res.code != 0 {
+				t.Fatalf("exit %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+			}
+			if want := "is added to line demo, working directory " + co + " (the current directory).\n"; !strings.Contains(res.stdout, want) {
+				t.Errorf("stdout does not say %q:\n%s", want, res.stdout)
+			}
+			if !strings.Contains(res.stdout, "cd "+q(co)) {
+				t.Errorf("the launch lines do not cd into %s:\n%s", co, res.stdout)
+			}
+			rec := b.record(t, "demo")
+			if len(rec.Sessions) != 1 || rec.Sessions[0].Workdir != co {
+				t.Errorf("sessions %+v, want one recorded at the resolved %s", rec.Sessions, co)
+			}
+			if _, err := os.Stat(filepath.Join(co, ".mcp.json")); err != nil {
+				t.Errorf("no .mcp.json in the working directory: %v", err)
+			}
+			if got := gitIn(t, co, "status", "--porcelain"); got != "" {
+				t.Errorf("the working directory is not clean: %s", got)
+			}
+		})
+	}
+}
+
+// TestLineAddNonGitWorkdirGetsNoExcludeLine: a directory that is no git
+// working directory is allowed, and its file is the line's all the same.
+func TestLineAddNonGitWorkdirGetsNoExcludeLine(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.plainCheckout(t, "plain")
+	co := b.plainWorkdir(t, "plain")
 	res := mustLine(t, b, b.ladd("demo", "plan", "claude", co)...)
 	if _, err := os.Stat(filepath.Join(co, ".mcp.json")); err != nil {
 		t.Fatal(err)
 	}
 	rec := b.record(t, "demo")
 	if f := rec.Sessions[0].Files[0]; f.ExcludeFile != "" {
-		t.Errorf("a non-git checkout has an exclude file recorded: %+v", f)
+		t.Errorf("a non-git working directory has an exclude file recorded: %+v", f)
 	}
 	if !strings.Contains(res.stdout, "no exclude line added") {
 		t.Errorf("stdout does not say no exclude line was added:\n%s", res.stdout)
 	}
-	// A directory inside a checkout is not its root: the anchored line would not
+	// A directory inside a repository is not its top: the anchored line would not
 	// match there, so none is added either.
-	repo := b.gitCheckout(t, "repo")
+	repo := b.gitWorkdir(t, "repo")
 	sub := filepath.Join(repo, "sub")
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)
@@ -640,12 +700,12 @@ func TestLineAddNonGitCheckoutGetsNoExcludeLine(t *testing.T) {
 	if got := readExcludeForTest(t, repo); got != excl {
 		t.Errorf("the exclude file of the enclosing repository changed: %q", got)
 	}
-	if !strings.Contains(res.stdout, "is not its root") {
+	if !strings.Contains(res.stdout, "is not its top directory") {
 		t.Errorf("stdout does not say why:\n%s", res.stdout)
 	}
 }
 
-// codexConfigWant is the body of the config a Codex session's checkout gets,
+// codexConfigWant is the body of the config a Codex session's working directory gets,
 // which is `table new`'s, behind a first comment line.
 const codexConfigWant = "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-request\"\n\n[sandbox_workspace_write]\nnetwork_access = true\n"
 
@@ -669,7 +729,7 @@ func wantCodexConfig(t *testing.T, got, id string) string {
 func TestLineAddCodexSession(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co-build")
+	co := b.gitWorkdir(t, "co-build")
 	res := mustLine(t, b, b.ladd("demo", "build", "codex", co, "--model", "gpt-5")...)
 	t.Logf("stdout:\n%s", res.stdout)
 	t.Logf("stderr:\n%s", res.stderr)
@@ -688,12 +748,12 @@ func TestLineAddCodexSession(t *testing.T) {
 		t.Errorf("info/exclude = %q, want /.codex/config.toml appended", got)
 	}
 	if got := gitIn(t, co, "status", "--porcelain"); got != "" {
-		t.Errorf("the checkout is not clean: %s", got)
+		t.Errorf("the working directory is not clean: %s", got)
 	}
 
 	rec := b.record(t, "demo")
 	s := sessionByNick(t, rec, "build")
-	if s.Harness != "codex" || s.Model != "gpt-5" || s.Checkout != co || s.Thread != fakeThread(1) {
+	if s.Harness != "codex" || s.Model != "gpt-5" || s.Workdir != co || s.Thread != fakeThread(1) {
 		t.Errorf("session %+v", s)
 	}
 	// The reply directory: 0700 under TMPDIR, named for the line, with the marker
@@ -728,7 +788,7 @@ func TestLineAddCodexSession(t *testing.T) {
 		t.Errorf("thread record mode %v (%v), want 0600", fi.Mode(), err)
 	}
 
-	// codex was asked once, to exec, in the checkout, with network off for the turn.
+	// codex was asked once, to exec, in the working directory, with network off for the turn.
 	if n := b.callCount(); n != 1 {
 		t.Fatalf("codex was called %d times, want 1 (the one exec)", n)
 	}
@@ -749,7 +809,7 @@ func TestLineAddCodexSession(t *testing.T) {
 	pump := fmt.Sprintf("'%s' codex --stream '%s' --nick build --state-dir '%s' --thread auto --skill line --chair colin --cap 8 --window 10m", binPath, stream, b.base)
 	resume := fmt.Sprintf("codex resume '%s' -C '%s' -a on-request", fakeThread(1), co)
 	wantInOrder(t, res.stdout, []string{
-		"Network: network access is ON for Codex in this checkout: the config.toml this line wrote sets network_access = true under workspace-write, so that parley send can reach the loopback IRC server from inside the sandbox. It applies to every Codex session in the checkout, not only this one.",
+		"Network: network access is ON for Codex in this working directory: the config.toml this line wrote sets network_access = true under workspace-write, so that parley send can reach the loopback IRC server from inside the sandbox. It applies to every Codex session in the working directory, not only this one.",
 		pump,
 		resume,
 		"Check that /status shows workspace-write and network on, and its model (gpt-5); the model check is unverified on a resumed session, so confirm it here.",
@@ -766,7 +826,7 @@ func TestLineAddCodexSession(t *testing.T) {
 func TestLineAddCodexBinCarriesToTheLinesItPrints(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo", "--codex-bin", b.codex)
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	res := mustLine(t, b, b.ladd("demo", "build", "codex", co)...)
 	lineWith(t, res.stdout, " codex --stream ", "--codex-bin '"+b.codex+"'")
 	lineWith(t, res.stdout, "'"+b.codex+"' resume ")
@@ -780,7 +840,7 @@ func TestLineAddCodexPumpFindsTheRecordedThread(t *testing.T) {
 	b := newLineBench(t)
 	b.db.server = addr
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	res := mustLine(t, b, b.ladd("demo", "build", "codex", co)...)
 
 	words := shellWords(t, lineWith(t, res.stdout, " codex --stream "))
@@ -811,13 +871,13 @@ func TestLineAddCodexPumpFindsTheRecordedThread(t *testing.T) {
 	}
 }
 
-// TestLineAddCodexSessionsShareTheConfig: a second Codex session in the checkout
-// shares the config, a Claude one in the same checkout does not share it, and
+// TestLineAddCodexSessionsShareTheConfig: a second Codex session in the working directory
+// shares the config, a Claude one in the same working directory does not share it, and
 // each keeps its own reply directory and thread.
 func TestLineAddCodexSessionsShareTheConfig(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	mustLine(t, b, b.ladd("demo", "build", "codex", co)...)
 	cfg := filepath.Join(co, ".codex", "config.toml")
 	st, err := os.Stat(cfg)
@@ -842,7 +902,7 @@ func TestLineAddCodexSessionsShareTheConfig(t *testing.T) {
 	if a.Thread == c.Thread || a.ReplyDir == c.ReplyDir {
 		t.Errorf("the sessions share a thread or a reply directory: %+v %+v", a, c)
 	}
-	// A Claude session in the same checkout has its own file.
+	// A Claude session in the same working directory has its own file.
 	mustLine(t, b, b.ladd("demo", "plan", "claude", co)...)
 	if _, err := os.Stat(filepath.Join(co, ".mcp.json")); err != nil {
 		t.Errorf("no .mcp.json for the Claude session: %v", err)
@@ -861,7 +921,7 @@ func TestLineAddCodexSessionsShareTheConfig(t *testing.T) {
 func TestLineAddKeepsAnExcludeLineThatWasAlreadyThere(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	exclude := filepath.Join(co, ".git", "info", "exclude")
 	pre := "# mine\n/.mcp.json\n*.swp"
 	if err := os.WriteFile(exclude, []byte(pre), 0o644); err != nil {
@@ -880,7 +940,7 @@ func TestLineAddKeepsAnExcludeLineThatWasAlreadyThere(t *testing.T) {
 func TestLineAddEndsAnUnterminatedExcludeFileBeforeAppending(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	exclude := filepath.Join(co, ".git", "info", "exclude")
 	if err := os.WriteFile(exclude, []byte("a\nb"), 0o644); err != nil {
 		t.Fatal(err)
@@ -896,7 +956,7 @@ func TestLineAddEndsAnUnterminatedExcludeFileBeforeAppending(t *testing.T) {
 func TestLineAddNeverWritesThroughALinkedExcludeFile(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
-	co := b.gitCheckout(t, "co")
+	co := b.gitWorkdir(t, "co")
 	target := filepath.Join(b.root, "shared-excludes")
 	if err := os.WriteFile(target, []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)

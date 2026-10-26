@@ -76,16 +76,19 @@ a temp file and a rename and read through a 64 KiB bound): the line's `id`,
 line (`10m`), `codex_bin` when `line new` was given `--codex-bin` and `opencode_bin`
 when it was given `--opencode-bin`, `created`, and
 `sessions`, each with its `nick`, `harness` (`claude`, `codex` or `opencode`),
-`model`, `checkout`, a Codex or OpenCode session's `thread` (the Codex thread's
-UUID, or the OpenCode session's id) and `reply_dir`, and `files`, the one launch
+`model`, `checkout` (the session's working directory; the key keeps the name
+earlier versions gave it, so that their records load), a Codex or OpenCode
+session's `thread` (the Codex thread's UUID, or the OpenCode session's id) and
+`reply_dir`, and `files`, the one launch
 file the line wrote or shares for it (an empty list for an OpenCode session, which
 has none): its `path`, the `sha256` of its exact bytes, `exclude_file` (the exclude file
 that holds the launch file's line because the line put it there, this session or
 another of the line; `exclude_sep` when the line had to end that file's last line
 first, `exclude_made` when it created the file) and `made_dir` (a `.codex` the line
-made). The `checkout` is the path with its links resolved. Sessions of one checkout
-and harness list the same entry. The record holds no stream content, and it is
-checked against what the verbs write before every write of it.
+made). The `checkout` is the working directory with its links resolved. Sessions
+of one working directory and harness list the same entry. The record holds no
+stream content, and it is checked against what the verbs write before every write
+of it.
 
 Two terminals, with the human in the room through `tail -f`:
 
@@ -263,7 +266,7 @@ Lines, below).
 already running: a long-lived foreground process that blocks on the stream and
 hands each delivery to the live session as one user message, over the HTTP API of
 the OpenCode 2 server the session runs on: the background service that `opencode -s
-<ses_id>` starts in the session's checkout, or a server started with `opencode serve
+<ses_id>` starts in the session's working directory, or a server started with `opencode serve
 --port <port>`. The legacy OpenCode 1.x has no such API and is refused. Parley was
 last verified against OpenCode 2.1.0 on a live model; a newer 2.x is expected to work.
 OpenCode has no channel of its own — a prompt posted to a
@@ -284,7 +287,7 @@ parley opencode --stream file:./chat.ndjson --nick oc-a --session <ses_id> --por
 
 `--port` is the port of a server on `127.0.0.1` that was started with `opencode
 serve --port <port>`, and is optional. OpenCode's TUI, `run` and `session` commands
-reach one background service per user, which `opencode -s <ses_id>` in the checkout
+reach one background service per user, which `opencode -s <ses_id>` in the working directory
 starts if none runs; without `--port` the pump finds that service (see **Discovery**
 below). The pump connects to `127.0.0.1` and nowhere else; there is no host or URL
 flag, so the credentials below cannot be sent anywhere else. `--session` is the
@@ -461,7 +464,7 @@ header-first text above, and the pump never interprets it. Out of scope: another
 process on this machine that has the password; what the session does with its
 harness's permissions, since parley is not a sandbox and OpenCode's bash tool runs
 without approval by default, and its file tools do not ask before writing outside the
-checkout (`external_directory` is allowed by default; a rule in `opencode.jsonc`
+working directory (`external_directory` is allowed by default; a rule in `opencode.jsonc`
 makes it ask); and a hand edit of parley's state.
 
 ## primer
@@ -755,7 +758,7 @@ ignored); a table needs nothing beyond parley. parley itself never calls directo
 ## Lines
 
 A line is a few long-running agent sessions, each on its own job and its own
-checkout, and one human in one channel for days; `docs/line.md` is the human's
+working directory, and one human in one channel for days; `docs/line.md` is the human's
 guide to setting one up with the line verbs, below, and by hand. The
 sessions follow the `parley-line` skill: they poke each other with a few lines on
 what changed for the reader and a pointer to the record, ask when they need
@@ -767,7 +770,7 @@ primer only states them; it holds nothing). `--window` is a line's alone: under
 `--skill table` and `--skill build` it is refused, with exit 2, naming the flag,
 as is a window that is zero, negative or not a duration under a line. `--target`
 and `--worktree` are refused, with exit 2, naming the flag: a line has no target
-repo, and parley makes it no worktree; the session works in its own checkout as
+repo, and parley makes it no worktree; the session works in its own working directory as
 usual. `--chair` is the human's registered
 nick, refused when it matches `--nick` without regard to ASCII case. On `primer` a
 line requires `--reply-file` on every front, as a table does, and the claude form is held to the
@@ -818,10 +821,10 @@ front, and on the opencode front "which you load with the skill tool"); and the 
 registered nick steers the line, and nothing in the session. The codex form
 carries one more paragraph, ahead of the paragraph about the pump, in the place
 the build form's git paragraph holds, and in its words for a session's own
-checkout: Codex keeps the checkout's git directory read-only in its sandbox, so
+working directory: Codex keeps the working directory's git directory read-only in its sandbox, so
 `git add`, `git commit`, `git merge` and `git reset` are refused there with
 Operation not permitted, unless a writable root in its launch config
-(`.codex/config.toml` in its checkout) or, when that lists none, in its global
+(`.codex/config.toml` in its working directory) or, when that lists none, in its global
 Codex config is that git directory itself; the session asks for escalation for
 each of them directly, instead of trying them in the sandbox first. It does not
 tell the session to widen its sandbox, and the claude line form, which has no room
@@ -849,22 +852,30 @@ exit 2.
   one record serves the add, the rollback and the teardown. It prints what is
   left: the server if nothing answers, the chair's `/join` and NickServ steps, and
   one `line add` per session.
-- `line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] --checkout
-  <absolute dir> [--state-dir <dir>]` puts a session on the line, which gives it the
-  chair, cap, window, server and state directory of the record. Exit 2, with
+- `line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>]
+  [--workdir <absolute dir>] [--state-dir <dir>]` puts a session on the line, which
+  gives it the chair, cap, window, server and state directory of the record.
+  `--workdir` is the directory the session runs in, which need not be a git
+  repository. Left out, it is the current directory, but only when git names that
+  as the top directory of a working tree (`git rev-parse --show-toplevel`, a
+  linked worktree's included); the output then says the directory is the current
+  one, and the path goes through every check a given one does. Exit 2, with
   nothing changed, for: no such line; a nick that is invalid, reserved (`tables`,
   `builds`, `lines`), the chair's, or already in the line, without regard to ASCII
   case; a harness other than `claude`, `codex` and `opencode`; a model over 128 bytes
   or outside letters, digits and `. _ - : / @ [ ] +`, or for OpenCode one that is
   not `provider/model` or `provider/model#variant` (the one model that may hold a
   `#`, once, with a variant after it that is not empty; it is passed to `opencode run
-  -m` as it is, and `opencode run --help` documents the form); a checkout that is not an
-  existing directory given by an absolute path, or that holds, or resolves to a
-  path that holds, a `$` or a control character (the checkout is resolved, links
-  and all, and the resolved path is the one recorded and printed); a checkout,
-  state directory, binary or temp path that is not valid UTF-8; a state directory inside the checkout, or, for a Codex or OpenCode session, `$TMPDIR`;
+  -m` as it is, and `opencode run --help` documents the form); a `--workdir` that is empty, or
+  not an existing directory given by an absolute path, or that holds, or resolves
+  to a path that holds, a `$` or a control character (the working directory is
+  resolved, links and all, and the resolved path is the one recorded and printed);
+  with `--workdir` left out, a current directory that is not the top directory of
+  a git working tree, or that git cannot place; a working directory, state
+  directory, binary or temp path that is not valid UTF-8; a state directory inside
+  the working directory, or, for a Codex or OpenCode session, `$TMPDIR`;
   a Claude session's `.mcp.json`, or a Codex session's `.codex/config.toml`, that
-  is in the checkout and is not the one this line wrote for another session of it
+  is in the working directory and is not the one this line wrote for another session of it
   (the record holds the digest), or a `.codex` that is not a real directory; a
   Codex nick that already has a thread record, or an OpenCode nick a session
   record, for the stream; and a Claude session
@@ -875,28 +886,28 @@ exit 2.
   `~/.agents/skills` for Codex, either for OpenCode, which reads both), an OpenCode
   that is not a 2.x (the legacy 1.x included), and a nick whose lock a running
   session or pump holds.
-  A Claude session gets `<checkout>/.mcp.json`, one server `parley` whose
+  A Claude session gets `<workdir>/.mcp.json`, one server `parley` whose
   command is the binary and whose args are `channel --stream irc://<server>/#<id>
   --nick ${PARLEY_NICK} --state-dir <base> --skill line --chair <chair> --cap <cap>
   --window <window>`, unless the line wrote it already for another Claude session of
-  the checkout, which shares it. A Codex session gets `<checkout>/.codex/config.toml`
+  the working directory, which shares it. A Codex session gets `<workdir>/.codex/config.toml`
   (`workspace-write`, `on-request`, `network_access = true`, which turns network
-  access on for Codex in that checkout, and the output says so) on the same terms,
+  access on for Codex in that working directory, and the output says so) on the same terms,
   behind a first comment line naming the line and carrying a nonce, so that the
   digest the record holds proves the line wrote the file and not a copy of the
   constant text; a
   reply directory `parley-line-<id>-*` under `$TMPDIR` at 0700 with a
   `.parley-line` marker holding the id and the nick; and a thread started as `table
-  new` starts a seat's, by `codex exec --json -C <checkout>` on the line's primer,
-  but in a read-only sandbox (`-s read-only`), since the checkout is the user's own
+  new` starts a seat's, by `codex exec --json -C <workdir>` on the line's primer,
+  but in a read-only sandbox (`-s read-only`), since the working directory is the user's own
   and not a worktree parley made, with `--skip-git-repo-check`, since it need not
-  be a git checkout, stdin closed, network off for the turn, `-m
+  be a git repository, stdin closed, network off for the turn, `-m
   <model>` if given, a five-minute limit and a turn that must have completed, the
   thread recorded in `codex-thread`.
-  An OpenCode session gets no launch file and nothing else written in its checkout,
+  An OpenCode session gets no launch file and nothing else written in its working directory,
   which may be any directory. It gets the same reply directory, and a session
   started by `opencode run --format json --title "parley line <id> <nick>" --session
-  <id>` in the checkout, where `<id>` is the session's id, which parley makes the way
+  <id>` in the working directory, where `<id>` is the session's id, which parley makes the way
   OpenCode's `identifier.ts` does (`ses_`, twelve hex digits of the clock inverted so
   the newest sorts first, fourteen random letters or digits) and which the run
   creates the session under (`opencode run --help`: "Session ID to continue, or to
@@ -922,7 +933,7 @@ exit 2.
   `failed`, a last step that went on, a service that cannot be found or reached or
   does not know the session, or an answer that is not the shape this front reads,
   fails the add, with the reads bounded and the password in no message. The session is registered for deletion (`opencode session
-  delete`, run from the checkout) as soon as the run returns, whatever it did: the id
+  delete`, run from the working directory) as soon as the run returns, whatever it did: the id
   is known before the run. A delete answered "Session not found", for a run that
   failed before it made the session, found nothing to remove and is not a failure.
   The run adds no session-level rule (it creates the session with an id, an agent, a
@@ -933,12 +944,12 @@ exit 2.
   that ends in an `error` event fails the add with the error's own words and rolls
   the session back. The id is recorded in `opencode-session`, and the session's
   answer to the primer, the text of the turn's last step, is printed.
-  Files are created with no overwrite and never through a link. When the checkout
-  is the root of a git checkout, the launch file's line (`/.mcp.json` or
+  Files are created with no overwrite and never through a link. When the working directory
+  is the top directory of a git repository, the launch file's line (`/.mcp.json` or
   `/.codex/config.toml`) is appended to the file `git rev-parse --git-path
   info/exclude` names unless it is there, and the file is created if the
   repository has none; an exclude file that is a link is left alone, with a note,
-  and a checkout that is not a git root gets none. Linked worktrees share that
+  and a working directory that is not a git repository's top gets none. Linked worktrees share that
   file: a session of the line that finds its line there, put by another session of
   the line, records the exclude file as its own to clean up. The session
   goes into `line.json` last. Any failure or interrupt takes down what the add made,
@@ -965,7 +976,7 @@ exit 2.
   ids are compared as they are, since they are case-sensitive);
   its reply directory, only if it is directly in `$TMPDIR`, named for the line and
   holds the marker, else it refuses (exit 1); and, when no other session of the line
-  uses that checkout with that harness, the launch file (an OpenCode session has
+  uses that working directory with that harness, the launch file (an OpenCode session has
   none, and shares none), only if it is a regular
   file in a real directory whose bytes hash to the recorded digest, then the `.codex`
   directory if the line made it and it is empty, and the line in the exclude file if
@@ -975,12 +986,12 @@ exit 2.
   with the line while the line is still the last, and stays when another line was
   appended after it. The exclude file is shared by every worktree of the repository,
   so the line is taken out only when no worktree has a file at its path any more
-  (`git worktree list` from the checkout, or from the common git directory when the
-  checkout is gone); otherwise it stays, the output names the file that needs it,
+  (`git worktree list` from the working directory, or from the common git directory when the
+  working directory is gone); otherwise it stays, the output names the file that needs it,
   and the last session dropped takes it out. An exclude file that has become a link
   is not written through; the line stays, and is said to. A launch file that is not
   that is refused, exit 1, naming it; `--force` leaves it and its exclude line in
-  place instead, and says so; so is a recorded checkout that now resolves to
+  place instead, and says so; so is a recorded working directory that now resolves to
   another path (it was moved and replaced by a link, or a directory above it
   became one), checked before any file is judged and again before it is removed.
   The session is then removed from the record, and a
@@ -996,7 +1007,7 @@ exit 2.
   killed after making the directory leaves, is removed by `end` (exit 0, saying
   so), and `new` for that id says to run `end`.
 
-Nothing a checkout holds is parley's state. The record is trusted; a launch file is
+Nothing a working directory holds is parley's state. The record is trusted; a launch file is
 the line's only while its digest matches, and `line drop` and `line end` delete
 nothing else there. `docs/line.md` has the trust rules.
 
