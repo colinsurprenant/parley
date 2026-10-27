@@ -610,7 +610,7 @@ before it has read the others', run a table instead: a line has no seal.
   says so, and `line end` removes the directory when it holds nothing else.
 - `<base>/<nick>/` keeps each session's cursor and IRC password, so the same nick
   can come back; leave it, or remove it by hand once the nick is retired. The
-  nick's `lock` file stays in it, and the line's own, `<base>/.ids/<channel>.lock`,
+  nick's `lock` file stays in it, and the line's own, `<base>/.ids/<id>.lock`,
   stays beside the nicks' directories. No parley command deletes a lock file: a
   lock is held on the file and not on its path, so a deleted path could be made
   again and locked by a second command while the first still holds the old file. A
