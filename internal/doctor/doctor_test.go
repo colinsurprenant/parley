@@ -261,6 +261,44 @@ func TestLiveErgoSanitizesWhatAFailingErgoSaid(t *testing.T) {
 	}
 }
 
+// TestCompareVersionIsAFloorWithinTheMajorVersion: the one rule for every tool.
+// The same version, and a newer one of the same major version, are ok (the line
+// names both); an older one, or one of a different major version, warns, and so
+// does one equal in number with another suffix, and one that cannot be read.
+// Major version 0 is a major version like any other.
+func TestCompareVersionIsAFloorWithinTheMajorVersion(t *testing.T) {
+	const remedy = "Do the remedy."
+	for _, tc := range []struct {
+		name, tool, verified, out string
+		level                     Level
+		detail                    string
+	}{
+		{"equal", "claude", "2.1.296", "2.1.296 (Claude Code)", OK, "2.1.296, the version last verified"},
+		{"newer patch", "claude", "2.1.296", "2.1.311 (Claude Code)", OK, "2.1.311, newer than 2.1.296, the version last verified"},
+		{"newer minor", "claude", "2.1.296", "2.2.0", OK, "2.2.0, newer than 2.1.296, the version last verified"},
+		{"newer by number, not by text", "claude", "2.9.0", "2.10.0", OK, "2.10.0, newer than 2.9.0, the version last verified"},
+		{"newer, a suffix on it", "claude", "2.1.296", "2.1.311-rc.1", OK, "2.1.311-rc.1, newer than 2.1.296, the version last verified"},
+		{"older patch", "claude", "2.1.296", "2.1.295 (Claude Code)", Warn, "2.1.295 is older than 2.1.296, the version last verified, and may lack something parley uses. " + remedy},
+		{"older minor", "claude", "2.1.296", "2.0.999", Warn, "2.0.999 is older than 2.1.296, the version last verified, and may lack something parley uses. " + remedy},
+		{"older by number, not by text", "claude", "2.10.0", "2.9.0", Warn, "2.9.0 is older than 2.10.0, the version last verified, and may lack something parley uses. " + remedy},
+		{"newer major", "claude", "2.1.296", "3.0.0", Warn, "3.0.0 is a different major version from 2.1.296, the version last verified, and may not work. " + remedy},
+		{"older major", "claude", "2.1.296", "1.99.99", Warn, "1.99.99 is a different major version from 2.1.296, the version last verified, and may not work. " + remedy},
+		{"same core, a suffix", "claude", "2.1.296", "2.1.296-rc.1", Warn, "2.1.296-rc.1 is different than 2.1.296, the version last verified. It may work as it is. " + remedy},
+		{"unreadable", "claude", "2.1.296", "claude", Warn, `claude --version printed "claude", which holds no version; the last verified is 2.1.296. It may work as it is. ` + remedy},
+		{"0.x equal", "codex", "0.161.0", "codex-cli 0.161.0", OK, "0.161.0, the version last verified"},
+		{"0.x newer", "codex", "0.161.0", "codex-cli 0.162.0", OK, "0.162.0, newer than 0.161.0, the version last verified"},
+		{"0.x older", "codex", "0.161.0", "codex-cli 0.160.9", Warn, "0.160.9 is older than 0.161.0, the version last verified, and may lack something parley uses. " + remedy},
+		{"0.x to 1.x", "codex", "0.161.0", "codex-cli 1.0.0", Warn, "1.0.0 is a different major version from 0.161.0, the version last verified, and may not work. " + remedy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := compareVersion(tc.tool, tc.out, tc.verified, remedy)
+			if r.Level != tc.level || r.Detail != tc.detail || r.Surface != tc.tool+" version" {
+				t.Errorf("got %v %q %q, want %v %q", r.Level, r.Surface, r.Detail, tc.level, tc.detail)
+			}
+		})
+	}
+}
+
 func TestVersionsAgainstTheVerifiedOnes(t *testing.T) {
 	for _, tc := range []struct {
 		name, out string
@@ -268,9 +306,9 @@ func TestVersionsAgainstTheVerifiedOnes(t *testing.T) {
 		want      string
 	}{
 		{"equal", "codex-cli " + CodexVerified, OK, "the version last verified"},
-		{"newer", "codex-cli 0.162.0", Warn, "newer than " + CodexVerified},
+		{"newer", "codex-cli 0.162.0", OK, "newer than " + CodexVerified},
 		{"older", "codex-cli 0.160.9", Warn, "older than " + CodexVerified},
-		{"newer major", "codex-cli 1.0.0", Warn, "newer than"},
+		{"newer major", "codex-cli 1.0.0", Warn, "different major version from " + CodexVerified},
 		{"same core, a suffix", "codex-cli " + CodexVerified + "-alpha.1", Warn, "different than"},
 		{"unreadable", "codex-cli", Warn, "holds no version"},
 	} {
@@ -281,7 +319,9 @@ func TestVersionsAgainstTheVerifiedOnes(t *testing.T) {
 				t.Errorf("got %q, want level %v with %q", r, tc.level, tc.want)
 			}
 			if tc.level == Warn {
-				wantUserRemedy(t, r, "the Codex CLI "+CodexVerified, CodexInstallURL)
+				wantUserRemedy(t, r, "the Codex CLI "+orNewer(CodexVerified), CodexInstallURL)
+			} else if strings.Contains(r.Detail, "install") {
+				t.Errorf("an ok version line carries a remedy: %q", r)
 			}
 		})
 	}
@@ -291,13 +331,30 @@ func TestVersionsAgainstTheVerifiedOnes(t *testing.T) {
 	}
 }
 
+// TestRemediesAskForTheVerifiedVersionOrANewerOfItsMajor: no remedy sends a person
+// back to the exact version that was verified.
+func TestRemediesAskForTheVerifiedVersionOrANewerOfItsMajor(t *testing.T) {
+	for _, tc := range []struct{ remedy, want string }{
+		{claudeRemedy, "install Claude Code 2.1.296 or a newer 2.x (" + ClaudeInstallURL + ")"},
+		{codexRemedy, "run parley doctor --live; if a table, a build or a line misbehaves, install the Codex CLI 0.161.0 or a newer 0.x (" + CodexInstallURL + ")"},
+		{ergoRemedy, "run parley doctor --live; if a table, a build or a line misbehaves, install ergo 2.19.1 or a newer 2.x (" + ergoVerifiedURL + ")"},
+	} {
+		if !strings.Contains(tc.remedy, tc.want) {
+			t.Errorf("%q does not say %q", tc.remedy, tc.want)
+		}
+	}
+	if got := orNewer("10.4.2-rc.1"); got != "10.4.2-rc.1 or a newer 10.x" {
+		t.Errorf("orNewer = %q", got)
+	}
+}
+
 // wantUserRemedy checks that a version warning speaks to the person running the
-// machine and not to parley's maintainer: it says the version may work, names
-// what to install if a table, a build or a line misbehaves and links where, and says
-// nothing of bumping a constant.
+// machine and not to parley's maintainer: it names what to install if a table, a
+// build or a line misbehaves and links where, and says nothing of bumping a
+// constant.
 func wantUserRemedy(t *testing.T, r Result, install, url string) {
 	t.Helper()
-	for _, want := range []string{"it may work as it is", "if a table, a build or a line misbehaves, install " + install, "(" + url + ")"} {
+	for _, want := range []string{"if a table, a build or a line misbehaves, install " + install, "(" + url + ")"} {
 		if !strings.Contains(strings.ToLower(r.Detail), strings.ToLower(want)) {
 			t.Errorf("%q does not say %q", r, want)
 		}
@@ -316,7 +373,7 @@ func TestAMissingCodexNamesHowToInstallItWithALink(t *testing.T) {
 	}
 }
 
-func TestClaudeIsVersionOnlyAndWarnsOnADifferentOne(t *testing.T) {
+func TestClaudeIsVersionOnlyAndWarnsOnAnOlderOrAnotherMajorOne(t *testing.T) {
 	dir := t.TempDir()
 	bin := fakeVersioned(t, dir, "claude", ClaudeVerified+" (Claude Code)", 0)
 	rs := Check(context.Background(), Options{Claude: true, ClaudeBin: bin})
@@ -334,15 +391,30 @@ func TestClaudeIsVersionOnlyAndWarnsOnADifferentOne(t *testing.T) {
 		t.Errorf("the version line carries the channel note: %q", find(t, rs, "claude version"))
 	}
 
-	bin = fakeVersioned(t, t.TempDir(), "claude", "2.1.295 (Claude Code)", 0)
+	// A newer 2.x is ok and says which it is; a remedy is for the versions that warn.
+	bin = fakeVersioned(t, t.TempDir(), "claude", "2.1.311 (Claude Code)", 0)
 	rs = Check(context.Background(), Options{Claude: true, ClaudeBin: bin})
-	r := find(t, rs, "claude version")
-	if r.Level != Warn || !strings.Contains(r.Detail, "older than "+ClaudeVerified) {
-		t.Errorf("claude 2.1.295: %q", r)
+	if r := find(t, rs, "claude version"); r.Level != OK || r.Detail != "2.1.311, newer than "+ClaudeVerified+", the version last verified" {
+		t.Errorf("claude 2.1.311: %q", r)
 	}
-	wantUserRemedy(t, r, "Claude Code "+ClaudeVerified, ClaudeInstallURL)
-	if Failed(rs) {
-		t.Error("a different claude version failed the check; it is a warning")
+	if len(lines(rs, Warn)) != 0 {
+		t.Errorf("a newer claude of the same major version warned:\n%s", render(rs))
+	}
+
+	for _, tc := range []struct{ out, want string }{
+		{"2.1.295 (Claude Code)", "older than " + ClaudeVerified},
+		{"3.0.0 (Claude Code)", "a different major version from " + ClaudeVerified},
+	} {
+		bin = fakeVersioned(t, t.TempDir(), "claude", tc.out, 0)
+		rs = Check(context.Background(), Options{Claude: true, ClaudeBin: bin})
+		r := find(t, rs, "claude version")
+		if r.Level != Warn || !strings.Contains(r.Detail, tc.want) {
+			t.Errorf("claude %s: %q", tc.out, r)
+		}
+		wantUserRemedy(t, r, "Claude Code "+orNewer(ClaudeVerified), ClaudeInstallURL)
+		if Failed(rs) {
+			t.Errorf("claude %s failed the check; it is a warning", tc.out)
+		}
 	}
 
 	rs = Check(context.Background(), Options{Claude: true, ClaudeBin: filepath.Join(dir, "none")})
@@ -378,16 +450,19 @@ func TestErgoFoundAndMissing(t *testing.T) {
 	}
 }
 
-// TestErgoVersionIsComparedWithTheVerifiedOne: a different ergo is a warning in
-// the harnesses' own words, never a failure, and one that does not run is a FAIL.
+// TestErgoVersionIsComparedWithTheVerifiedOne: a newer ergo of the verified major
+// version is ok; an older one, another major version and one that cannot be read
+// warn in the harnesses' own words, never a failure; and one that does not run is
+// a FAIL.
 func TestErgoVersionIsComparedWithTheVerifiedOne(t *testing.T) {
 	for _, tc := range []struct {
 		name, out string
 		level     Level
 		want      string
 	}{
-		{"newer", "ergo-2.20.0", Warn, "newer than " + ErgoVerified + ", the version last verified"},
+		{"newer", "ergo-2.20.0", OK, "2.20.0, newer than " + ErgoVerified + ", the version last verified"},
 		{"older", "ergo-2.18.0", Warn, "older than " + ErgoVerified},
+		{"another major", "ergo-3.0.0", Warn, "a different major version from " + ErgoVerified},
 		{"unreadable", "ergo-fake", Warn, "holds no version"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -397,9 +472,11 @@ func TestErgoVersionIsComparedWithTheVerifiedOne(t *testing.T) {
 			if r.Level != tc.level || !strings.Contains(r.Detail, tc.want) {
 				t.Errorf("got %q, want a %v with %q", r, tc.level, tc.want)
 			}
-			wantUserRemedy(t, r, "ergo "+ErgoVerified, ergoVerifiedURL)
-			if !strings.Contains(r.Detail, "run parley doctor --live") {
-				t.Errorf("an ergo warning that does not offer the live check: %q", r)
+			if tc.level == Warn {
+				wantUserRemedy(t, r, "ergo "+orNewer(ErgoVerified), ergoVerifiedURL)
+				if !strings.Contains(r.Detail, "run parley doctor --live") {
+					t.Errorf("an ergo warning that does not offer the live check: %q", r)
+				}
 			}
 			if Failed(rs) {
 				t.Errorf("a different ergo version failed the check:\n%s", render(rs))

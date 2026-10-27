@@ -31,11 +31,21 @@ import (
 // CLI and ergo by `parley doctor --live`, Claude Code at a table (a live table
 // ran end to end on 2.1.296), and OpenCode 2 on a live model (delivery, queueing,
 // steering, cancelling, a service restart, the reply path and the header byte for
-// byte). A different version is not a failure, except an OpenCode of a major
-// version other than 2, which parley does not speak to: the report says it may
-// work and what to do if a table, a build or a line misbehaves; to the maintainer it is
-// the cue to verify again, and then to move the constant (and the help fixtures
-// under testdata, named for the version they were read from).
+// byte). Each is a floor within its major version, not an exact match: a newer
+// version of the same major version is ok, and the report names both. A version
+// older than the one verified is a warning that it may lack something parley
+// uses, and one of a different major version (0 is a major version like any
+// other) a warning that it may not work. So is one equal in number that differs
+// only in its suffix, such as a prerelease, and one that cannot be read. A
+// warning says what to do if a table, a build or a line misbehaves; for Codex
+// and ergo the real check is `parley doctor --live`. An OpenCode of a major
+// version other than 2, which parley does not speak to, is a failure instead
+// (checkOpenCode, and the pump's own refusal), so the different-major warning
+// never meets an OpenCode.
+// To the maintainer a different major version, or a release that changes
+// something parley uses, is the cue to verify again, and then to move the
+// constant (and the help fixtures under testdata, named for the version they
+// were read from).
 // ErgoVerified is the ergo the embedded configuration (internal/ergoconf/ircd.yaml)
 // was written for.
 const (
@@ -52,7 +62,7 @@ const OpenCodeVerifiedNote = "last verified against OpenCode " + OpenCodeVerifie
 
 // Where a person installs each of them, each the project's own install page
 // (ergo's is the one its README sends people to). A report that finds a binary
-// missing, or at a version other than the verified one, links the page.
+// missing, or at a version it warns about, links the page.
 const (
 	ClaudeInstallURL   = "https://code.claude.com/docs/en/setup"
 	CodexInstallURL    = "https://learn.chatgpt.com/docs/codex/cli"
@@ -81,8 +91,8 @@ type Level int
 const (
 	// OK means the surface is as parley needs it.
 	OK Level = iota
-	// Warn means parley may still work but a person should look: a version that
-	// is not the one verified, a server that is not up.
+	// Warn means parley may still work but a person should look: a version older
+	// than the one verified or of another major version, a server that is not up.
 	Warn
 	// Fail means something parley depends on is not there or does not work.
 	Fail
@@ -302,10 +312,10 @@ func describe(err error, stdout, stderr string) string {
 var versionRE = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?`)
 
 // checkVersion is the version check the harnesses and ergo share: bin's
-// --version against the one verified. A difference is a warning that says the
-// surface may work as it is; remedy is what a person does about it, written as a
-// sentence of its own, and is what turns a table, a build or a line that
-// misbehaves into something they can act on.
+// --version against the one verified, by the rule compareVersion states. remedy
+// is what a person does about a version that warns, written as a sentence of its
+// own, and is what turns a table, a build or a line that misbehaves into
+// something they can act on.
 func checkVersion(ctx context.Context, name, bin, verified, remedy string) Result {
 	surface := name + " version"
 	stdout, stderr, err := probe(ctx, bin, "--version")
@@ -315,7 +325,19 @@ func checkVersion(ctx context.Context, name, bin, verified, remedy string) Resul
 	return compareVersion(name, stdout, verified, remedy)
 }
 
-// compareVersion is checkVersion's verdict on what --version printed.
+// compareVersion is checkVersion's verdict on what --version printed. The
+// verified version is a floor within its major version:
+//
+//   - the same version is ok;
+//   - a newer one of the same major version is ok, and the line names both;
+//   - an older one of the same major version is a warning that it may lack
+//     something parley uses;
+//   - one of a different major version, newer or older and 0 like any other, is a
+//     warning that it may not work;
+//   - one equal in number that differs in its suffix (a prerelease) is a warning;
+//   - none found is a warning.
+//
+// A warning carries remedy.
 func compareVersion(name, stdout, verified, remedy string) Result {
 	surface := name + " version"
 	have := versionRE.FindString(stdout)
@@ -325,7 +347,23 @@ func compareVersion(name, stdout, verified, remedy string) Result {
 	if have == verified {
 		return Result{OK, surface, fmt.Sprintf("%s, the version last verified", have)}
 	}
-	return Result{Warn, surface, fmt.Sprintf("%s is %s than %s, the version last verified. It may work as it is. %s", have, newerOrOlder(have, verified), verified, remedy)}
+	if numericParts(have)[0] != numericParts(verified)[0] {
+		return Result{Warn, surface, fmt.Sprintf("%s is a different major version from %s, the version last verified, and may not work. %s", have, verified, remedy)}
+	}
+	switch newerOrOlder(have, verified) {
+	case "newer":
+		return Result{OK, surface, fmt.Sprintf("%s, newer than %s, the version last verified", have, verified)}
+	case "older":
+		return Result{Warn, surface, fmt.Sprintf("%s is older than %s, the version last verified, and may lack something parley uses. %s", have, verified, remedy)}
+	}
+	return Result{Warn, surface, fmt.Sprintf("%s is different than %s, the version last verified. It may work as it is. %s", have, verified, remedy)}
+}
+
+// orNewer names a verified version and the releases of its major version that
+// are expected to work with it: "2.1.296 or a newer 2.x", the way the remedies
+// say what to install.
+func orNewer(verified string) string {
+	return fmt.Sprintf("%s or a newer %d.x", verified, numericParts(verified)[0])
 }
 
 // newerOrOlder says how have compares with verified: "newer" or "older" by the

@@ -74,7 +74,7 @@ one `parley` process.
 `parley doctor` says whether the server is answering with every capability
 parley's IRC client requires (and `PLAIN` among `sasl`'s mechanisms, if it lists
 any), and whether the ergo installed is the version this configuration was
-written for.
+written for or a newer release of the same major version.
 
 Then, in two other terminals:
 

@@ -207,14 +207,13 @@ func TestOpenCodeHelpThatFailsIsAFAIL(t *testing.T) {
 	}
 }
 
-// TestOpenCodeOtherThanTheVerifiedOneWarns: a different 2.x is a warning with the
-// way out, the way out being the 2.x that was verified.
-func TestOpenCodeOtherThanTheVerifiedOneWarns(t *testing.T) {
+// TestOpenCodeOlderThanTheVerifiedOneWarns: an older 2.x, or one that is equal in
+// number with another suffix, is a warning with the way out, the way out being a
+// 2.x from the verified one on. A newer 2.x is ok.
+func TestOpenCodeOlderThanTheVerifiedOneWarns(t *testing.T) {
 	for _, tc := range []struct{ out, want string }{
-		{"2.1.1", "newer than " + OpenCodeVerified},
-		{"opencode v2.9.0", "newer than " + OpenCodeVerified},
-		{"2.0.3", "older than " + OpenCodeVerified},
-		{OpenCodeVerified + "-rc.1", "different than " + OpenCodeVerified},
+		{"2.0.3", "older than " + OpenCodeVerified + ", the version last verified, and may lack something parley uses"},
+		{OpenCodeVerified + "-rc.1", "different than " + OpenCodeVerified + ", the version last verified. It may work as it is"},
 	} {
 		bin, _ := fakeOpenCode{version: tc.out}.install(t, t.TempDir())
 		rs := Check(context.Background(), Options{OpenCode: true, OpenCodeBin: bin})
@@ -222,7 +221,7 @@ func TestOpenCodeOtherThanTheVerifiedOneWarns(t *testing.T) {
 		if r.Level != Warn || !strings.Contains(r.Detail, tc.want) {
 			t.Errorf("%q: got %q, want a warning with %q", tc.out, r, tc.want)
 		}
-		for _, want := range []string{"It may work as it is", "Parley was " + OpenCodeVerifiedNote, "a newer 2.x is expected to work", "on a live model"} {
+		for _, want := range []string{"Parley was " + OpenCodeVerifiedNote, "a newer 2.x is expected to work", "on a live model"} {
 			if !strings.Contains(r.Detail, want) {
 				t.Errorf("%q: %q does not say %q", tc.out, r, want)
 			}
@@ -233,6 +232,24 @@ func TestOpenCodeOtherThanTheVerifiedOneWarns(t *testing.T) {
 		}
 		if Failed(rs) {
 			t.Errorf("%q: a 2.x other than the verified one failed the check:\n%s", tc.out, render(rs))
+		}
+		find(t, rs, "opencode session")
+	}
+}
+
+// TestOpenCodeNewerTwoIsOK: a newer 2.x is ok, the line names both versions, and
+// the surfaces of its commands are still read.
+func TestOpenCodeNewerTwoIsOK(t *testing.T) {
+	for _, out := range []string{"2.1.1", "opencode v2.9.0"} {
+		bin, _ := fakeOpenCode{version: out}.install(t, t.TempDir())
+		rs := Check(context.Background(), Options{OpenCode: true, OpenCodeBin: bin})
+		r := find(t, rs, "opencode version")
+		have := OpenCodeVersion(out)
+		if want := have + ", newer than " + OpenCodeVerified + ", the version last verified"; r.Level != OK || r.Detail != want {
+			t.Errorf("%q: got %q, want an ok with %q", out, r, want)
+		}
+		if len(lines(rs, Warn)) != 0 || Failed(rs) {
+			t.Errorf("%q: a newer 2.x is not clean:\n%s", out, render(rs))
 		}
 		find(t, rs, "opencode session")
 	}
@@ -285,7 +302,7 @@ func TestOpenCodeVersionIsReadFromEitherPrintedForm(t *testing.T) {
 		{"opencode v" + OpenCodeVerified, OK, "the version last verified"},
 		{"v" + OpenCodeVerified, OK, "the version last verified"},
 		{OpenCodeVerified, OK, "the version last verified"},
-		{"opencode v2.9.0", Warn, "newer than " + OpenCodeVerified},
+		{"opencode v2.9.0", OK, "newer than " + OpenCodeVerified},
 		{"opencode", Fail, "holds no version parley can read"},
 	} {
 		bin, _ := fakeOpenCode{version: tc.out}.install(t, t.TempDir())

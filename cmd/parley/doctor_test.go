@@ -221,26 +221,59 @@ func TestDoctorWithAFlagMissingExits1NamingTheFlag(t *testing.T) {
 	}
 }
 
-func TestDoctorADifferentVersionIsAWarningNotAFailure(t *testing.T) {
-	b := bench(t, "0.162.0", nil, "2.1.297")
+// TestDoctorANewerVersionOfTheSameMajorIsOK: a codex and a claude newer than the
+// ones verified, of the same major version, leave the report as clean as the
+// verified ones do: the only warning is the server that is not up.
+func TestDoctorANewerVersionOfTheSameMajorIsOK(t *testing.T) {
+	b := bench(t, "0.162.0", nil, "2.1.311")
 	res := b.run(t)
 	if res.code != 0 {
 		t.Fatalf("exit %d\n%s", res.code, res.stdout)
 	}
 	ls := reportLines(t, res.stdout)
-	var codexWarn, claudeWarn bool
-	for _, l := range withLevel(ls, "warn") {
-		codexWarn = codexWarn || strings.Contains(l, "codex version") && strings.Contains(l, "newer than "+doctor.CodexVerified) &&
-			strings.Contains(l, "It may work as it is") && strings.Contains(l, "run parley doctor --live") &&
-			strings.Contains(l, "install the Codex CLI "+doctor.CodexVerified+" ("+doctor.CodexInstallURL+")")
-		claudeWarn = claudeWarn || strings.Contains(l, "claude version") && strings.Contains(l, "newer than "+doctor.ClaudeVerified) &&
-			strings.Contains(l, "It may work as it is") && strings.Contains(l, "install Claude Code "+doctor.ClaudeVerified+" ("+doctor.ClaudeInstallURL+")")
+	if warns := withLevel(ls, "warn"); len(warns) != 1 || !strings.Contains(warns[0], "server") {
+		t.Errorf("want only the warning that nothing is listening; got %v", warns)
 	}
-	if !codexWarn || !claudeWarn {
-		t.Errorf("want a warn line for each of the newer codex and claude versions, saying it may work and what to install if a table, a build or a line misbehaves:\n%s", res.stdout)
+	var codexOK, claudeOK bool
+	for _, l := range withLevel(ls, "ok") {
+		codexOK = codexOK || strings.Contains(l, "codex version") && strings.Contains(l, "0.162.0, newer than "+doctor.CodexVerified+", the version last verified")
+		claudeOK = claudeOK || strings.Contains(l, "claude version") && strings.Contains(l, "2.1.311, newer than "+doctor.ClaudeVerified+", the version last verified")
 	}
-	if strings.Contains(res.stdout, "bump the verified constant") {
-		t.Errorf("a remedy is the maintainer's step:\n%s", res.stdout)
+	if !codexOK || !claudeOK {
+		t.Errorf("want an ok line for each of the newer codex and claude versions, naming both versions:\n%s", res.stdout)
+	}
+}
+
+// TestDoctorAnOlderOrAnotherMajorVersionIsAWarningNotAFailure: the warning says
+// what is wrong with it and what to install if a table, a build or a line
+// misbehaves, which is the verified version or a newer one of its major version.
+func TestDoctorAnOlderOrAnotherMajorVersionIsAWarningNotAFailure(t *testing.T) {
+	for _, tc := range []struct{ name, codex, claude, codexWhy, claudeWhy string }{
+		{"older", "0.160.9", "2.1.295", "older than " + doctor.CodexVerified + ", the version last verified, and may lack something parley uses", "older than " + doctor.ClaudeVerified + ", the version last verified, and may lack something parley uses"},
+		{"another major", "1.0.0", "3.0.0", "a different major version from " + doctor.CodexVerified + ", the version last verified, and may not work", "a different major version from " + doctor.ClaudeVerified + ", the version last verified, and may not work"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := bench(t, tc.codex, nil, tc.claude)
+			res := b.run(t)
+			if res.code != 0 {
+				t.Fatalf("exit %d\n%s", res.code, res.stdout)
+			}
+			ls := reportLines(t, res.stdout)
+			var codexWarn, claudeWarn bool
+			for _, l := range withLevel(ls, "warn") {
+				codexWarn = codexWarn || strings.Contains(l, "codex version") && strings.Contains(l, tc.codexWhy) &&
+					strings.Contains(l, "run parley doctor --live") &&
+					strings.Contains(l, "install the Codex CLI "+doctor.CodexVerified+" or a newer 0.x ("+doctor.CodexInstallURL+")")
+				claudeWarn = claudeWarn || strings.Contains(l, "claude version") && strings.Contains(l, tc.claudeWhy) &&
+					strings.Contains(l, "install Claude Code "+doctor.ClaudeVerified+" or a newer 2.x ("+doctor.ClaudeInstallURL+")")
+			}
+			if !codexWarn || !claudeWarn {
+				t.Errorf("want a warn line for each of the %s codex and claude versions, saying what is wrong and what to install if a table, a build or a line misbehaves:\n%s", tc.name, res.stdout)
+			}
+			if strings.Contains(res.stdout, "bump the verified constant") {
+				t.Errorf("a remedy is the maintainer's step:\n%s", res.stdout)
+			}
+		})
 	}
 }
 
@@ -466,21 +499,32 @@ func TestDoctorOpenCodeIsSpokenToOnlyAsATwo(t *testing.T) {
 	}
 }
 
-// TestDoctorOpenCodeADifferentTwoVersionIsAWarning: a 2.x other than the verified
-// one warns, and says what parley was last verified against.
-func TestDoctorOpenCodeADifferentTwoVersionIsAWarning(t *testing.T) {
+// TestDoctorOpenCodeAnOlderTwoVersionIsAWarning: a 2.x older than the verified one
+// warns, and says what parley was last verified against; a newer 2.x is ok.
+func TestDoctorOpenCodeAnOlderTwoVersionIsAWarning(t *testing.T) {
 	b := bench(t, doctor.CodexVerified, nil, doctor.ClaudeVerified)
-	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "2.9.0")
+	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "2.0.3")
 	res := b.run(t, "--harness", "opencode")
 	warns := withLevel(reportLines(t, res.stdout), "warn")
 	var ok bool
 	for _, l := range warns {
-		ok = ok || strings.Contains(l, "opencode version") && strings.Contains(l, "newer than "+doctor.OpenCodeVerified) &&
-			strings.Contains(l, "It may work as it is") && strings.Contains(l, "Parley was "+doctor.OpenCodeVerifiedNote) &&
+		ok = ok || strings.Contains(l, "opencode version") && strings.Contains(l, "older than "+doctor.OpenCodeVerified) &&
+			strings.Contains(l, "may lack something parley uses") && strings.Contains(l, "Parley was "+doctor.OpenCodeVerifiedNote) &&
 			strings.Contains(l, "a newer 2.x is expected to work") && !strings.Contains(l, "install OpenCode "+doctor.OpenCodeVerified)
 	}
 	if res.code != 0 || !ok {
-		t.Errorf("exit %d; want a warn that says it may work and what it was verified against:\n%s", res.code, res.stdout)
+		t.Errorf("exit %d; want a warn that says it may lack something and what it was verified against:\n%s", res.code, res.stdout)
+	}
+
+	b.opencode = fakeOpenCodeBin(t, t.TempDir(), "2.9.0")
+	res = b.run(t, "--harness", "opencode")
+	if res.code != 0 || !strings.Contains(res.stdout, "ok   opencode version 2.9.0, newer than "+doctor.OpenCodeVerified+", the version last verified") {
+		t.Errorf("exit %d; want an ok line for a newer 2.x:\n%s", res.code, res.stdout)
+	}
+	for _, l := range withLevel(reportLines(t, res.stdout), "warn") {
+		if strings.Contains(l, "opencode") {
+			t.Errorf("a newer 2.x warned: %q", l)
+		}
 	}
 }
 
