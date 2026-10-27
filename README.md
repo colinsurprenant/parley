@@ -157,12 +157,25 @@ or sharing one, and a nick for yourself.
    order.
    OpenCode loads the skill with its skill tool, so there is no command to type
    there; `line add` prints the check.
-4. Give each session its role, one line each, in the channel:
+4. Once every session has loaded the skill, give each its role: one line per
+   session, posted in the channel under your nick and starting with the
+   session's nick, or typed at the session's own terminal. A role says what the
+   session owns and what it tells the others:
 
    ```
-   plan: you own the plan and the schedule; build will tell you when a phase lands
-   build: you build the phases; tell plan when one lands, pointing to the record
+   plan: you are the long-running planning session. You work out the strategy with me, break the work into phases and write the build plans; once I approve a plan, hand its phases to build and track them as they land
+   build: you are the build session. You carry out the build plans plan hands you, following the repository's branch and PR rules; tell plan when a phase lands, pointing to the PR, and ask plan when a plan is unclear
    ```
+
+   A third session, added the same way, can take operations:
+
+   ```
+   ops: you are the ops session. You are in charge of the infrastructure, live operations, deployments and security; coordinate with plan and build before any change, so that no one's work disrupts another's
+   ```
+
+   A role starts nothing by itself, so tell each session when to begin, for
+   example by giving plan its first goal. A newer role line replaces an older
+   one. `docs/line.md` has more on roles.
 
 5. Work as usual. The sessions poke each other when something changes for the
    other's job, and ask you or each other when a choice comes up. Say in the
