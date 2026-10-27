@@ -1046,16 +1046,16 @@ before any change; `parley build new` runs them for its peers with the
 ergo only, and `parley line add` for its session's harness, with the `parley-line`
 link in its place. The version last verified of the Codex CLI, Claude Code,
 OpenCode and ergo is a floor within its major version, and major 0 counts like
-any other. The same
-version is `ok`, and so is a newer one of the same major version, with both
-named on the line. An older one is a `warn` that says it may lack something
-parley uses. A different major version, older or newer, is a `warn` that says it
-may not work. A version equal in number with another suffix, such as a
-prerelease, and one that cannot be read are also a `warn`, which says it may work
-as it is. A `warn` says what to install if a table, a build or a line
-misbehaves: the verified version or a newer one of its major version. For the
-Codex CLI and ergo it also points to `parley doctor --live`, which is the real
-check.
+any other. The same version is `ok`, and so is a newer one of the same major
+version, with both named on the line. An older one is a `warn` that says it may
+lack something parley uses. A different major version, older or newer, is a
+`warn` that says it may not work. A version equal in number with another
+suffix, such as a prerelease, and one that cannot be read are also a `warn`,
+which says it may work as it is. For OpenCode, a major version other than 2 and
+a version that cannot be read are a `FAIL` instead, as above. A `warn` says what
+to install if a table, a build or a line misbehaves: the verified version or a
+newer one of its major version. For the Codex CLI and ergo it also points to
+`parley doctor --live`, which is the real check.
 `parley doctor --live` also spends one tiny Codex turn (none, if `codex delete`
 has no `--force` to remove its thread without a prompt), in a temp directory, to
 check that the thread id Codex announces is the one the model reads in its shell,

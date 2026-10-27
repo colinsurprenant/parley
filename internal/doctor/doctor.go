@@ -37,10 +37,11 @@ import (
 // uses, and one of a different major version (0 is a major version like any
 // other) a warning that it may not work. So is one equal in number that differs
 // only in its suffix, such as a prerelease, and one that cannot be read. A
-// warning says what to do if a table, a build or a line misbehaves. Codex's real
-// compatibility check is `parley doctor --live`. An OpenCode of a major version other than 2 is not a
-// warning but a failure, which parley does not speak to (checkOpenCode, and the
-// pump's own refusal), so the different-major warning never meets an OpenCode.
+// warning says what to do if a table, a build or a line misbehaves; for Codex
+// and ergo the real check is `parley doctor --live`. An OpenCode of a major
+// version other than 2, which parley does not speak to, is a failure instead
+// (checkOpenCode, and the pump's own refusal), so the different-major warning
+// never meets an OpenCode.
 // To the maintainer a different major version, or a release that changes
 // something parley uses, is the cue to verify again, and then to move the
 // constant (and the help fixtures under testdata, named for the version they
