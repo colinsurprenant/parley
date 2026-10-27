@@ -534,11 +534,13 @@ before it has read the others', run a table instead: a line has no seal.
   session's next delivery reports, loses the held posts the same way, because the
   transport's ids may start over across it. A delivery that never reaches its
   session loses nothing: the holds are as they were, and it is made again.
-- **`/clear` in a Claude Code session drops the skill and the role.** It empties
-  the conversation, so what `/parley-line` loaded and the role line you gave are
-  gone with it. Type `/parley-line` again, then check that the session knows its
-  role: the skill asks each session to record it where its next session will find
-  it, such as its handoff. If it does not, post its role line again.
+- **`/clear` in a Claude Code session drops the skill and the role, not the
+  channel.** It empties the conversation, so what `/parley-line` loaded and the
+  role line you gave are gone with it. The channel stays connected, so deliveries
+  keep arriving with no relaunch. Type `/parley-line` again to restore the skill,
+  then check that the session knows its role: the skill asks each session to
+  record it where its next session will find it, such as its handoff. If it does
+  not, post its role line again.
 - **A session joining a line that is under way gets the backlog.** A session
   under a nick with no cursor yet reads whatever history the server still retains
   as its first delivery, and with no seal nothing holds it back but the breaker,
@@ -583,8 +585,9 @@ before it has read the others', run a table instead: a line has no seal.
     a file at its path any more, whether it is another session's, another line's or
     your own; otherwise it stays and the command says which file needs it, and the
     last session dropped takes it out. An exclude file that has become a link is not
-    written through: the line stays, and the command says so. A file another
-    session of the working directory still uses stays until that session goes.
+    written through: the line stays, and the command says so. A file other
+    sessions of the working directory still use stays until the last of them goes,
+    and the command names each one that still uses it.
 
   A launch file that is no longer the one the line wrote (you edited it, replaced
   it, its directory became a link, or the working directory was moved and a link put in its
@@ -607,7 +610,12 @@ before it has read the others', run a table instead: a line has no seal.
   says so, and `line end` removes the directory when it holds nothing else.
 - `<base>/<nick>/` keeps each session's cursor and IRC password, so the same nick
   can come back; leave it, or remove it by hand once the nick is retired. The
-  server and its accounts stay up for the next table, build or line.
+  nick's `lock` file stays in it, and the line's own, `<base>/.ids/<channel>.lock`,
+  stays beside the nicks' directories. No parley command deletes a lock file: a
+  lock is held on the file and not on its path, so a deleted path could be made
+  again and locked by a second command while the first still holds the old file. A
+  later command for the same nick or channel takes the same file. The server and
+  its accounts stay up for the next table, build or line.
 - A session or a line you set up by hand is taken down by hand: exit each Claude
   Code session, Codex terminal and OpenCode TUI and stop each pump with Ctrl-C; a
   Claude Code session removes its reply directory when it ends; remove each Codex
