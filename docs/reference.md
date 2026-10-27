@@ -1002,7 +1002,10 @@ exit 2.
   session's nick lock, refusing (exit 1) if any is held, judges every session by
   the rules of `drop` before removing anything, drops them in order, and removes
   `lines/<id>/`. A failure partway leaves `line.json` listing what is still there,
-  and the next run finishes. A line directory with no `line.json` and nothing else
+  and the next run finishes. The nicks' directories stay, with their `lock` files
+  and whatever cursor and IRC password they hold, and so does the id's lock file,
+  `.ids/<id>.lock`: no parley code unlinks a lock file, and `docs/line.md`,
+  "Taking it down", says why. A line directory with no `line.json` and nothing else
   in it (but for the temp file a record's write goes through), which a `line new`
   killed after making the directory leaves, is removed by `end` (exit 0, saying
   so), and `new` for that id says to run `end`.

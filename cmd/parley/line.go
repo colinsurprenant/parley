@@ -234,11 +234,18 @@ func (r lineRecord) session(nick string) (int, bool) {
 // launch file harness has in workdir: the same harness, the same directory. A
 // harness with no launch file shares nothing.
 func (r lineRecord) sharing(harness, workdir string, skip int) []lineSession {
+	return sharingAmong(r.Sessions, harness, workdir, skip)
+}
+
+// sharingAmong is sharing over any slice of the record's sessions, so that `line
+// add`, which decides to share a launch file, and `line drop`, which decides
+// whether anyone still uses it, answer by one rule.
+func sharingAmong(of []lineSession, harness, workdir string, skip int) []lineSession {
 	if !hasLaunchFile(harness) {
 		return nil
 	}
 	var out []lineSession
-	for i, s := range r.Sessions {
+	for i, s := range of {
 		if i != skip && s.Harness == harness && sameDir(s.Workdir, workdir) {
 			out = append(out, s)
 		}
