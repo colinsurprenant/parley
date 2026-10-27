@@ -832,3 +832,84 @@ func TestLineDropExcludeSeparatorStaysWhenAnotherLineFollowsIt(t *testing.T) {
 		})
 	}
 }
+
+// TestLineDropNamesEverySessionThatStillUsesTheSharedFile: three Claude sessions
+// share one .mcp.json, however each was told its working directory (--workdir, the
+// current directory by default, a trailing separator, a symlinked parent), and the
+// drop of one names both of the others, in record order, and keeps the file and its
+// exclude line for them.
+func TestLineDropNamesEverySessionThatStillUsesTheSharedFile(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	pristine := treeListing(t, co)
+	path := filepath.Join(co, ".mcp.json")
+
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	res := runParleyEnvIn(t, co, b.env(), "line", "add", "demo", "--nick", "build", "--harness", "claude", "--state-dir", b.base)
+	if res.code != 0 {
+		t.Fatalf("line add without --workdir: exit %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	b.mustAdd(t, "demo", "extra", "claude", filepath.Join(b.linkedRoot(t), "co")+string(filepath.Separator))
+	for _, s := range b.record(t, "demo").Sessions {
+		if s.Workdir != co {
+			t.Errorf("session %s is recorded at %q, want %q", s.Nick, s.Workdir, co)
+		}
+	}
+
+	res = mustLine(t, b, b.ldrop("demo", "extra")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	if !strings.Contains(res.stdout, "sessions plan and build of the working directory still use it") {
+		t.Errorf("stdout does not name both sessions that still use the file:\n%s", res.stdout)
+	}
+	if strings.Contains(res.stdout, "Removed:") || !strings.Contains(res.stdout, "Session extra is dropped from line demo. Nothing was removed.\n") {
+		t.Errorf("stdout has a header over an empty list, or does not say nothing was removed:\n%s", res.stdout)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the drop removed the file two sessions still use: %v", err)
+	}
+	if !strings.Contains(readExcludeForTest(t, co), "/.mcp.json\n") {
+		t.Error("the drop removed the exclude line two sessions still use")
+	}
+
+	res = mustLine(t, b, b.ldrop("demo", "plan")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	if !strings.Contains(res.stdout, "session build of the working directory still uses it") {
+		t.Errorf("stdout does not name the one session that still uses the file:\n%s", res.stdout)
+	}
+	if strings.Contains(res.stdout, "Removed:") {
+		t.Errorf("stdout has a header over an empty list:\n%s", res.stdout)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the drop removed the file a session still uses: %v", err)
+	}
+
+	mustLine(t, b, b.ldrop("demo", "build")...)
+	if got := treeListing(t, co); got != pristine {
+		t.Errorf("the working directory is not as it was.\nbefore:\n%s\nafter:\n%s", pristine, got)
+	}
+}
+
+// TestStillUseIt: the report names every session that still uses the file, with
+// the verb agreeing.
+func TestStillUseIt(t *testing.T) {
+	sess := func(nicks ...string) []lineSession {
+		var out []lineSession
+		for _, n := range nicks {
+			out = append(out, lineSession{Nick: n})
+		}
+		return out
+	}
+	for _, c := range []struct {
+		users []lineSession
+		want  string
+	}{
+		{sess("plan"), "session plan of the working directory still uses it"},
+		{sess("plan", "build"), "sessions plan and build of the working directory still use it"},
+		{sess("plan", "build", "ops"), "sessions plan, build and ops of the working directory still use it"},
+	} {
+		if got := stillUseIt(c.users); got != c.want {
+			t.Errorf("stillUseIt(%d sessions) = %q, want %q", len(c.users), got, c.want)
+		}
+	}
+}

@@ -250,7 +250,8 @@ type sessionClaim struct {
 
 	file    lineFile
 	fileAct fileAction
-	// fileWhy is why the file is kept (the nick that still uses it) or left.
+	// fileWhy is why the file is kept (the sessions that still use it, as a
+	// clause) or left.
 	fileWhy string
 }
 
@@ -318,7 +319,7 @@ func claimSession(base string, rec lineRecord, s lineSession, remaining []lineSe
 		return c, nil
 	}
 	if others := sharingOf(remaining, s); len(others) > 0 {
-		c.fileAct, c.fileWhy = fileKept, others[0].Nick
+		c.fileAct, c.fileWhy = fileKept, stillUseIt(others)
 		return c, nil
 	}
 	act, problem, err := claimLaunchFile(s, c.file)
@@ -355,16 +356,21 @@ func workdirMoved(workdir string) string {
 // sharingOf are the sessions among of that use the launch file s does; a session
 // with no launch file shares none.
 func sharingOf(of []lineSession, s lineSession) []lineSession {
-	if !hasLaunchFile(s.Harness) {
-		return nil
+	return sharingAmong(of, s.Harness, s.Workdir, -1)
+}
+
+// stillUseIt says, for the report, which of users still use the launch file kept
+// for them, every one of them: the file goes only when the last has.
+func stillUseIt(users []lineSession) string {
+	nicks := make([]string, len(users))
+	for i, u := range users {
+		nicks[i] = u.Nick
 	}
-	var out []lineSession
-	for _, o := range of {
-		if o.Harness == s.Harness && sameDir(o.Workdir, s.Workdir) {
-			out = append(out, o)
-		}
+	if len(nicks) == 1 {
+		return "session " + nicks[0] + " of the working directory still uses it"
 	}
-	return out
+	last := len(nicks) - 1
+	return "sessions " + strings.Join(nicks[:last], ", ") + " and " + nicks[last] + " of the working directory still use it"
 }
 
 // claimLaunchFile decides what is at the launch file f: fileGone when nothing
@@ -481,7 +487,7 @@ func (t *teardown) drop(c sessionClaim) error {
 	switch c.fileAct {
 	case fileKept:
 		if !t.whole {
-			t.kept = append(t.kept, fmt.Sprintf("%s: session %s of the working directory still uses it", f.Path, c.fileWhy))
+			t.kept = append(t.kept, fmt.Sprintf("%s: %s", f.Path, c.fileWhy))
 		}
 	case fileLeft:
 		t.left = append(t.left, fmt.Sprintf("%s: %s; it is not deleted, and neither is its exclude line", f.Path, c.fileWhy))
@@ -614,9 +620,16 @@ func (t *teardown) forget(s lineSession) error {
 func (t *teardown) report(w io.Writer, whole bool) error {
 	var b strings.Builder
 	if whole {
-		fmt.Fprintf(&b, "Line %s is down. Removed:\n", t.rec.ID)
+		fmt.Fprintf(&b, "Line %s is down.", t.rec.ID)
 	} else {
-		fmt.Fprintf(&b, "Session %s is dropped from line %s. Removed:\n", t.nick, t.rec.ID)
+		fmt.Fprintf(&b, "Session %s is dropped from line %s.", t.nick, t.rec.ID)
+	}
+	// A Claude session whose .mcp.json another still uses removes nothing: say so,
+	// not a header over an empty list.
+	if len(t.removed) == 0 {
+		b.WriteString(" Nothing was removed.\n")
+	} else {
+		b.WriteString(" Removed:\n")
 	}
 	for _, r := range t.removed {
 		fmt.Fprintf(&b, "  %s\n", r)
