@@ -10,10 +10,12 @@ import (
 	"github.com/colinsurprenant/parley/internal/opencode"
 )
 
-// openCodeRemedy is what a person is told about an OpenCode 2 that is not the one
-// verified. Nothing here can try it, so it is the next session that shows; and a
-// different 2.x is not a reason to install an exact other version: a newer one is
-// expected to work, and the report says which one parley was last verified against.
+// openCodeRemedy is what a person is told about an OpenCode 2 that warns: one
+// older than the one verified, or equal in number with a different suffix (any
+// other major version never gets here, it is a FAIL in checkOpenCode). Nothing here
+// can try it, so it is the next session that shows; and it is not a reason to
+// install an exact version: a newer 2.x is expected to work, and the report says
+// which one parley was last verified against.
 const openCodeRemedy = "Parley was " + OpenCodeVerifiedNote + "; a newer 2.x is expected to work, and an older one may lack something it needs (" + OpenCodeInstallURL + "). If an OpenCode session misbehaves, note the OpenCode version it ran."
 
 // openCodeSurfaces are the flags and subcommands of OpenCode's CLI that parley

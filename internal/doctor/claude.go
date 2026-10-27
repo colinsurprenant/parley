@@ -5,10 +5,10 @@ import (
 	"fmt"
 )
 
-// claudeRemedy is what a person does about a Claude Code version that is not
-// the one verified: nothing here can try it, so it is the next table or build
-// that shows.
-const claudeRemedy = "If a table, a build or a line misbehaves, install Claude Code " + ClaudeVerified + " (" + ClaudeInstallURL + ")."
+// claudeRemedy is what a person does about a Claude Code version that warns, one
+// older than the one verified or of another major version: nothing here can try
+// it, so it is the next table, build or line that shows.
+var claudeRemedy = "If a table, a build or a line misbehaves, install Claude Code " + orNewer(ClaudeVerified) + " (" + ClaudeInstallURL + ")."
 
 // claudeChannelFlag is the flag a Claude Code seat or peer is launched with to
 // load parley's channel server.
