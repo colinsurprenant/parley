@@ -59,11 +59,14 @@ How it works:
 
 - **Go** 1.25 or newer, to build it.
 - **ergo**, the IRC server `parley server` runs, at the version `parley doctor`
-  names as last verified. `contrib/ergo/README.md` installs it.
+  names as last verified or a newer release of the same major version.
+  `contrib/ergo/README.md` installs it.
 - **Claude Code**, **Codex CLI** and/or **OpenCode**, at the versions `parley
-  doctor` names as last verified. A different version is a warning from
-  `doctor`, not a failure, with one exception: OpenCode must be version 2, and
-  only a line takes it. Install it with `brew install opencode` (Homebrew core)
+  doctor` names as last verified or a newer release of the same major version.
+  `doctor` reports a newer release as ok and names both versions. An older
+  version, or one of a different major version, is a warning from `doctor`, not
+  a failure, with one exception: OpenCode must be version 2, and only a line
+  takes it. Install it with `brew install opencode` (Homebrew core)
   or `npm i -g @opencode/cli`. The legacy 1.x (npm's `opencode-ai`, the
   installer at opencode.ai/install) has no API parley can speak to, and
   `doctor` fails it. Parley was last verified against OpenCode 2.1.0 on a live
@@ -105,9 +108,12 @@ links the three protocol skills, `parley-build`, `parley-table` and
 `parley-line`, into `~/.claude/skills` and `~/.agents/skills`. They are
 symlinks into the checkout, so keep it. `parley doctor` checks ergo, the
 harnesses, the server and those links against the versions on your machine and
-says what to fix. Bare, it checks Claude Code and Codex, so on a machine with
-only one, run `bin/parley doctor --harness claude` (or `--harness codex`) to
-check only that one. OpenCode is checked only when named: `--harness opencode`.
+says what to fix. On this first run it warns that nothing answers at
+`127.0.0.1:6667`. That is expected until `parley server` is running, which step
+1 of the Quickstart does. Bare, it checks Claude Code and Codex, so on a machine
+with only one, run `bin/parley doctor --harness claude` (or `--harness codex`)
+to check only that one. OpenCode is checked only when named:
+`--harness opencode`.
 
 If you want only the binary, `go install
 github.com/colinsurprenant/parley/cmd/parley@latest` builds it, but the skills

@@ -1030,9 +1030,9 @@ for lacking it; the server and ergo are checked either way. OpenCode must be a 2
 (the legacy 1.x is a `FAIL` that says where OpenCode 2 comes from, and so is any
 other major version or a version that cannot be read, since the pump refuses a
 server of it); its version is read
-against the one last verified, and a different 2.x is a `warn` that says which one
-parley was last verified against on a live model, that a newer 2.x is expected to
-work, and what to do if a session misbehaves. An OpenCode skill link under either root passes. The Claude Code line says that a launch needs
+against the one last verified: a newer 2.x is `ok`, and an older 2.x is a `warn`
+that says which one parley was last verified against on a live model, that a newer
+2.x is expected to work, and what to do if a session misbehaves. An OpenCode skill link under either root passes. The Claude Code line says that a launch needs
 `--dangerously-load-development-channels`, which doctor cannot check.
 `--server` names a server other than `127.0.0.1:6667`, and `--codex-bin`,
 `--claude-bin`, `--opencode-bin` and `--ergo-bin` name a binary that is not on the
@@ -1044,8 +1044,18 @@ answers at the server (the first step it prints is `parley server`) and only the
 before any change; `parley build new` runs them for its peers with the
 `parley-build` link in its place; `parley line new` runs those for the server and
 ergo only, and `parley line add` for its session's harness, with the `parley-line`
-link in its place. A version of the Codex CLI, Claude Code, OpenCode or ergo
-that differs from the verified one is a `warn` that says what to do about it.
+link in its place. The version last verified of the Codex CLI, Claude Code,
+OpenCode and ergo is a floor within its major version, and major 0 counts like
+any other. The same
+version is `ok`, and so is a newer one of the same major version, with both
+named on the line. An older one is a `warn` that says it may lack something
+parley uses. A different major version, older or newer, is a `warn` that says it
+may not work. A version equal in number with another suffix, such as a
+prerelease, and one that cannot be read are also a `warn`, which says it may work
+as it is. A `warn` says what to install if a table, a build or a line
+misbehaves: the verified version or a newer one of its major version. For the
+Codex CLI and ergo it also points to `parley doctor --live`, which is the real
+check.
 `parley doctor --live` also spends one tiny Codex turn (none, if `codex delete`
 has no `--force` to remove its thread without a prompt), in a temp directory, to
 check that the thread id Codex announces is the one the model reads in its shell,

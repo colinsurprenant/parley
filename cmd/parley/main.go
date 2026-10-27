@@ -269,11 +269,13 @@ verbs:
            subcommands of its commands that parley uses, and a skill link under
            either root.
            A binary that is missing is a FAIL that links the project's install
-           page; a version other than the last verified one is a warn that says
-           it may work as it is, and what to install if a table, a build or a
-           line misbehaves (for OpenCode, which version parley was last
-           verified against, and that a newer 2.x is expected to work). The
-           claude line
+           page; a version newer than the last verified one, of the same major
+           version, is ok and the line names both; an older one is a warn that
+           says it may lack something parley uses, and one of another major
+           version a warn that says it may not work, each with what to install
+           if a table, a build or a line misbehaves (for OpenCode, which
+           version parley was last verified against, and that a newer 2.x is
+           expected to work). The claude line
            says a launch needs --dangerously-load-development-channels, which
            doctor cannot check. --live also
            spends one tiny Codex turn (none if codex delete has no --force to
