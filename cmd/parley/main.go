@@ -646,7 +646,10 @@ lines:
   nothing is sent into the session. The file stream sends none. --cap 0 turns
   the breaker off. Held posts live in this process's memory only, so a restart
   loses them, and so does a gap in the stream's history, which the delivery
-  says; a gap keeps the record of times. The chair is the human's registered
+  says; a gap keeps the record of times. A restart forgets that the breaker
+  tripped too: a front that resumes from its saved cursor does not repeat its
+  notice, and one that reads again history it had already passed can trip on it
+  and send one more. The chair is the human's registered
   nick, another voice than --nick. --window is refused with the other skills.
 
 stream specs:

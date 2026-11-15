@@ -560,7 +560,10 @@ before it has read the others', run a table instead: a line has no seal.
   already held, in one delivery, and not only what is posted after the pump starts.
 - **A front restart loses what it held.** Held posts live in the front's memory
   only, and so is the fact that it had tripped: a restarted front starts with the
-  breaker clear, and a trip it already told you of is not told again. A restarted
+  breaker clear. One that resumes from its saved cursor starts after the posts
+  that tripped it, so it does not repeat its notice; one that reads again history
+  it had already passed, such as a nick whose cursor is gone, can trip on it again
+  and send you one more notice, once per start. A restarted
   session hears everything new, but not the posts the breaker
   was holding for it, so ask the others to repeat what it missed; your client's
   scrollback has what was said. A gap in the channel's history, which the
