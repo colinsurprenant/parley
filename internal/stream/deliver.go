@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"slices"
 	"sort"
@@ -50,8 +51,8 @@ const bodyIndent = "  "
 // another nick is delivered; with it a message by a seat — any nick that is
 // neither the chair nor this participant — is delivered only while the table's
 // gates are open, and is held until they are. See WithTable for the rules.
-// WithLine gates a line's session by a breaker of its own, a rate, with the seal
-// left out: the breaker is the only gate, and everything below about held
+// WithLine gates a line's session by a breaker of its own, two rates, with the
+// seal left out: the breaker is the only gate, and everything below about held
 // messages holds for it as it does for a table.
 // Held messages live in this process's memory and nowhere else: parley never
 // persists stream content beyond the transport's own history, and the cursor
@@ -98,6 +99,12 @@ type Deliverer struct {
 	// the latest one begun may install gate state: beginning a delivery abandons
 	// the one before it, as Wait's contract says.
 	begun uint64
+
+	// notices counts the trip notices in flight, which is how a test waits for
+	// them; nothing else does. noticeLog, when set, is told of one that failed.
+	notices   sync.WaitGroup
+	noticeMu  sync.Mutex
+	noticeLog io.Writer
 }
 
 // Option configures a Deliverer at construction.
@@ -148,31 +155,104 @@ func WithTable(chair string, cap int) Option {
 	}
 }
 
+// backstopFactor and backstopWindows are the backstop's numbers, and the only
+// place they are written: it trips a line's breaker on more than backstopFactor
+// times cap non-chair posts within backstopWindows times the window. Everything
+// that states the rule — the instructions a session is given, the notice the
+// human gets, the docs — spells it from LineBackstop, so the span is changed
+// here and nowhere else. backstopWindows is provisional: 6 while a line's traffic
+// is being measured.
+const (
+	backstopFactor  = 5
+	backstopWindows = 6
+)
+
+// LineBackstop returns the backstop of a line's breaker for this cap and window:
+// it trips on more than posts non-chair posts within span, the rate's cap and
+// window being what it is built from. Both saturate rather than overflow, so a
+// cap near the largest int or a window near the largest duration states a bound
+// no real line reaches. A cap not above zero has no backstop, and posts is 0; a
+// window not above zero is returned as it is, because a span of no length is
+// what the rate has of one, and scaling a negative one could wrap.
+func LineBackstop(cap int, window time.Duration) (posts int, span time.Duration) {
+	if cap <= 0 {
+		return 0, window
+	}
+	posts = math.MaxInt
+	if cap <= math.MaxInt/backstopFactor {
+		posts = backstopFactor * cap
+	}
+	span = window
+	if window > 0 {
+		span = math.MaxInt64
+		if window <= math.MaxInt64/backstopWindows {
+			span = backstopWindows * window
+		}
+	}
+	return posts, span
+}
+
+// LineRule spells one of a line breaker's rules the way the instructions and the
+// notice state it: "more than 20 posts within 10m".
+func LineRule(posts int, span time.Duration) string {
+	noun := "posts"
+	if posts == 1 {
+		noun = "post"
+	}
+	return fmt.Sprintf("more than %d %s within %s", posts, noun, FormatWindow(span))
+}
+
+// FormatWindow spells a duration the way a person writes one, 10m and not 10m0s,
+// and 1h30m and not 1h30m0s.
+func FormatWindow(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = s[:len(s)-2]
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = s[:len(s)-2]
+	}
+	return s
+}
+
 // WithLine makes the Deliverer a session on a line, whose human posts as chair,
 // and gates what it delivers by a breaker of two rules alone: there is no seal.
 // A line session receives every other session's post as it arrives, before it
 // has posted itself; the breaker is what keeps two sessions from waking each
-// other forever. The first rule is a rate, because a loop is fast while a line,
-// which runs for days, is slow: a count of posts since the human last spoke
-// alone would trip on ordinary sparse pokes. The second is that count, five
-// times cap, as a backstop for the loop that is slow.
+// other forever. Both rules count posts within a span of time, and neither counts
+// posts since the human last spoke, because a loop is fast while a line, which
+// runs for days, is slow, and a count that only the human's post forgets would
+// trip on ordinary sparse pokes. The rate catches the fast loop: more than cap
+// posts within window. The backstop catches the slow one, which keeps under the
+// rate: more than five times cap posts within backstopWindows times window — six,
+// for now — which on a cap of 20 over 10 minutes is more than 100 within an hour.
 //
 // With cap above zero, every message by anyone but the chair — this
-// participant's own included — is counted and timed. It trips the breaker when
-// it makes more than cap non-chair messages within window, timed by TS, or by
-// the local receive time when the transport reported none: the cap+1 most recent
-// non-chair messages, it included, span no more than window. It trips it too
-// when it makes more than five times cap non-chair messages since the chair last
-// posted, however slowly they came. Once tripped, it and every later non-chair
-// message are held until the next chair message, which un-trips the breaker,
-// clears the count and the history of times and releases the held messages in
-// stream order ahead of itself; messages released that way do not count. Nothing
-// releases on time passing: a loop stays stopped until the human looks. A cap of
-// zero or less turns both rules off, and then nothing is held. A history gap
-// discards the held queue and keeps the count and the history of times, as at a
-// table the count survives one. A backlog spread over days, with never more than
-// cap messages in a window and no more than five times cap since the chair last
-// posted, does not trip it.
+// participant's own included — is timed by its TS, or by the local receive time
+// when the transport reported none. It trips the breaker when the cap+1 most
+// recent non-chair messages, it included, span no more than window, or when the
+// five times cap plus one most recent span no more than backstopWindows times
+// window. Once tripped, it and every later non-chair message are held until the
+// next chair message, which un-trips the breaker, clears the history of times and
+// releases the held messages in stream order ahead of itself; messages released
+// that way do not count. Nothing releases on time passing: a loop stays stopped
+// until the human looks. A cap of zero or less turns both rules off, and then
+// nothing is held. A history gap discards the held queue and keeps the history of
+// times, as at a table the count survives one. A backlog spread over days, with
+// never more than cap messages in a window and never more than five times cap in
+// the backstop's span, does not trip it.
+//
+// A trip is told to the human, once, and only here: WithTable's breaker sends
+// nothing. When a committed delivery takes the breaker from untripped to tripped
+// — the same moment the gate state is installed, so a delivery that is begun and
+// not committed announces nothing, and one collected again after a failed
+// hand-off announces its trip once — the Deliverer asks its Stream, if that is a
+// Noticer, to send chair one notice. It is sent outside the channel, so no front
+// counts it as a post, and it is best-effort: it runs on a goroutine of its own
+// under a deadline of noticeTimeout, is never retried, and whatever becomes of it
+// the delivery is not told. Nothing is sent on a release, and a trip after one is
+// a new trip with a new notice. A restart forgets the gate state, so a front that
+// replays history it had already seen can trip again and send one more notice.
 //
 // window must be positive; the caller checks it, and a window of zero or less
 // trips the rate only on messages that carry one instant. chair is checked as
@@ -190,6 +270,37 @@ func WithLine(chair string, cap int, window time.Duration) Option {
 	}
 }
 
+// WithNoticeLog sends a line the Deliverer could not deliver a trip notice to w.
+// The notice is best-effort and its failure changes nothing else, so this is the
+// only place a person finds out that the human was not told. w may be written
+// from several goroutines at once; the Deliverer serializes the writes.
+func WithNoticeLog(w io.Writer) Option {
+	return func(d *Deliverer) { d.noticeLog = w }
+}
+
+// Noticer is the optional capability of a Stream that can send one line of text
+// to one participant outside the stream itself: a NOTICE to a nick, on IRC. A
+// line's Deliverer uses it, when its Stream has it, to tell the chair that the
+// breaker tripped; a Stream without it, the file stream among them, leaves a trip
+// unannounced. Nothing else uses it.
+type Noticer interface {
+	// Channel names the place the stream's posts go, as the notice's text spells
+	// it to the chair.
+	Channel() string
+	// Notice sends text to nick as a single line that is not a post: it must not
+	// enter the stream, which every participant reads and counts, or it would be
+	// counted toward the breaker it reports. It is best-effort. It returns once
+	// the line is written, never waits to learn whether anyone received it, and
+	// is bounded by ctx; the caller sends each notice once and does not retry.
+	Notice(ctx context.Context, nick, text string) error
+}
+
+// noticeTimeout bounds one trip notice, a dial included: the notice is the least
+// of what a front does, and a server that cannot take one in this long is one the
+// front has bigger problems with. It is a variable only so that a test can shorten
+// it; nothing changes it at run time.
+var noticeTimeout = 5 * time.Second
+
 // gate is the table of a Deliverer, guarded by the Deliverer's mutex: what never
 // changes, and the installed state, which only a committed delivery changes.
 type gate struct {
@@ -197,10 +308,10 @@ type gate struct {
 	cap     int
 	created time.Time
 
-	// line makes the breaker WithLine's, a rate over window with a count backstop
-	// of five times cap, where it is WithTable's, a count since the chair last
-	// posted. now is the clock a message with no time of its own is timed by, and
-	// a test's to replace.
+	// line makes the breaker WithLine's, two rates over time, where it is
+	// WithTable's, a count since the chair last posted. window is the rate's;
+	// the backstop's span is derived from it by LineBackstop. now is the clock a
+	// message with no time of its own is timed by, and a test's to replace.
 	line   bool
 	window time.Duration
 	now    func() time.Time
@@ -212,6 +323,15 @@ type gate struct {
 	version uint64
 }
 
+// tripLeg is which of a line's two rules tripped its breaker.
+type tripLeg uint8
+
+const (
+	legNone tripLeg = iota
+	legRate
+	legBackstop
+)
+
 // gateState is everything a table's gates remember and a delivery can change.
 // A delivery clones it when it starts and Commit installs the clone, so it is
 // the unit of the transaction.
@@ -219,14 +339,19 @@ type gateState struct {
 	// open is the seal: false until this participant has posted after created.
 	// A line has no seal, and its gate is built open.
 	open bool
-	// count is the non-chair messages seen since the last chair message, and
-	// tripped is whether it has passed cap since then.
+	// count is a table's non-chair messages seen since the last chair message,
+	// and tripped is whether the breaker has tripped since then: for a table,
+	// whether count has passed cap; for a line, whether either rule has fired,
+	// which leg says. A line keeps no count: its rules read times.
 	count   int
 	tripped bool
-	// times is the line breaker's history: the times of the non-chair messages
-	// since the chair last posted, earliest first whatever order they arrived in,
-	// up to the one that tripped the breaker: no more than five times cap plus
-	// one, since the backstop trips at five times cap.
+	leg     tripLeg
+	// times is the line breaker's history: the times of the most recent non-chair
+	// messages since the chair last posted, earliest first whatever order they
+	// arrived in. It holds no more than the backstop's count plus one, five times
+	// cap plus one, because that is the longest run either rule measures: past it
+	// the earliest is dropped, after the message that pushed it out has been
+	// checked.
 	times []time.Time
 
 	// held is the FIFO of seat messages not yet delivered, and heldIDs the set
@@ -265,8 +390,13 @@ func (s *gateState) discard() {
 	s.ownSeen.reset()
 }
 
-// tally counts one non-chair message and trips the breaker when it takes the
-// count past cap.
+// release un-trips the breaker and forgets what it had counted: the chair spoke.
+func (s *gateState) release() {
+	s.count, s.tripped, s.leg, s.times = 0, false, legNone, nil
+}
+
+// tally counts one non-chair message and trips a table's breaker when it takes
+// the count past cap.
 func (s *gateState) tally(cap int) {
 	s.count++
 	if cap > 0 && s.count > cap {
@@ -274,23 +404,27 @@ func (s *gateState) tally(cap int) {
 	}
 }
 
-// rate times one non-chair message and trips a line's breaker when it makes more
-// than cap of them within the window ending at it. The history holds every time
-// since the chair last posted, kept in time order, and the message is checked
-// against each run of cap+1 consecutive times that includes it: only a new time
-// can make a new burst. So a transport that reports its times out of order
-// cannot hide a burst, whichever order the posts arrive in. Writers whose clocks
-// differ by more than the window, as the file stream's can, can still make a
-// burst that alternates between them look spread; IRC's times are the server's,
-// from one clock.
+// slide times one non-chair message and trips a line's breaker when it, with the
+// messages before it in time, makes more than a rule allows within the rule's
+// span: more than cap within the window, or more than the backstop's count within
+// the backstop's span. The history holds the most recent times since the chair
+// last posted, kept in time order, and the message is checked against each run of
+// consecutive times that includes it: only a new time can make a new burst. So a
+// transport that reports its times out of order cannot hide a burst, whichever
+// order the posts arrive in, as long as the posts it arrives among are still in
+// the history: one stamped earlier than the five times cap plus one most recent
+// times is checked against them, and then dropped, so a burst made of it and of
+// posts already dropped is not seen. Writers whose clocks differ by more than the
+// window, as the file stream's can, can still make a burst that alternates
+// between them look spread; IRC's times are the server's, from one clock.
 //
-// Nothing is recorded once the breaker has tripped, by the rate or by the
-// backstop, which tally checks first: what is held until the chair posts makes
-// no difference to it, and the chair clears the history. So the history never
-// holds more than five times cap plus one times, and nothing is ever dropped
-// from it, at any cap. It is checked only once it holds more than cap times, so
-// j+cap below stays inside it and cannot overflow.
-func (s *gateState) rate(g *gate, m Message) {
+// Nothing is recorded once the breaker has tripped, by either rule: what is held
+// until the chair posts makes no difference to it, and the chair clears the
+// history. Otherwise the history is cut back to the backstop's count plus one
+// after every message, so it never holds more than that, at any cap. The
+// backstop's count is the larger of the two, so the rate always has the cap+1
+// times it measures.
+func (s *gateState) slide(g *gate, m Message) {
 	if g.cap <= 0 || s.tripped {
 		return
 	}
@@ -300,40 +434,87 @@ func (s *gateState) rate(g *gate, m Message) {
 	}
 	i := sort.Search(len(s.times), func(k int) bool { return s.times[k].After(t) })
 	s.times = slices.Insert(s.times, i, t)
-	if len(s.times) <= g.cap {
-		return
+	posts, span := LineBackstop(g.cap, g.window)
+	switch {
+	case s.burst(i, g.cap, g.window):
+		s.tripped, s.leg = true, legRate
+	case s.burst(i, posts, span):
+		s.tripped, s.leg = true, legBackstop
 	}
-	for j := max(i-g.cap, 0); j <= i && j+g.cap < len(s.times); j++ {
-		if s.times[j+g.cap].Sub(s.times[j]) <= g.window {
-			s.tripped = true
-			return
-		}
+	// len-1 rather than len > posts+1, which wraps when posts saturates.
+	if len(s.times)-1 > posts {
+		s.times = slices.Delete(s.times, 0, 1)
 	}
 }
 
-// backstop is the count of non-chair messages since the chair last posted that
-// trips a line's breaker whatever their times: five times cap, saturating so
-// that a cap near the largest int does not overflow, and not above zero, which
-// is no backstop, when cap is not.
-func (g *gate) backstop() int {
-	if g.cap <= 0 {
-		return 0
+// burst reports whether the time just inserted at index i is one of more than
+// limit consecutive times that span no more than span: a run of limit+1 that
+// includes it. It is checked only once the history holds more than limit times,
+// so j+limit stays inside it and cannot overflow, whatever limit is.
+func (s *gateState) burst(i, limit int, span time.Duration) bool {
+	if len(s.times) <= limit {
+		return false
 	}
-	if g.cap > math.MaxInt/5 {
-		return math.MaxInt
+	for j := max(i-limit, 0); j <= i && j+limit < len(s.times); j++ {
+		if s.times[j+limit].Sub(s.times[j]) <= span {
+			return true
+		}
 	}
-	return 5 * g.cap
+	return false
 }
 
 // tally counts one non-chair message toward the gate's breaker: a table's count
-// since the chair last posted, or a line's rate and its count backstop.
+// since the chair last posted, or a line's two rates over time.
 func (g *gate) tally(s *gateState, m Message) {
 	if g.line {
-		s.tally(g.backstop())
-		s.rate(g, m)
+		s.slide(g, m)
 		return
 	}
 	s.tally(g.cap)
+}
+
+// tripText is the one line the chair is sent when the breaker trips: which
+// participant is holding deliveries, where, which rule tripped with its numbers,
+// and how to release it. The threat model of the line is this: what parley
+// itself holds is trusted — its flags (this participant's nick and the chair's),
+// the line's record (the cap and the window), the stream spec (the channel) and
+// the gate's own state (which rule tripped) — and what the stream carries is not,
+// since a message's author, body and id are whatever its writer made them. So
+// the text is built from the first and from nothing of the second: no body, no
+// author, no id, not even to say who caused the trip. A human's hand edit of
+// parley's state, and what a harness does with its own permissions, are out of
+// scope. The transport, not this text, is what keeps the line a line: Notice
+// refuses a CR, an LF, a NUL or a CTCP delimiter in what it is handed.
+func (g *gate) tripText(nick, channel string, leg tripLeg) string {
+	rule := LineRule(g.cap, g.window)
+	if leg == legBackstop {
+		rule = LineRule(LineBackstop(g.cap, g.window))
+	}
+	return fmt.Sprintf("parley: %s is holding line deliveries in %s: %s. Post in %s to release.", nick, channel, rule, channel)
+}
+
+// announce sends the chair the notice for a trip that has just been installed, if
+// the stream can send one. It returns at once: the send is on its own goroutine,
+// under noticeTimeout, and its failure is for the notice log alone. The caller
+// does not hold the mutex, and nothing here reads the gate's state.
+func (d *Deliverer) announce(leg tripLeg) {
+	nt, ok := d.stream.(Noticer)
+	if !ok {
+		return
+	}
+	text := d.gate.tripText(d.nick, nt.Channel(), leg)
+	chair := d.gate.chair
+	d.notices.Add(1)
+	go func() {
+		defer d.notices.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), noticeTimeout)
+		defer cancel()
+		if err := nt.Notice(ctx, chair, text); err != nil && d.noticeLog != nil {
+			d.noticeMu.Lock()
+			defer d.noticeMu.Unlock()
+			fmt.Fprintf(d.noticeLog, "parley: could not tell %s that line deliveries are held: %v\n", chair, err)
+		}
+	}()
 }
 
 // NewDeliverer wraps s for the participant known as nick.
@@ -580,7 +761,7 @@ func (d *Deliverer) admit(out *Delivery, m Message) {
 		if d.repeated(out, m.ID) {
 			return
 		}
-		st.count, st.tripped, st.times = 0, false, nil
+		st.release()
 		d.release(out)
 		d.deliver(out, m)
 		return
@@ -631,7 +812,6 @@ func (d *Deliverer) Commit(del *Delivery) {
 		return
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	// A Deliverer is safe for concurrent use, so a gap can be consumed between
 	// this delivery being collected and being handed off. The gap cleared the
 	// seen set because transport IDs restart across it; recording IDs from the
@@ -639,6 +819,7 @@ func (d *Deliverer) Commit(del *Delivery) {
 	// them. A stale commit is dropped instead: the messages it held belong to a
 	// history nothing will ask for again.
 	if del.generation < d.generation {
+		d.mu.Unlock()
 		return
 	}
 	// Recording the IDs without the gate changes that came with them would make
@@ -646,20 +827,35 @@ func (d *Deliverer) Commit(del *Delivery) {
 	// reset the breaker, or a gap that discarded the held queue, would be dropped
 	// as a repeat when it came round again, and never take effect.
 	if d.gateReplaced(del) {
+		d.mu.Unlock()
 		return
 	}
 	for _, id := range del.ids {
 		d.seen.add(id)
 	}
-	d.installLocked(del)
+	leg := d.installLocked(del)
+	d.mu.Unlock()
+	d.announceTrip(leg)
 }
 
 // install makes the gate state del built the Deliverer's own, unless it is not
 // del's to install: see installLocked.
 func (d *Deliverer) install(del *Delivery) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.installLocked(del)
+	leg := d.installLocked(del)
+	d.mu.Unlock()
+	d.announceTrip(leg)
+}
+
+// announceTrip tells the chair of a trip installLocked reported, outside the
+// mutex: the notice is a write to a socket, and nothing a Deliverer does under
+// its lock waits on one. It is the one place a notice leaves from, so a trip is
+// announced where the state that holds it is installed and nowhere a delivery is
+// merely built.
+func (d *Deliverer) announceTrip(leg tripLeg) {
+	if leg != legNone {
+		d.announce(leg)
+	}
 }
 
 // installLocked is install with the mutex held. The state is del's to install
@@ -669,19 +865,31 @@ func (d *Deliverer) install(del *Delivery) {
 // stands. What del held or released is then held, or released, again by the
 // next delivery. Commit does not reach here with such a del: it records nothing
 // for one.
-func (d *Deliverer) installLocked(del *Delivery) {
+//
+// It returns the rule that tripped a line's breaker when this install is what
+// took it from untripped to tripped, and legNone otherwise: a delivery that
+// installs nothing, one that leaves the breaker as it was, tripped or not, and
+// one that trips it and releases it again within itself all return legNone. The
+// install is the one moment a trip is real, which is why the notice is keyed to
+// it: the state a delivery builds is its own until then.
+func (d *Deliverer) installLocked(del *Delivery) tripLeg {
 	st := del.gate
 	if st == nil {
-		return
+		return legNone
 	}
 	// gateReplaced reads del.gate, so it is asked before del gives its state up.
 	replaced := d.gateReplaced(del)
 	del.gate = nil
 	if replaced {
-		return
+		return legNone
 	}
+	tripped := d.gate.state.tripped
 	d.gate.state = *st
 	d.gate.version++
+	if d.gate.line && !tripped && st.tripped {
+		return st.leg
+	}
+	return legNone
 }
 
 // gateReplaced reports whether del carries gate state that was built on a state
