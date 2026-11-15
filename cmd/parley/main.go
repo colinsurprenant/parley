@@ -871,9 +871,10 @@ func checkChair(fs *flag.FlagSet, chair, nick string, skill primer.Skill) error 
 }
 
 // checkCap validates the cap a gated skill is launched with: required, not
-// negative. The cap has no default: a table or a line whose limit was never
+// negative. The cap has no default here: a front launched with a limit nobody
 // named would be one whose limit nobody chose, so "no limit" is spelled --cap 0.
-// A build has no gate, and is refused a cap.
+// (`line new` does default it, to defaultLineCap, and records the result; every
+// front it starts is given that cap.) A build has no gate, and is refused a cap.
 func checkCap(fs *flag.FlagSet, skill primer.Skill, capN int) error {
 	if skill != primer.SkillTable && skill != primer.SkillLine {
 		if given(fs, "cap") {

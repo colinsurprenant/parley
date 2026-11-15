@@ -373,3 +373,43 @@ func TestLineANoticeThatFailsOrStallsCostsTheDeliveryNothing(t *testing.T) {
 		}
 	})
 }
+
+// TestARestartedFrontNoticesAReplayedTripOnceAndNotOneItsCursorIsPast: the gate
+// state is in memory, so a relaunched front that reads again history it had
+// already passed trips on it again and sends one notice for the process, while
+// one that resumes from the cursor it saved after the trip starts clear and says
+// nothing until something new trips it.
+func TestARestartedFrontNoticesAReplayedTripOnceAndNotOneItsCursorIsPast(t *testing.T) {
+	nf, tb := newNoticeLine(t, 2)
+	nf.postOffset("build", "one", 0)
+	nf.postOffset("review", "two", time.Minute)
+	nf.postOffset("build", "three", 2*time.Minute)
+	tb.want("one", "two")
+	if got := tb.sentNotices(nf); len(got) != 1 {
+		t.Fatalf("sent %d notices for the first trip, want 1", len(got))
+	}
+	saved := tb.cursor
+
+	restart := func(cursor Cursor) (*table, *noticeFake) {
+		again := &noticeFake{fake: nf.fake}
+		d := NewDeliverer(again, lineSelf, WithLine(lineChair, 2, lineWindow))
+		d.gate.created = tableStart
+		d.gate.now = func() time.Time { return tableStart.Add(time.Second) }
+		return &table{t: t, d: d, cursor: cursor}, again
+	}
+
+	// From the start of the history: the same burst, the same trip, one notice.
+	replay, replayed := restart("")
+	replay.want("one", "two")
+	replay.want()
+	if got := replay.sentNotices(replayed); len(got) != 1 || got[0].text != rateNotice {
+		t.Fatalf("a replay sent %v, want the one notice for the trip it saw again", got)
+	}
+
+	// From the saved cursor: nothing to trip on, nothing sent.
+	resumed, quiet := restart(saved)
+	resumed.want()
+	if got := resumed.sentNotices(quiet); len(got) != 0 {
+		t.Fatalf("a front resumed past the trip sent %v", got)
+	}
+}
