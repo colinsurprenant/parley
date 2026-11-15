@@ -93,8 +93,8 @@ expected to work.
    slow for the first, such as a post every three minutes, and is why a line left
    alone does not run forever; the slowest loop it stops, at the defaults, is one
    post every 3.6 minutes. It counts only a stretch of 36 windows, six hours at
-   the default, so posts spread over a day never reach it, however many there are
-   and however long you have been quiet; the 36 is `backstopWindows` in
+   the default, so posts that never pass 100 in any six hours never reach it,
+   however long you have been quiet; the 36 is `backstopWindows` in
    `internal/stream/deliver.go`, picked from a line's measured traffic, and the
    text and the notice take it from the code. A larger cap or a shorter window
    holds later.
