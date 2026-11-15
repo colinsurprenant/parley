@@ -266,6 +266,9 @@ func TestLineNewTakesTheWindowAndCodexBin(t *testing.T) {
 // say a cap that was given, and a cap of 0 is a breaker that is still off.
 func TestLineNewDefaultsTheCapToTwentyAndRecordsIt(t *testing.T) {
 	b := newLineBench(t)
+	// doctor's server check dials the address the line is made for; make it the
+	// test's own listener rather than a port that was merely free a moment ago.
+	startFakeIRC(t, b.db.server)
 	noCap := func(id string, extra ...string) []string {
 		return append([]string{"line", "new", id, "--chair", "colin", "--state-dir", b.base, "--server", b.db.server}, extra...)
 	}

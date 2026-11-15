@@ -1,8 +1,11 @@
 package irc
 
 import (
+	"context"
 	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -215,19 +218,71 @@ func TestAnInboundNoticeIsNotAMessage(t *testing.T) {
 	}
 }
 
-// TestNoticeRefusesWhatItCannotSendAsOneLine: a text with a control character in
-// it — the NUL, CR and CTCP delimiter Send refuses, and the LF that would end the
-// line — a nick outside the grammar and an empty text are errors, and none of
-// them reaches the network: the stream here has no server to dial.
-func TestNoticeRefusesWhatItCannotSendAsOneLine(t *testing.T) {
-	spec, err := ParseSpec("irc://127.0.0.1:1/parley")
+// silentServer is a listener this test owns, on a port the kernel picked for it,
+// that accepts every connection and never reads or writes on it: a server that has
+// taken the socket and gone quiet. accepted counts the connections it took, which
+// is how a test shows that a call dialed, or did not.
+type silentServer struct {
+	addr     string
+	accepted atomic.Int32
+}
+
+func startSilentServer(t *testing.T) *silentServer {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &silentServer{addr: l.Addr().String()}
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			srv.accepted.Add(1)
+			mu.Lock()
+			held = append(held, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		l.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range held {
+			c.Close()
+		}
+	})
+	return srv
+}
+
+// openAt is a stream for nick on the server at addr, with credentials under a
+// directory of the test's own.
+func openAt(t *testing.T, addr, nick string) *Stream {
+	t.Helper()
+	spec, err := ParseSpec("irc://" + addr + "/parley")
 	if err != nil {
 		t.Fatalf("ParseSpec: %v", err)
 	}
-	s, err := Open(spec, "plan", NewStateCredentials(t.TempDir(), "plan"))
+	s, err := Open(spec, nick, NewStateCredentials(t.TempDir(), nick))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+// TestNoticeRefusesWhatItCannotSendAsOneLine: a text with a control character in
+// it — the NUL, CR and CTCP delimiter Send refuses, and the LF that would end the
+// line — a nick outside the grammar and an empty text are errors, and none of
+// them reaches the network: the server here is the test's own, and it never
+// sees a connection.
+func TestNoticeRefusesWhatItCannotSendAsOneLine(t *testing.T) {
+	srv := startSilentServer(t)
+	s := openAt(t, srv.addr, "plan")
 	for name, tc := range map[string]struct{ nick, text, want string }{
 		"empty text":    {"chair", "", "empty"},
 		"a NUL":         {"chair", "a\x00b", "control character 0x00"},
@@ -245,36 +300,48 @@ func TestNoticeRefusesWhatItCannotSendAsOneLine(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Notice(%q, %q) = %v, want an error naming %q", tc.nick, tc.text, err, tc.want)
 			}
-			if strings.Contains(err.Error(), "dial") {
-				t.Fatalf("Notice dialed before refusing: %v", err)
-			}
 		})
+	}
+	// A dial that had happened would have been accepted at once, with room to
+	// spare here for the accepting goroutine to count it.
+	time.Sleep(200 * time.Millisecond)
+	if n := srv.accepted.Load(); n != 0 {
+		t.Fatalf("the server took %d connections, want none: a refused notice dials nothing", n)
 	}
 }
 
-// TestNoticeIsBoundedByItsContextAndFailsAlone: a server that is not there is an
-// error returned at once, not retried, and a closed stream is one too.
-func TestNoticeIsBoundedByItsContextAndFailsAlone(t *testing.T) {
-	spec, err := ParseSpec("irc://127.0.0.1:" + freePort(t) + "/parley")
-	if err != nil {
-		t.Fatalf("ParseSpec: %v", err)
-	}
-	s, err := Open(spec, "plan", NewStateCredentials(t.TempDir(), "plan"))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+// TestNoticeIsBoundedByItsContext: a server that takes the socket and never
+// answers cannot hold a notice past its context, which is the bound a front puts
+// on one; the failure is returned, not retried, and a closed stream refuses
+// without dialing again.
+func TestNoticeIsBoundedByItsContext(t *testing.T) {
+	srv := startSilentServer(t)
+	s := openAt(t, srv.addr, "plan")
+
+	const bound = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
 	begin := time.Now()
-	if err := s.Notice(testContext(t), "chair", "parley: nobody is listening"); err == nil {
-		t.Fatal("Notice with no server returned nil")
+	err := s.Notice(ctx, "chair", "parley: nobody is answering")
+	took := time.Since(begin)
+	if err == nil {
+		t.Fatal("Notice to a server that never answers returned nil")
 	}
-	if took := time.Since(begin); took > 5*time.Second {
-		t.Fatalf("Notice with no server took %v", took)
+	if took > bound+2*time.Second {
+		t.Fatalf("Notice took %v against a context of %v", took, bound)
 	}
+	if n := srv.accepted.Load(); n != 1 {
+		t.Fatalf("the server took %d connections, want the one dial of the one call", n)
+	}
+
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if err := s.Notice(testContext(t), "chair", "parley: closed"); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("Notice on a closed stream = %v, want the closed error", err)
+	}
+	if n := srv.accepted.Load(); n != 1 {
+		t.Fatalf("the server took %d connections after the stream was closed, want still 1", n)
 	}
 }
 
