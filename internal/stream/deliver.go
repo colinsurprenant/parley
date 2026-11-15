@@ -243,16 +243,20 @@ func FormatWindow(d time.Duration) string {
 // the backstop's span, does not trip it.
 //
 // A trip is told to the human, once, and only here: WithTable's breaker sends
-// nothing. When a committed delivery takes the breaker from untripped to tripped
-// — the same moment the gate state is installed, so a delivery that is begun and
-// not committed announces nothing, and one collected again after a failed
-// hand-off announces its trip once — the Deliverer asks its Stream, if that is a
-// Noticer, to send chair one notice. It is sent outside the channel, so no front
-// counts it as a post, and it is best-effort: it runs on a goroutine of its own
-// under a deadline of noticeTimeout, is never retried, and whatever becomes of it
-// the delivery is not told. Nothing is sent on a release, and a trip after one is
-// a new trip with a new notice. A restart forgets the gate state, so a front that
-// replays history it had already seen can trip again and send one more notice.
+// nothing. When a committed delivery leaves the breaker tripped by a trip the
+// installed state had not seen — from untripped, or after a release inside the
+// same delivery — the Deliverer asks its Stream, if that is a Noticer, to send
+// chair one notice. That is the same moment the gate state is installed, so a
+// delivery that is begun and not committed announces nothing, and one collected
+// again after a failed hand-off announces its trip once; several trips in one
+// delivery are one notice, naming the last. The notice is sent outside the
+// channel, so no front counts it as a post, and it is best-effort: it runs on a
+// goroutine of its own under a deadline of noticeTimeout, is never retried, and
+// whatever becomes of it the delivery is not told. Nothing is sent on a release
+// that does not trip again, and a trip after one is a new trip with a new notice.
+// A restart forgets the gate state, so a front that replays history it had
+// already passed can trip again and send one more notice, once per process; one
+// that resumes from its saved cursor starts after the posts that tripped it.
 //
 // window must be positive; the caller checks it, and a window of zero or less
 // trips the rate only on messages that carry one instant. chair is checked as
@@ -346,6 +350,13 @@ type gateState struct {
 	count   int
 	tripped bool
 	leg     tripLeg
+	// trips counts the trips of a line's breaker, by either rule, over the life of
+	// the gate. Unlike tripped it is never reset: the chair's post un-trips the
+	// breaker and leaves the count, so an install can tell that a delivery tripped
+	// it afresh over a state that was already tripped, which tripped alone cannot
+	// say. A gap keeps it, as it keeps the rest of the breaker. A table's breaker
+	// does not use it.
+	trips uint64
 	// times is the line breaker's history: the times of the most recent non-chair
 	// messages since the chair last posted, earliest first whatever order they
 	// arrived in. It holds no more than the backstop's count plus one, five times
@@ -390,7 +401,14 @@ func (s *gateState) discard() {
 	s.ownSeen.reset()
 }
 
+// trip trips a line's breaker by one of its two rules and counts it.
+func (s *gateState) trip(leg tripLeg) {
+	s.tripped, s.leg = true, leg
+	s.trips++
+}
+
 // release un-trips the breaker and forgets what it had counted: the chair spoke.
+// It leaves trips alone: that is the one record that the breaker was tripped.
 func (s *gateState) release() {
 	s.count, s.tripped, s.leg, s.times = 0, false, legNone, nil
 }
@@ -424,6 +442,7 @@ func (s *gateState) tally(cap int) {
 // after every message, so it never holds more than that, at any cap. The
 // backstop's count is the larger of the two, so the rate always has the cap+1
 // times it measures.
+
 func (s *gateState) slide(g *gate, m Message) {
 	if g.cap <= 0 || s.tripped {
 		return
@@ -437,9 +456,9 @@ func (s *gateState) slide(g *gate, m Message) {
 	posts, span := LineBackstop(g.cap, g.window)
 	switch {
 	case s.burst(i, g.cap, g.window):
-		s.tripped, s.leg = true, legRate
+		s.trip(legRate)
 	case s.burst(i, posts, span):
-		s.tripped, s.leg = true, legBackstop
+		s.trip(legBackstop)
 	}
 	// len-1 rather than len > posts+1, which wraps when posts saturates.
 	if len(s.times)-1 > posts {
@@ -866,12 +885,18 @@ func (d *Deliverer) announceTrip(leg tripLeg) {
 // next delivery. Commit does not reach here with such a del: it records nothing
 // for one.
 //
-// It returns the rule that tripped a line's breaker when this install is what
-// took it from untripped to tripped, and legNone otherwise: a delivery that
-// installs nothing, one that leaves the breaker as it was, tripped or not, and
-// one that trips it and releases it again within itself all return legNone. The
-// install is the one moment a trip is real, which is why the notice is keyed to
-// it: the state a delivery builds is its own until then.
+// It returns the rule that tripped a line's breaker when this install leaves it
+// tripped by a trip the installed state had not counted — the trips counter has
+// moved and the breaker is tripped — and legNone otherwise. That is a trip from
+// untripped, and equally a release and a new trip inside one delivery over a
+// state that was already tripped, where the flag alone stays true; several trips
+// in one delivery are one return, the last one's rule. A delivery that installs
+// nothing, one that leaves the breaker as it was, tripped or not, one that adds
+// held posts to a breaker already tripped (which counts nothing: a tripped
+// breaker records no more), and one that trips it and releases it again within
+// itself all return legNone. The install is the one moment a trip is real, which
+// is why the notice is keyed to it: the state a delivery builds is its own until
+// then.
 func (d *Deliverer) installLocked(del *Delivery) tripLeg {
 	st := del.gate
 	if st == nil {
@@ -883,10 +908,10 @@ func (d *Deliverer) installLocked(del *Delivery) tripLeg {
 	if replaced {
 		return legNone
 	}
-	tripped := d.gate.state.tripped
+	before := d.gate.state.trips
 	d.gate.state = *st
 	d.gate.version++
-	if d.gate.line && !tripped && st.tripped {
+	if d.gate.line && st.tripped && st.trips != before {
 		return st.leg
 	}
 	return legNone

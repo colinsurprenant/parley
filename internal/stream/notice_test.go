@@ -413,3 +413,138 @@ func TestARestartedFrontNoticesAReplayedTripOnceAndNotOneItsCursorIsPast(t *test
 		t.Fatalf("a front resumed past the trip sent %v", got)
 	}
 }
+
+// trippedLine is a line session whose breaker has tripped and been told to the
+// chair: the three posts are the burst, "three" is the one held, and the one
+// notice is sent. It returns the stream and the Deliverer's cursor holder.
+func trippedLine(t *testing.T) (*noticeFake, *table) {
+	t.Helper()
+	nf, tb := newNoticeLine(t, 2)
+	nf.postOffset("build", "one", 0)
+	nf.postOffset("review", "two", time.Minute)
+	nf.postOffset("build", "three", 2*time.Minute)
+	tb.want("one", "two")
+	if got := tb.sentNotices(nf); len(got) != 1 {
+		t.Fatalf("setup: sent %d notices for the first trip, want 1: %v", len(got), got)
+	}
+	if st := tb.d.gate.state; !st.tripped || st.trips != 1 {
+		t.Fatalf("setup: tripped=%v trips=%d, want tripped by the first trip", st.tripped, st.trips)
+	}
+	return nf, tb
+}
+
+// TestLineAReleaseAndANewTripInOneDeliverySendsASecondNotice: the installed state
+// is already tripped when a delivery carries the chair's post and a burst after
+// it, so the flag goes false and true again inside the delivery and reads the same
+// before and after. The trip counter is what says it is a new trip: one more
+// notice, once, however many times the delivery is collected before it commits.
+func TestLineAReleaseAndANewTripInOneDeliverySendsASecondNotice(t *testing.T) {
+	nf, tb := trippedLine(t)
+
+	nf.postOffset(lineChair, "chair one", 3*time.Minute)
+	nf.postOffset("build", "four", 4*time.Minute)
+	nf.postOffset("review", "five", 5*time.Minute)
+	nf.postOffset("build", "six", 6*time.Minute) // the third since the chair: trips again
+
+	// Collected and not committed: nothing is real yet.
+	if _, err := tb.d.Read(context.Background(), tb.cursor); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got := tb.sentNotices(nf); len(got) != 1 {
+		t.Fatalf("sent %d notices before the delivery was committed, want still 1: %v", len(got), got)
+	}
+	// Collected again, as a retry after a failed hand-off, and committed.
+	tb.want("three", "chair one", "four", "five")
+	got := tb.sentNotices(nf)
+	if len(got) != 2 || got[1].nick != lineChair || got[1].text != rateNotice {
+		t.Fatalf("sent %v, want a second notice for the new trip: %q to %q", got, rateNotice, lineChair)
+	}
+	if st := tb.d.gate.state; !st.tripped || st.trips != 2 {
+		t.Fatalf("installed tripped=%v trips=%d, want tripped by the second trip", st.tripped, st.trips)
+	}
+
+	// And the new trip is told once: more held posts, and a read that finds
+	// nothing, send nothing more.
+	nf.postOffset("review", "seven", 7*time.Minute)
+	tb.want()
+	tb.want()
+	if got := tb.sentNotices(nf); len(got) != 2 {
+		t.Fatalf("sent %d notices for two trips, want 2: %v", len(got), got)
+	}
+}
+
+// TestLineAReleaseThatDoesNotTripAgainSendsNoNoticeAndKeepsTheCount: the chair's
+// post un-trips the breaker and the trip counter, the record that it tripped,
+// survives it; a delivery that releases and trips no more says nothing, whether
+// it holds the chair's post alone or posts after it.
+func TestLineAReleaseThatDoesNotTripAgainSendsNoNoticeAndKeepsTheCount(t *testing.T) {
+	nf, tb := trippedLine(t)
+
+	nf.postOffset(lineChair, "chair one", 3*time.Minute)
+	tb.want("three", "chair one")
+	if st := tb.d.gate.state; st.tripped || st.trips != 1 || st.leg != legNone {
+		t.Fatalf("after the release tripped=%v trips=%d leg=%v, want untripped, the count kept at 1", st.tripped, st.trips, st.leg)
+	}
+	nf.postOffset(lineChair, "chair two", 4*time.Minute)
+	nf.postOffset("build", "four", 5*time.Minute) // one post after it: no trip
+	tb.want("chair two", "four")
+	if got := tb.sentNotices(nf); len(got) != 1 {
+		t.Fatalf("sent %d notices for releases that tripped nothing, want the 1 of the first trip: %v", len(got), got)
+	}
+	if st := tb.d.gate.state; st.tripped || st.trips != 1 {
+		t.Fatalf("tripped=%v trips=%d, want untripped, the count still 1", st.tripped, st.trips)
+	}
+}
+
+// TestLineTwoTripsInOneDeliverySendExactlyOneNotice: a burst, the chair's post and
+// another trip, all in one delivery over an untripped state, are one notice, and
+// it names the rule that tripped last.
+func TestLineTwoTripsInOneDeliverySendExactlyOneNotice(t *testing.T) {
+	nf, tb := newNoticeLine(t, 2)
+
+	nf.postOffset("build", "one", 0)
+	nf.postOffset("review", "two", time.Minute)
+	nf.postOffset("build", "three", 2*time.Minute) // the rate trips
+	nf.postOffset(lineChair, "chair one", 4*time.Minute)
+	// 5m30s apart from ten minutes on: three span 11 minutes, so the rate is quiet,
+	// and the 11th trips the backstop.
+	const gap = 5*time.Minute + 30*time.Second
+	var want []string
+	for i := range 11 {
+		body := "slow " + string(rune('a'+i))
+		nf.postOffset([]string{"build", "review"}[i%2], body, 10*time.Minute+time.Duration(i)*gap)
+		if i < 10 {
+			want = append(want, body)
+		}
+	}
+	tb.want(append([]string{"one", "two", "three", "chair one"}, want...)...)
+	got := tb.sentNotices(nf)
+	if len(got) != 1 || got[0].text != backstopNotice {
+		t.Fatalf("sent %v, want exactly one notice, for the last trip: %q", got, backstopNotice)
+	}
+	if st := tb.d.gate.state; !st.tripped || st.trips != 2 || st.leg != legBackstop {
+		t.Fatalf("installed tripped=%v trips=%d leg=%v, want the second trip, by the backstop", st.tripped, st.trips, st.leg)
+	}
+}
+
+// TestLineAGapAndAHeldPostOverATrippedBreakerSendNothing: a gap discards the held
+// queue and keeps the breaker, the counter with it, and a post held while it is
+// tripped counts no trip, so neither is a trip to tell.
+func TestLineAGapAndAHeldPostOverATrippedBreakerSendNothing(t *testing.T) {
+	nf, tb := trippedLine(t)
+
+	nf.postOffset("review", "held before the gap", 3*time.Minute)
+	tb.want()
+	nf.fake.mu.Lock()
+	nf.fake.msgs = nil
+	nf.fake.gapPending = true
+	nf.fake.mu.Unlock()
+	nf.postOffset("build", "after the gap", 4*time.Minute)
+	tb.want()
+	if got := tb.sentNotices(nf); len(got) != 1 {
+		t.Fatalf("sent %d notices over a gap and held posts, want the 1 of the trip: %v", len(got), got)
+	}
+	if st := tb.d.gate.state; !st.tripped || st.trips != 1 {
+		t.Fatalf("tripped=%v trips=%d after a gap, want the breaker kept as it was", st.tripped, st.trips)
+	}
+}

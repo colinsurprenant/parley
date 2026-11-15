@@ -791,7 +791,8 @@ by anyone but the chair, it included, span no more than the window. The span is
 the latest of those times less the earliest, so a transport that reports times
 from one clock out of order cannot hide a burst; IRC's are the server's, and
 writers whose clocks differ by more than the window, as a file stream's can, can
-make a burst look spread. The second rule is a backstop for the loop that is slow
+make a burst look spread. The second
+rule is a backstop for the loop that is slow
 enough to keep under the first: a message trips it too when it makes more than
 five times `<n>` messages within 36 times `--window`, the 5`<n>`+1 most recent
 messages, it included, spanning no more than 36 windows, however evenly they
@@ -826,8 +827,8 @@ were.
 
 A trip is told to the human, once, by the front. When a delivery's gate state is
 installed — at its commit, or as it returns when it has nothing to hand over —
-and that takes the breaker from untripped to tripped, the Deliverer asks its
-stream, when the stream can (`stream.Noticer`: `Channel()` and `Notice(ctx, nick,
+and that leaves the breaker tripped by a trip the installed state had not
+counted, the Deliverer asks its stream, when the stream can (`stream.Noticer`: `Channel()` and `Notice(ctx, nick,
 text)`), to send the chair one line:
 
 ```
@@ -854,15 +855,21 @@ character in it, a nick outside parley's grammar, or a line longer than the serv
 will relay with the connection's own prefix on it. A human's hand edit of parley's
 state, and what a harness does with its permissions, are out of this scope.
 
-One notice per trip per front. A delivery that is begun and not committed sends
-none, one collected again after a failed hand-off sends its trip's once, a release
-sends none, and a trip after a release sends another. Each front of a line trips
-and sends for itself, so a line of three sessions can send three. A restart
-forgets the trip with the held messages, so a front that replays history it had
-already passed, a nick with no cursor reading the channel's backlog, can trip
-again and send one more, once per process; one that resumes from its saved cursor
-starts after the posts that tripped it, and repeats nothing unless it was stopped
-between handing a delivery over and saving the cursor. A table's breaker sends
+One notice per trip per front. The gate keeps a count of its trips, by either rule,
+which a release does not reset, and an install announces when the breaker is
+tripped and the count has moved: the flag alone cannot say it, since it reads
+tripped before and after a delivery that carries the chair's post and a burst
+after it, as a front catching up a backlog or re-reading after an idle makes. A
+delivery that is begun and not committed sends none, one collected again after a
+failed hand-off sends its trip's once, a release that does not trip again sends
+none, a trip after a release sends another, and several trips in one delivery
+send one, naming the last. Each front of a line trips and sends for itself, so a
+line of three sessions can send three. A restart forgets the trip, and the count,
+with the held messages, so a front that replays history it had already passed, a
+nick with no cursor reading the channel's backlog, can trip again and send one
+more, once per process; one that resumes from its saved cursor starts after the
+posts that tripped it, and repeats nothing unless it was stopped between handing
+a delivery over and saving the cursor. A table's breaker sends
 nothing, and neither does a stream with no such capability, the file stream.
 
 The line form of the primer is the build and table forms' framing, the reply
