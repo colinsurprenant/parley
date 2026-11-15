@@ -274,7 +274,7 @@ func TestLineNewDefaultsTheCapToTwentyAndRecordsIt(t *testing.T) {
 	if rec := b.record(t, "demo"); rec.Cap != 20 || rec.Window != "10m" {
 		t.Fatalf("line.json holds cap %d and window %q, want the defaults 20 and 10m", rec.Cap, rec.Window)
 	}
-	if want := "breaker: more than 20 posts within 10m, or more than 100 posts within 1h"; !strings.Contains(res.stdout, want) {
+	if want := "breaker: more than 20 posts within 10m, or more than 100 posts within 6h"; !strings.Contains(res.stdout, want) {
 		t.Errorf("the runbook does not say %q:\n%s", want, res.stdout)
 	}
 	if !strings.Contains(res.stdout, "sends you one NOTICE") {

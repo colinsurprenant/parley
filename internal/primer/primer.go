@@ -168,7 +168,7 @@ type Params struct {
 	Worktree string
 	// Cap and Window are the line's breaker, printed as the facts they are: more
 	// than Cap posts within Window hold deliveries until the human posts, as do
-	// more than five times Cap within six times Window (see stream.LineBackstop),
+	// more than five times Cap within 36 times Window (see stream.LineBackstop),
 	// and a Cap of 0 is no breaker. Only the line form reads them, and the caller has
 	// checked that Cap is not negative and Window is positive.
 	Cap    int

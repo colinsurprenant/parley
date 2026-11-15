@@ -821,7 +821,7 @@ func TestTheLineFormIsFactsNotBlanks(t *testing.T) {
 		p.Cap = 8
 		got := Render(p)
 		for _, want := range []string{
-			"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or more than 40 posts within 1h, hold deliveries until colin posts.",
+			"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or more than 40 posts within 6h, hold deliveries until colin posts.",
 			tc.skill, "other sessions", "the one named above", "steers the line", trustPhrase, "[parley] gap:", "send --stream"} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("the %s line form does not carry %q:\n%s", tc.front, want, got)
@@ -855,17 +855,16 @@ func TestTheLineFormPrintsTheChairTheCapAndTheWindowAsSpelled(t *testing.T) {
 		window time.Duration
 		want   string
 	}{
-		{1, 10 * time.Minute, "breaker: more than 1 post within 10m, or more than 5 posts within 1h, hold deliveries until Colin posts."},
-		{8, 10 * time.Minute, "breaker: more than 8 posts within 10m, or more than 40 posts within 1h, hold deliveries until Colin posts."},
-		{100, 90 * time.Second, "breaker: more than 100 posts within 1m30s, or more than 500 posts within 9m, hold deliveries until Colin posts."},
-		{12, time.Hour, "breaker: more than 12 posts within 1h, or more than 60 posts within 6h, hold deliveries until Colin posts."},
-		{12, 90 * time.Minute, "breaker: more than 12 posts within 1h30m, or more than 60 posts within 9h, hold deliveries until Colin posts."},
-		{12, 30 * time.Second, "breaker: more than 12 posts within 30s, or more than 60 posts within 3m, hold deliveries until Colin posts."},
-		{12, 500 * time.Millisecond, "breaker: more than 12 posts within 500ms, or more than 60 posts within 3s, hold deliveries until Colin posts."},
-		{12, 36 * time.Hour, "breaker: more than 12 posts within 36h, or more than 60 posts within 216h, hold deliveries until Colin posts."},
-		// The backstop saturates where five times the cap would wrap, and so does
-		// six windows of a window near the longest there is.
-		{math.MaxInt/5 + 1, 10 * time.Minute, "breaker: more than 1844674407370955162 posts within 10m, or more than 9223372036854775807 posts within 1h, hold deliveries until Colin posts."},
+		{1, 10 * time.Minute, "breaker: more than 1 post within 10m, or more than 5 posts within 6h, hold deliveries until Colin posts."},
+		{8, 10 * time.Minute, "breaker: more than 8 posts within 10m, or more than 40 posts within 6h, hold deliveries until Colin posts."},
+		{100, 90 * time.Second, "breaker: more than 100 posts within 1m30s, or more than 500 posts within 54m, hold deliveries until Colin posts."},
+		{12, time.Hour, "breaker: more than 12 posts within 1h, or more than 60 posts within 36h, hold deliveries until Colin posts."},
+		{12, 90 * time.Minute, "breaker: more than 12 posts within 1h30m, or more than 60 posts within 54h, hold deliveries until Colin posts."},
+		{12, 30 * time.Second, "breaker: more than 12 posts within 30s, or more than 60 posts within 18m, hold deliveries until Colin posts."},
+		{12, 500 * time.Millisecond, "breaker: more than 12 posts within 500ms, or more than 60 posts within 18s, hold deliveries until Colin posts."},
+		{12, 36 * time.Hour, "breaker: more than 12 posts within 36h, or more than 60 posts within 1296h, hold deliveries until Colin posts."},
+		// The backstop's count saturates where five times the cap would wrap.
+		{math.MaxInt/5 + 1, 10 * time.Minute, "breaker: more than 1844674407370955162 posts within 10m, or more than 9223372036854775807 posts within 6h, hold deliveries until Colin posts."},
 		{0, 10 * time.Minute, "breaker off (cap 0)."},
 		{0, time.Hour, "breaker off (cap 0)."},
 	} {

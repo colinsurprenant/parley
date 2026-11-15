@@ -377,7 +377,7 @@ func TestLinePostsSpreadBeyondTheWindowAreNotTrippedByTheRate(t *testing.T) {
 	for i := range 300 { // three times the old count backstop of 100
 		body := "poke " + strconv.Itoa(i)
 		// Each is 11 minutes after the last, so no 21 of them fit in ten and no
-		// 101 in an hour.
+		// 101 in six hours.
 		f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*11*time.Minute)
 		want = append(want, body)
 	}
@@ -630,12 +630,12 @@ func TestLineRepeatedHandOversAreNotTimedTwice(t *testing.T) {
 
 // slowGap is the spacing of a slow loop: 84 seconds, so that nine posts span 11
 // minutes 12 seconds, more than the ten the rate of a cap of 8 allows, and 41
-// span 56 minutes, less than the hour the backstop of that cap measures.
+// span 56 minutes, less than the six hours the backstop of that cap measures.
 const slowGap = 84 * time.Second
 
 // slowPost makes post i of a loop that runs at one post every slowGap,
 // alternating between two sessions: never nine within ten minutes, so the rate
-// of a cap of 8 over ten minutes never sees it, but 41 within the hour.
+// of a cap of 8 over ten minutes never sees it, but 41 within the six hours.
 func slowPost(f *fake, i int) string {
 	body := "slow " + strconv.Itoa(i+1)
 	f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*slowGap)
@@ -645,8 +645,8 @@ func slowPost(f *fake, i int) string {
 // TestLineASlowLoopTripsTheBackstopAndTheChairReleasesIt: two sessions that
 // answer each other every 84 seconds never make a burst for a cap of 8 over ten
 // minutes, so the backstop is what stops them, at more than five times the cap
-// within six windows: the 41st post, which fits in the hour with the 40 before
-// it. Nothing releases it but the chair, who releases what was held in order,
+// within 36 windows: the 41st post, which fits in the six hours with the 40
+// before it. Nothing releases it but the chair, who releases what was held in order,
 // ahead of itself.
 func TestLineASlowLoopTripsTheBackstopAndTheChairReleasesIt(t *testing.T) {
 	f := &fake{nick: lineSelf}
@@ -677,7 +677,7 @@ func TestLineASlowLoopTripsTheBackstopAndTheChairReleasesIt(t *testing.T) {
 // backstop's history, as they are in the rate.
 func TestLineTheBackstopCountsOwnPosts(t *testing.T) {
 	f := &fake{nick: lineSelf}
-	tb := newLine(t, f, 2) // the backstop is more than 10 within the hour
+	tb := newLine(t, f, 2) // the backstop is more than 10 within six hours
 
 	// 5m30s apart: three span 11 minutes, so the rate never sees them, and 11 span
 	// 55 minutes.
@@ -730,7 +730,7 @@ func TestLineTheChairResetsTheRateAndTheBackstop(t *testing.T) {
 	f.postOffset(lineChair, "chair one", 41*time.Minute)
 	tb.want("chair one")
 
-	// Forty more, from the chair on, inside the hour of the 30 before it: those
+	// Forty more, from the chair on, inside the span of the 30 before it: those
 	// are not in the count, or the 11th of these would be the 41st.
 	var want []string
 	for i := range 40 {
@@ -774,7 +774,7 @@ func TestLineCapZeroHoldsNothingHoweverManyAndHoweverSlow(t *testing.T) {
 // clears it.
 func TestLineAGapKeepsTheBackstopHistory(t *testing.T) {
 	f := &fake{nick: lineSelf}
-	tb := newLine(t, f, 1) // the backstop is more than 5 within the hour
+	tb := newLine(t, f, 1) // the backstop is more than 5 within six hours
 
 	for i := range 5 { // 11 minutes apart: no two within the window of ten
 		f.postOffset([]string{"build", "review"}[i%2], "slow "+strconv.Itoa(i+1), time.Duration(i)*11*time.Minute)
@@ -786,7 +786,7 @@ func TestLineAGapKeepsTheBackstopHistory(t *testing.T) {
 	f.msgs = nil
 	f.gapPending = true
 	f.mu.Unlock()
-	f.postOffset("build", "after the gap", 55*time.Minute) // the 6th, within the hour of the first
+	f.postOffset("build", "after the gap", 55*time.Minute) // the 6th, within the span of the first
 	tb.want()
 	f.postOffset(lineChair, "chair one", 3*time.Hour)
 	tb.want("after the gap", "chair one")

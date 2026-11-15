@@ -54,7 +54,7 @@ func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 	for front, skill := range map[string]string{"claude": "invoked as /parley-line.", "codex": "invoked as $parley-line.",
 		"opencode": "the parley-line skill, which you load with the skill tool."} {
 		out := mustRun(t, "", linePrimerArgs(front)...).stdout
-		for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or more than 40 posts within 1h, hold deliveries until colin posts.", skill, "other sessions", "the one named above"} {
+		for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or more than 40 posts within 6h, hold deliveries until colin posts.", skill, "other sessions", "the one named above"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("the %s line primer does not carry %q:\n%s", front, want, out)
 			}
@@ -101,7 +101,7 @@ func TestPrimerLineFormCarriesTheFactsOnBothFronts(t *testing.T) {
 func TestChannelSkillLineHandsOverTheLineForm(t *testing.T) {
 	root := shortRoot(t)
 	instructions, stderr := channelInitialize(t, nil, lineChannelArgs(root)...)
-	for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or more than 40 posts within 1h, hold deliveries until colin posts.", "invoked as /parley-line.",
+	for _, want := range []string{"your human partner's registered nick colin; breaker: more than 8 posts within 10m, or more than 40 posts within 6h, hold deliveries until colin posts.", "invoked as /parley-line.",
 		"other sessions", "the one named above", "steers the line"} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("the instructions do not carry %q:\n%s", want, instructions)
@@ -500,7 +500,7 @@ func TestWindowIsALinesAlone(t *testing.T) {
 func TestLineWindowDefaultsToTenMinutes(t *testing.T) {
 	root := shortRoot(t)
 	instructions, _ := channelInitialize(t, nil, lineChannelArgs(root)...)
-	if want := "breaker: more than 8 posts within 10m, or more than 40 posts within 1h, hold deliveries until colin posts."; !strings.Contains(instructions, want) {
+	if want := "breaker: more than 8 posts within 10m, or more than 40 posts within 6h, hold deliveries until colin posts."; !strings.Contains(instructions, want) {
 		t.Fatalf("the instructions for a launch with no --window do not say %q:\n%s", want, instructions)
 	}
 	for _, verb := range []string{"channel", "codex", "primer"} {

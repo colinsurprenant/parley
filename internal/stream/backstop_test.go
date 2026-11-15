@@ -10,16 +10,16 @@ import (
 // The backstop tests pin the line breaker's second rule: more than five times cap
 // non-chair posts within backstopWindows times the window, timed by TS, with the
 // chair's post the only thing that releases it. They use a cap of 2 over the
-// test window of ten minutes, so the backstop is 11 posts within an hour.
+// test window of ten minutes, so the backstop is 11 posts within six hours.
 
 // TestLineBackstopTripsWhenFiveTimesCapPlusOneFitInTheSpan: 11 posts spaced so
 // that no 3 of them fit in ten minutes — the rate never sees them — but all 11
-// fit in the hour trip the backstop, at the 11th, and name it as the leg.
+// fit in the six hours trip the backstop, at the 11th, and name it as the leg.
 func TestLineBackstopTripsWhenFiveTimesCapPlusOneFitInTheSpan(t *testing.T) {
 	f := &fake{nick: lineSelf}
 	tb := newLine(t, f, 2)
 
-	const gap = 5*time.Minute + 30*time.Second // three span 11 minutes; 11 span 55
+	const gap = 5*time.Minute + 30*time.Second // three span 11 minutes; 11 span 55, well inside six hours
 	var want []string
 	for i := range 10 {
 		body := "p" + strconv.Itoa(i+1)
@@ -38,8 +38,8 @@ func TestLineBackstopTripsWhenFiveTimesCapPlusOneFitInTheSpan(t *testing.T) {
 }
 
 // TestLineBackstopSpanIncludesItsEdgeAndNotAnInstantMore: the 11 posts that span
-// exactly six windows trip, and one nanosecond more does not. The spacing is
-// six minutes, so no three posts fit in ten and the rate has no say.
+// exactly 36 windows trip, and one nanosecond more does not. The spacing is
+// 36 minutes, so no three posts fit in ten and the rate has no say.
 func TestLineBackstopSpanIncludesItsEdgeAndNotAnInstantMore(t *testing.T) {
 	for name, tc := range map[string]struct {
 		gap     time.Duration
@@ -66,17 +66,53 @@ func TestLineBackstopSpanIncludesItsEdgeAndNotAnInstantMore(t *testing.T) {
 	}
 }
 
-// TestLineASlowTrickleNeverTripsAndTheHistoryStaysBounded: one post every seven
+// TestLineTheSlowestLoopTheBackstopCatchesAtTheDefaults: at a cap of 20 over ten
+// minutes the backstop is more than 100 posts within six hours, so the slowest
+// loop it stops is one post every 3.6 minutes — 216 seconds, which puts 101 posts
+// exactly six hours apart end to end — and a loop a second slower is not stopped.
+// 21 posts at that pace span 72 minutes, so the rate has no say in either.
+func TestLineTheSlowestLoopTheBackstopCatchesAtTheDefaults(t *testing.T) {
+	for name, tc := range map[string]struct {
+		gap     time.Duration
+		tripped bool
+	}{
+		"every 3.6 minutes":         {216 * time.Second, true},
+		"a second slower than that": {217 * time.Second, false},
+		"every three minutes":       {3 * time.Minute, true},
+		"every five minutes":        {5 * time.Minute, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fake{nick: lineSelf}
+			tb := newLine(t, f, 20)
+			for i := range 101 {
+				f.postOffset([]string{"build", "review"}[i%2], "p"+strconv.Itoa(i+1), time.Duration(i)*tc.gap)
+			}
+			tb.read()
+			st := tb.d.gate.state
+			if st.tripped != tc.tripped {
+				t.Fatalf("tripped=%v after 101 posts %v apart, want %v", st.tripped, tc.gap, tc.tripped)
+			}
+			if tc.tripped && st.leg != legBackstop {
+				t.Fatalf("leg=%v, want the backstop", st.leg)
+			}
+		})
+	}
+}
+
+// TestLineASlowTrickleNeverTripsAndTheHistoryStaysBounded: one post every 37
 // minutes is under both rules however long it goes on with the chair silent, and
 // the history of times never holds more than five times cap plus one.
 func TestLineASlowTrickleNeverTripsAndTheHistoryStaysBounded(t *testing.T) {
 	f := &fake{nick: lineSelf}
 	tb := newLine(t, f, 2)
 
+	// A minute more than the span of 11 posts, which is ten gaps: 3 span 74 minutes
+	// and 11 span 370, past the 360 of 36 windows.
+	const gap = backstopWindows*lineWindow/10 + time.Minute
 	var want []string
-	for i := range 3000 { // 3 span 14 minutes, 11 span 70
+	for i := range 3000 {
 		body := "p" + strconv.Itoa(i)
-		f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*7*time.Minute)
+		f.postOffset([]string{"build", "review"}[i%2], body, time.Duration(i)*gap)
 		want = append(want, body)
 	}
 	tb.want(want...)
@@ -95,12 +131,16 @@ func TestLineASlowTrickleNeverTripsAndTheHistoryStaysBounded(t *testing.T) {
 func TestLineTheHistoryNeverExceedsItsBoundWhateverTheOrder(t *testing.T) {
 	f := &fake{nick: lineSelf}
 	tb := newLine(t, f, 2)
-	for i := range 11 { // 11 minutes apart: no 3 in ten, no 11 in an hour
-		f.postOffset("build", "p"+strconv.Itoa(i), 4*time.Hour+time.Duration(i)*11*time.Minute)
+	// 45 minutes apart: no 3 in ten, and no 11 in 360, even with the middle post
+	// below added, which makes 11 of them span nine gaps and a half, 405 minutes.
+	const gap = backstopWindows * lineWindow / 8
+	const base = 4 * time.Hour
+	for i := range 11 {
+		f.postOffset("build", "p"+strconv.Itoa(i), base+time.Duration(i)*gap)
 	}
 	tb.read()
-	f.postOffset("review", "an old one", time.Minute)                                // older than all 11
-	f.postOffset("review", "a middle one", 4*time.Hour+5*time.Minute+30*time.Second) // between the first two
+	f.postOffset("review", "an old one", time.Minute)  // older than all 11
+	f.postOffset("review", "a middle one", base+gap/2) // between the first two
 	tb.read()
 	st := tb.d.gate.state
 	if st.tripped {
@@ -114,7 +154,7 @@ func TestLineTheHistoryNeverExceedsItsBoundWhateverTheOrder(t *testing.T) {
 			t.Fatalf("the history is not in time order at %d: %v", i, st.times)
 		}
 	}
-	if want := tableStart.Add(4*time.Hour + 5*time.Minute + 30*time.Second); !st.times[0].Equal(want) {
+	if want := tableStart.Add(base + gap/2); !st.times[0].Equal(want) {
 		t.Fatalf("the earliest time kept is %v, want %v: the old post is checked and dropped, then the earliest of what remains", st.times[0], want)
 	}
 }
@@ -139,7 +179,7 @@ func TestLineAChairPostReleasesAndResetsBothLegs(t *testing.T) {
 		t.Fatalf("the chair left tripped=%v leg=%v with %d times", st.tripped, st.leg, len(st.times))
 	}
 
-	// Ten more inside the hour of the first run's last posts, delivered: the
+	// Ten more inside the span of the first run's last posts, delivered: the
 	// backstop's history is empty, and the rate's too.
 	var want []string
 	for i := range 10 {
@@ -166,7 +206,7 @@ func TestLineAChairPostReleasesAndResetsBothLegs(t *testing.T) {
 	}
 }
 
-// TestLineBackstopArithmeticSaturates: five times cap and six windows are what the
+// TestLineBackstopArithmeticSaturates: five times cap and 36 windows are what the
 // breaker, the instructions and the notice state, and none of them wraps.
 func TestLineBackstopArithmeticSaturates(t *testing.T) {
 	for _, tc := range []struct {
@@ -175,15 +215,16 @@ func TestLineBackstopArithmeticSaturates(t *testing.T) {
 		posts  int
 		span   time.Duration
 	}{
-		{20, 10 * time.Minute, 100, time.Hour},
-		{1, 10 * time.Minute, 5, time.Hour},
-		{8, 90 * time.Second, 40, 9 * time.Minute},
+		{20, 10 * time.Minute, 100, backstopWindows * 10 * time.Minute},
+		{20, 10 * time.Minute, 100, 6 * time.Hour}, // the span the docs state for the defaults
+		{1, 10 * time.Minute, 5, backstopWindows * 10 * time.Minute},
+		{8, 90 * time.Second, 40, backstopWindows * 90 * time.Second},
 		{0, time.Hour, 0, time.Hour},
 		{-1, time.Hour, 0, time.Hour},
 		{math.MinInt, time.Hour, 0, time.Hour},
-		{math.MaxInt / 5, time.Hour, math.MaxInt / 5 * 5, 6 * time.Hour},
-		{math.MaxInt/5 + 1, time.Hour, math.MaxInt, 6 * time.Hour},
-		{math.MaxInt, time.Hour, math.MaxInt, 6 * time.Hour},
+		{math.MaxInt / 5, time.Hour, math.MaxInt / 5 * 5, backstopWindows * time.Hour},
+		{math.MaxInt/5 + 1, time.Hour, math.MaxInt, backstopWindows * time.Hour},
+		{math.MaxInt, time.Hour, math.MaxInt, backstopWindows * time.Hour},
 		{20, math.MaxInt64, 100, math.MaxInt64},
 		{20, math.MaxInt64 / backstopWindows, 100, backstopWindows * (math.MaxInt64 / backstopWindows)},
 		{20, math.MaxInt64/backstopWindows + 1, 100, math.MaxInt64},
@@ -198,13 +239,26 @@ func TestLineBackstopArithmeticSaturates(t *testing.T) {
 	}
 }
 
-// TestLineBackstopSpansAreSixWindows: the constant the docs and the notice
+// TestLineBackstopSpansAre36Windows: the constant the docs and the notice
 // restate. A change to it is a change to every text that states the span, which
-// take it from LineBackstop, and to the docs that say six, which this test is
-// the reminder of.
-func TestLineBackstopSpansAreSixWindows(t *testing.T) {
-	if backstopWindows != 6 || backstopFactor != 5 {
-		t.Fatalf("the backstop is %d times cap within %d windows; the docs say 5 and 6: update them with the constants", backstopFactor, backstopWindows)
+// take it from LineBackstop, and to the prose that says 36 and six hours — the
+// flag help and usage in cmd/parley/main.go and line_new.go, docs/line.md,
+// docs/reference.md and the README — which this test is the reminder of.
+func TestLineBackstopSpansAre36Windows(t *testing.T) {
+	if backstopWindows != 36 || backstopFactor != 5 {
+		t.Fatalf("the backstop is %d times cap within %d windows; the prose says 5 and 36: update it with the constants", backstopFactor, backstopWindows)
+	}
+}
+
+// TestLineBackstopSpanGuardHoldsAtTheEdge: 36 windows of the longest window that
+// does not overflow is exact, and one nanosecond more saturates rather than wraps.
+func TestLineBackstopSpanGuardHoldsAtTheEdge(t *testing.T) {
+	const edge = time.Duration(math.MaxInt64 / 36)
+	if _, span := LineBackstop(20, edge); span != 36*edge || span <= 0 {
+		t.Fatalf("at the edge the span is %v, want exactly 36 windows", span)
+	}
+	if _, span := LineBackstop(20, edge+1); span != time.Duration(math.MaxInt64) {
+		t.Fatalf("one past the edge the span is %v, want it saturated", span)
 	}
 }
 

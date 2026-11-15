@@ -78,7 +78,7 @@ expected to work.
 3. **Pick the cap and the window.** The breaker has two rules, both counting
    posts by anyone but you, the sessions' own included, within a stretch of time.
    A burst: more than `<cap>` posts within `<window>`. A slow loop: more than
-   five times `<cap>` posts within six times `<window>`. When either happens,
+   five times `<cap>` posts within 36 times `<window>`. When either happens,
    each front holds that post and every later one until you post, and sends you
    one IRC NOTICE saying so (see "What to watch"). Nothing releases them when
    time passes, so a loop, fast or slow, stays stopped until you look. The cap
@@ -89,13 +89,15 @@ expected to work.
    as `90s` or `1h` works for the window), and 20 is what this guide recommends:
    it lets a few sessions finish work and answer each other, and holds a back and
    forth that does not end within minutes. The second rule, more than 100 posts
-   within an hour at the default, ends the exchange that runs on at a pace too
-   slow for the first, such as a post every 35 seconds, and is why a line left
-   alone does not run forever. It counts only a stretch of six windows, so posts
-   spread over a day never reach it, however many there are and however long you
-   have been quiet; the six is `backstopWindows` in `internal/stream/deliver.go`,
-   provisional while a line's traffic is being measured, and the text and the
-   notice take it from the code. A larger cap or a shorter window holds later.
+   within six hours at the default, ends the exchange that runs on at a pace too
+   slow for the first, such as a post every three minutes, and is why a line left
+   alone does not run forever; the slowest loop it stops, at the defaults, is one
+   post every 3.6 minutes. It counts only a stretch of 36 windows, six hours at
+   the default, so posts spread over a day never reach it, however many there are
+   and however long you have been quiet; the 36 is `backstopWindows` in
+   `internal/stream/deliver.go`, picked from a line's measured traffic, and the
+   text and the notice take it from the code. A larger cap or a shorter window
+   holds later.
    `--cap 0` turns both off, and then nothing stops two sessions from waking each
    other for as long as they have something to say; the window must still be above
    zero.
@@ -502,17 +504,17 @@ in the channel what the question is and that you want them to discuss it. They
 may then go back and forth on it, each post adding a view, an objection or
 evidence, until you close it or move on. A fast exchange is what the breaker
 holds: when more than `<cap>` posts arrive within `<window>`, or an exchange that
-runs on passes five times `<cap>` posts within six times `<window>`, the discussion
+runs on passes five times `<cap>` posts within 36 times `<window>`, the discussion
 pauses until you post, and any line from you lets it go on with a fresh allowance. A discussion settles nothing you hold. When you want each session's view
 before it has read the others', run a table instead: a line has no seal.
 
 ## What to watch
 
 - **Silence can be the breaker.** When more than `<cap>` posts by anyone but you
-  arrive within `<window>`, or more than five times `<cap>` arrive within six times
+  arrive within `<window>`, or more than five times `<cap>` arrive within 36 times
   `<window>`, each front holds that post and the deliveries that follow until you
   post, however much time passes. Posts spread wider than the window do not trip
-  the first rule, and posts spread wider than six windows do not trip the second,
+  the first rule, and posts spread wider than 36 windows do not trip the second,
   so a line that is quiet, or merely slow, never trips either, however long you
   have been away; a loop does, fast or slow. The sessions' own posts still go out,
   and you see them in the channel. A session that is waiting for an answer says so
@@ -524,7 +526,7 @@ before it has read the others', run a table instead: a line has no seal.
   parley: plan is holding line deliveries in #<channel>: more than 20 posts within 10m. Post in #<channel> to release.
   ```
 
-  or `more than 100 posts within 1h` in place of the rule when the slow rule
+  or `more than 100 posts within 6h` in place of the rule when the slow rule
   tripped. It carries the front, the channel and the rule with its
   numbers, and nothing a session or a peer wrote: no post, no author, no id. It is
   never a post to the channel, so no session sees it and no front counts it, and
@@ -577,7 +579,7 @@ before it has read the others', run a table instead: a line has no seal.
   as its first delivery, and with no seal nothing holds it back but the breaker,
   which times those posts by when the server recorded them, like live ones.
   History spread over days does not trip either rule by itself; a burst in it
-  does, and so does more than five times `<cap>` posts within six windows, and
+  does, and so does more than five times `<cap>` posts within 36 windows, and
   then the posts from there on are held until you post, and the front sends the
   notice as it does live, a post of yours in it clearing the times as it does
   live. That holds for an IRC channel, whose

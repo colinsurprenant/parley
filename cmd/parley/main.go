@@ -633,8 +633,8 @@ lines:
   received when it has none. A message that makes more than <n> of them within
   --window (a Go duration, 10m by default, above zero), counting it and the <n>
   before it, trips the breaker, and so does one that makes more than five times
-  <n> within six times --window, however far apart inside that span they came:
-  at 20 and 10m, more than 20 posts within 10m or more than 100 within 1h. The
+  <n> within 36 times --window, however far apart inside that span they came:
+  at 20 and 10m, more than 20 posts within 10m or more than 100 within 6h. The
   message that trips it is held, with every later one, until the chair posts;
   the chair's post releases them in order ahead of itself and clears the record
   of times. Nothing is released by time passing, so a loop, fast or slow, stays
@@ -730,7 +730,7 @@ const defaultLineWindow = 10 * time.Minute
 
 // defaultLineCap is the --cap of a line made by `parley line new` when none is
 // given: with the default window, a line is held at more than 20 posts within 10
-// minutes or more than 100 within an hour, which sessions poking each other as
+// minutes or more than 100 within six hours, which sessions poking each other as
 // work finishes do not reach and a loop does. The fronts a session runs under
 // take no default: line new records the cap and line add passes it on, so a
 // front launched by hand names the limit it means.
@@ -754,7 +754,7 @@ func addSkillFlags(fs *flag.FlagSet, gate bool) skillFlags {
 }
 
 func addCapFlag(fs *flag.FlagSet) *int {
-	return fs.Int("cap", 0, "with --skill table: hold every post by anyone but the chair once more than this many have gone by since the chair last posted, until the chair posts; with --skill line: hold every post by anyone but the chair once more than this many have arrived within --window, or more than five times this many within six times --window, until the chair posts, and send the chair one IRC NOTICE when that happens; 0 turns the cap off; required with --skill table and --skill line. "+
+	return fs.Int("cap", 0, "with --skill table: hold every post by anyone but the chair once more than this many have gone by since the chair last posted, until the chair posts; with --skill line: hold every post by anyone but the chair once more than this many have arrived within --window, or more than five times this many within 36 times --window, until the chair posts, and send the chair one IRC NOTICE when that happens; 0 turns the cap off; required with --skill table and --skill line. "+
 		"Held posts are kept in memory only, so a restart or a gap in the history loses them")
 }
 
@@ -764,7 +764,7 @@ func addWindowFlag(fs *flag.FlagSet, gate bool) *time.Duration {
 	if !gate {
 		return fs.Duration("window", defaultLineWindow, "with --skill line, refused with the others: the breaker's window, a Go duration above zero such as 10m or 90s, the number the text states as a fact; primer holds nothing, so set the same value on the channel or codex front")
 	}
-	return fs.Duration("window", defaultLineWindow, "with --skill line, refused with the others: the breaker's window, a Go duration above zero such as 10m or 90s: a post by anyone but the chair that makes more than --cap of them within this window, or more than five times --cap within six times it, counting this participant's own, is held with every later one until the chair posts; nothing is released by time passing")
+	return fs.Duration("window", defaultLineWindow, "with --skill line, refused with the others: the breaker's window, a Go duration above zero such as 10m or 90s: a post by anyone but the chair that makes more than --cap of them within this window, or more than five times --cap within 36 times it, counting this participant's own, is held with every later one until the chair posts; nothing is released by time passing")
 }
 
 // launch is what channel and primer resolve their skill flags to.

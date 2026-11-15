@@ -160,11 +160,11 @@ func WithTable(chair string, cap int) Option {
 // times cap non-chair posts within backstopWindows times the window. Everything
 // that states the rule — the instructions a session is given, the notice the
 // human gets, the docs — spells it from LineBackstop, so the span is changed
-// here and nowhere else. backstopWindows is provisional: 6 while a line's traffic
-// is being measured.
+// here and nowhere else. backstopWindows was picked from a line's measured
+// traffic: 36 windows, which is 6 hours at the default 10 minutes.
 const (
 	backstopFactor  = 5
-	backstopWindows = 6
+	backstopWindows = 36
 )
 
 // LineBackstop returns the backstop of a line's breaker for this cap and window:
@@ -224,8 +224,8 @@ func FormatWindow(d time.Duration) string {
 // runs for days, is slow, and a count that only the human's post forgets would
 // trip on ordinary sparse pokes. The rate catches the fast loop: more than cap
 // posts within window. The backstop catches the slow one, which keeps under the
-// rate: more than five times cap posts within backstopWindows times window — six,
-// for now — which on a cap of 20 over 10 minutes is more than 100 within an hour.
+// rate: more than five times cap posts within backstopWindows times window — 36 —
+// which on a cap of 20 over 10 minutes is more than 100 within six hours.
 //
 // With cap above zero, every message by anyone but the chair — this
 // participant's own included — is timed by its TS, or by the local receive time

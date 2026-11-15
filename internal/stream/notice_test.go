@@ -82,7 +82,7 @@ func (tb *table) sentNotices(nf *noticeFake) []sentNotice {
 
 const (
 	rateNotice     = "parley: plan is holding line deliveries in #line: more than 2 posts within 10m. Post in #line to release."
-	backstopNotice = "parley: plan is holding line deliveries in #line: more than 10 posts within 1h. Post in #line to release."
+	backstopNotice = "parley: plan is holding line deliveries in #line: more than 10 posts within 6h. Post in #line to release."
 )
 
 func TestLineTripSendsOneNoticeToTheChairOnCommit(t *testing.T) {

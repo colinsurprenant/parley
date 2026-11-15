@@ -132,7 +132,7 @@ unless your human asks you to stop for it.
 ## The breaker
 
 When more than a set number of posts by the sessions arrive within a short
-window, or many more than that within a longer stretch of several windows, your
+window, or many more than that within a much longer stretch of many windows, your
 front holds further deliveries until your human posts; your connect-time text
 gives the numbers. It also sends your human one notice saying so, to their nick
 and not to the channel, so they know the line is waiting and that a post of theirs

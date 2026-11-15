@@ -29,7 +29,7 @@ func cmdLineNew(args []string) error {
 		fs.PrintDefaults()
 	}
 	chair := fs.String("chair", "", "required: your registered nick on the server, the human whose posts release the breaker")
-	capN := fs.Int("cap", defaultLineCap, "the breaker's cap, the most posts by anyone but you that may arrive within --window before every front holds the next until you post, and tells you so with one IRC NOTICE; more than five times it within six times --window trips it too; 0 turns the breaker off")
+	capN := fs.Int("cap", defaultLineCap, "the breaker's cap, the most posts by anyone but you that may arrive within --window before every front holds the next until you post, and tells you so with one IRC NOTICE; more than five times it within 36 times --window trips it too; 0 turns the breaker off")
 	window := fs.Duration("window", defaultLineWindow, "the breaker's window, a Go duration above zero such as 10m or 90s")
 	server := fs.String("server", defaultListen, "the loopback IP:port of the IRC server the line uses (a host name is refused)")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ and lines/ (default $XDG_STATE_HOME/parley)")

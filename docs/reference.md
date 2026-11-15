@@ -793,14 +793,16 @@ from one clock out of order cannot hide a burst; IRC's are the server's, and
 writers whose clocks differ by more than the window, as a file stream's can, can
 make a burst look spread. The second rule is a backstop for the loop that is slow
 enough to keep under the first: a message trips it too when it makes more than
-five times `<n>` messages within six times `--window`, the 5`<n>`+1 most recent
-messages, it included, spanning no more than six windows, however evenly they
-came. The six is `backstopWindows` in `internal/stream/deliver.go`, provisional
-while a line's traffic is being measured, and the instructions and the notice
-state both rules from the same code (`stream.LineBackstop`), so changing the span
-is changing that one constant and the prose that says six. On the defaults, a cap
-of 20 and a window of 10m, the rules are more than 20 messages within 10m and
-more than 100 within 1h. Both read one record of times, in time order, of the
+five times `<n>` messages within 36 times `--window`, the 5`<n>`+1 most recent
+messages, it included, spanning no more than 36 windows, however evenly they
+came. The 36 is `backstopWindows` in `internal/stream/deliver.go`, picked from a
+line's measured traffic, and the instructions and the notice state both rules
+from the same code (`stream.LineBackstop`), so changing the span is changing that
+one constant and the prose that says 36 and six hours. On the defaults, a cap of
+20 and a window of 10m, the rules are more than 20 messages within 10m and more
+than 100 within 6h, so the slowest loop the second stops is one message every 3.6
+minutes: 100 gaps of 3.6 minutes are six hours, and a loop a second slower is not
+stopped. Both read one record of times, in time order, of the
 messages since the chair last posted, which holds at most the 5`<n>`+1 most recent,
 the longest run either rule measures; a message stamped earlier than all of them
 is checked against them and then dropped, so a burst made of it and of messages
@@ -809,11 +811,11 @@ message are held until the chair posts, and the chair's post releases them ahead
 of itself, in stream order, un-trips the breaker and clears the record of times,
 so the released messages count in neither. Nothing is released by time passing: a
 loop, fast or slow, stays stopped until the human looks. Posts spread beyond the
-window never trip the first rule, and posts spread beyond six windows never trip
+window never trip the first rule, and posts spread beyond 36 windows never trip
 the second, however many there are, which is also why the first delivery of a
 session joining a line under way, the history the server retains, does not trip
 either unless the history holds a burst, or more than five times `<n>` messages
-within six windows. That holds for IRC, whose messages all carry the server's
+within 36 windows. That holds for IRC, whose messages all carry the server's
 time; a `file:` stream's message with no usable timestamp is timed when received,
 so a backlog of those arrives as one instant and trips the first rule at once.
 `--cap 0` turns both rules off. Held messages live in the front's memory and
@@ -832,7 +834,7 @@ text)`), to send the chair one line:
 parley: <nick> is holding line deliveries in #<channel>: more than <n> posts within <window>. Post in #<channel> to release.
 ```
 
-with the backstop's numbers, 5`<n>` posts within 6`<window>`, spelled as the
+with the backstop's numbers, 5`<n>` posts within 36`<window>`, spelled as the
 figures they come to, when that rule tripped. On IRC it is a NOTICE to the chair's nick, written on the
 connection the front reads on: not a post to the channel, so it is in no history,
 no front counts it and no session is handed it, and nothing is said into the
@@ -867,8 +869,8 @@ The line form of the primer is the build and table forms' framing, the reply
 recipe, the header rule and the trust sentences, word for word, with a line's
 own sentences: the command is the only way to reach the other sessions; the facts
 are the human's registered nick and the breaker, as "breaker: more than `<cap>`
-posts within `<window>`, or more than 5`<cap>` posts within 6`<window>`, each
-spelled as the numbers it comes to (100 posts within 1h on the defaults), hold
+posts within `<window>`, or more than 5`<cap>` posts within 36`<window>`, each
+spelled as the numbers it comes to (100 posts within 6h on the defaults), hold
 deliveries until `<chair>` posts", or "breaker off (cap 0)"; the protocol is the
 `parley-line` skill, invoked as `/parley-line` (`$parley-line` on the codex
 front, and on the opencode front "which you load with the skill tool"); and the one carve-out to the trust rule is that a line under the human's

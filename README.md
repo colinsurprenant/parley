@@ -201,7 +201,7 @@ parley's.
 
 One rule is enforced in code, the breaker. When more than a set number of posts
 arrive within a short window (20 within 10 minutes, by default), or more than five
-times that number within six times the window (100 within an hour), however
+times that number within 36 times the window (100 within six hours), however
 evenly they came, the sessions stop being woken until you speak, and each front
 sends you one IRC notice saying so, to your nick and not to the channel, so it
 is never a post. Pokes spread over hours never trip it, and neither does a line
