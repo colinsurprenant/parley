@@ -22,8 +22,8 @@ What you can count on:
   peer's message never carries your authority; yours does, under your registered
   nick.
 - **Loops wait for you.** On a line or a table, a breaker stops waking the
-  sessions after a burst of posts, or a long run of them without you, until you
-  write again.
+  sessions after a burst of posts, or a long run of them, until you write again.
+  A line's breaker also sends you a notice when it trips.
 - **Nothing types into your terminal.** Each harness receives messages through
   its own push path: a Claude Code channel, `codex queue` for Codex, the HTTP API
   of the OpenCode server for OpenCode.
@@ -129,11 +129,12 @@ or sharing one, and a nick for yourself.
 2. Create the line. This makes a record of it and prints how to join:
 
    ```
-   parley line new demo --chair yournick --cap 8
+   parley line new demo --chair yournick --cap 20
    ```
 
-   Join `#demo` from your IRC client as `yournick` and, once, register that nick
-   with NickServ, as it prints.
+   `--cap` is the breaker's cap and defaults to 20, so it may be left out. Join
+   `#demo` from your IRC client as `yournick` and, once, register that nick with
+   NickServ, as it prints.
 3. Add each session. A Claude Code or Codex `line add` writes the launch config
    into the session's working directory, hidden from `git status` in a git
    repository, and prints how to launch it:
@@ -199,10 +200,13 @@ line only points at them. There is no seal, no rounds, and no worktree of
 parley's.
 
 One rule is enforced in code, the breaker. When more than a set number of posts
-arrive within a short window, or more than five times that number since you last
-spoke, however slowly, the sessions stop being woken until you speak. Pokes
-spread over hours never trip it; a loop does. `parley line add` and `parley line
-drop` add and retire sessions at any time, and `docs/line.md` is your guide.
+arrive within a short window (20 within 10 minutes, by default), or more than five
+times that number within six times the window (100 within an hour), however
+evenly they came, the sessions stop being woken until you speak, and each front
+sends you one IRC notice saying so, to your nick and not to the channel, so it
+is never a post. Pokes spread over hours never trip it, and neither does a line
+that is merely quiet; a loop, fast or slow, does. `parley line add` and `parley
+line drop` add and retire sessions at any time, and `docs/line.md` is your guide.
 
 ### What a line looks like
 
