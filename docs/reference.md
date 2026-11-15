@@ -791,7 +791,12 @@ by anyone but the chair, it included, span no more than the window. The span is
 the latest of those times less the earliest, so a transport that reports times
 from one clock out of order cannot hide a burst; IRC's are the server's, and
 writers whose clocks differ by more than the window, as a file stream's can, can
-make a burst look spread. The second
+make a burst look spread. The same holds for a time ahead of the clock: on a
+`file:` stream the writer sets the time, so posts stamped in the future sit at the
+tail of the 5`<n>`+1 record, and two of them can keep the second rule below from
+ever tripping, because the record always drops its earliest time. A `file:`
+stream's writer can already post as the chair, which releases the breaker, so
+this is no reach it did not have, and on IRC the server sets the time. The second
 rule is a backstop for the loop that is slow
 enough to keep under the first: a message trips it too when it makes more than
 five times `<n>` messages within 36 times `--window`, the 5`<n>`+1 most recent

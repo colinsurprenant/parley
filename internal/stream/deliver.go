@@ -442,7 +442,13 @@ func (s *gateState) tally(cap int) {
 // after every message, so it never holds more than that, at any cap. The
 // backstop's count is the larger of the two, so the rate always has the cap+1
 // times it measures.
-
+//
+// The cut always drops the earliest time, so a time ahead of the clock stays at
+// the tail: two such times in the history put at least one of them in every run of
+// five times cap plus one, and the backstop cannot trip until they are dropped or
+// the chair posts. On a file stream the writer sets the time and can post as the
+// chair as well, which releases the breaker, so this is no reach the writer did
+// not already have; on IRC the server sets the time.
 func (s *gateState) slide(g *gate, m Message) {
 	if g.cap <= 0 || s.tripped {
 		return
