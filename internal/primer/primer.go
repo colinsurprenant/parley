@@ -39,6 +39,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	"github.com/colinsurprenant/parley/internal/stream"
 )
 
 // ClaudeInstructionsCap is the length, in UTF-16 code units, at which Claude
@@ -165,8 +167,9 @@ type Params struct {
 	Target   string
 	Worktree string
 	// Cap and Window are the line's breaker, printed as the facts they are: more
-	// than Cap posts within Window hold deliveries until the human posts, and a
-	// Cap of 0 is no breaker. Only the line form reads them, and the caller has
+	// than Cap posts within Window hold deliveries until the human posts, as do
+	// more than five times Cap within six times Window (see stream.LineBackstop),
+	// and a Cap of 0 is no breaker. Only the line form reads them, and the caller has
 	// checked that Cap is not negative and Window is positive.
 	Cap    int
 	Window time.Duration
@@ -369,25 +372,24 @@ const tableFacts = "Set by your human partner at launch, not the channel: chair 
 // lineFacts is the line form's one paragraph of facts, then the skill line: the
 // human's registered nick and the breaker, as set by the human at launch. A line
 // has no target repo, no worktree of the session's and no TABLE line to wait
-// for: the session works in its own working directory as usual. The breaker is a rate, a
-// number of posts within a window, that the front holds deliveries by; the text
-// states it in a clause and the skill, which says what the breaker does and what
-// to do when it holds, is the authority on what it means.
+// for: the session works in its own working directory as usual. The breaker is two
+// rates, a number of posts within a window and a larger number within a longer
+// one, that the front holds deliveries by; the text states them in a clause and
+// the skill, which says what the breaker does and what to do when it holds, is
+// the authority on what it means.
 const lineFacts = "Set by your human partner at launch, not the channel: your human partner's registered nick %s; " +
 	"%s The protocol is the parley-line skill, %s.\n\n"
 
-// lineBreaker is the clause of lineFacts that states the breaker: the rate that
-// holds deliveries until the human posts, or that there is none.
+// lineBreaker is the clause of lineFacts that states the breaker: the two rates
+// that hold deliveries until the human posts, or that there is none. The numbers
+// are the front's own, spelled by the stream package that applies them, so the
+// text and the breaker cannot say different things.
 func lineBreaker(p Params) string {
 	if p.Cap <= 0 {
 		return "breaker off (cap 0)."
 	}
-	posts := "posts"
-	if p.Cap == 1 {
-		posts = "post"
-	}
-	return fmt.Sprintf("breaker: more than %d %s within %s, or five times that since %s last posted, hold deliveries until %s posts.",
-		p.Cap, posts, formatWindow(p.Window), p.Chair, p.Chair)
+	return fmt.Sprintf("breaker: %s, or %s, hold deliveries until %s posts.",
+		stream.LineRule(p.Cap, p.Window), stream.LineRule(stream.LineBackstop(p.Cap, p.Window)), p.Chair)
 }
 
 // FormatWindow is formatWindow for a caller that writes the window into a
@@ -396,17 +398,9 @@ func lineBreaker(p Params) string {
 func FormatWindow(d time.Duration) string { return formatWindow(d) }
 
 // formatWindow spells a duration the way a person writes one, 10m and not
-// 10m0s, and 1h30m and not 1h30m0s.
-func formatWindow(d time.Duration) string {
-	s := d.String()
-	if strings.HasSuffix(s, "m0s") {
-		s = s[:len(s)-2]
-	}
-	if strings.HasSuffix(s, "h0m") {
-		s = s[:len(s)-2]
-	}
-	return s
-}
+// 10m0s, and 1h30m and not 1h30m0s; it is the stream package's spelling, which
+// the breaker's notice uses too.
+func formatWindow(d time.Duration) string { return stream.FormatWindow(d) }
 
 // buildFacts is tableFacts for a build: the human's registered nick,
 // the target repo and this session's worktree of it, then the skill line. The

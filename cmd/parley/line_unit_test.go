@@ -432,7 +432,7 @@ func TestParseInterleavedTakesPositionalsAnywhere(t *testing.T) {
 func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{
-		"parley line    new <id> --chair <nick> --cap <n> [--window 10m]",
+		"parley line    new <id> --chair <nick> [--cap 20] [--window 10m]",
 		"parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>]",
 		"parley line    drop <id> <nick> [--force]",
 		"parley line    end <id> [--force]",

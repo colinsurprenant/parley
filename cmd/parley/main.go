@@ -123,7 +123,7 @@ usage:
   parley build   new <id> --target <repo> --chair <nick> --peer <nick>=<claude|codex>[:<model>] --peer <nick>=<claude|codex>[:<model>]
                  [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--writable-root <abs dir>]...
   parley build   end <id> [--force] [--state-dir <dir>]
-  parley line    new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]
+  parley line    new <id> --chair <nick> [--cap 20] [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]
                  [--opencode-bin opencode]
   parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>] [--state-dir <dir>]
   parley line    drop <id> <nick> [--force] [--state-dir <dir>]
@@ -439,10 +439,11 @@ verbs:
   line     set up a line, put sessions on it, take them off and take it down.
            A line is a few long-running sessions, each in a working directory of
            its own, and one human on one channel, under --skill line: no seal, a
-           rate breaker, no target and no worktree. Its record is
+           breaker of two rates that tells the human when it trips, no target and
+           no worktree. Its record is
            lines/<id>/line.json under the state base. new <id> checks its flags
            (the id as a table's, one namespace with the tables and the builds;
-           --chair a valid nick; --cap required, 0 for no breaker; --window
+           --chair a valid nick; --cap 20 by default, 0 for no breaker; --window
            above zero, 10m by default; --server a loopback IP:port; --codex-bin
            and --opencode-bin, when given, resolved and recorded for the Codex
            and the OpenCode sessions added later)
@@ -624,23 +625,29 @@ tables:
 lines:
   With --skill line, channel, codex and opencode take --chair <nick> --cap <n>,
   both required, and --window <duration>, for a few long-running sessions and one
-  human on one channel. The gate is two rules and nothing else: there is no
+  human on one channel (parley line new defaults --cap to 20 and records it, and
+  line add passes it on). The gate is two rules and nothing else: there is no
   first hold, so this participant receives every other session's post at once,
   before it has posted. Every message by anyone but the chair, this
-  participant's own included, is counted and timed, by its timestamp or by the
-  time it was received when it has none. A message that makes more than <n> of
-  them within --window (a Go duration, 10m by default, above zero), counting it
-  and the <n> before it, trips the breaker, and so does one that makes more than
-  five times <n> since the chair last posted, however slowly they came. The
+  participant's own included, is timed, by its timestamp or by the time it was
+  received when it has none. A message that makes more than <n> of them within
+  --window (a Go duration, 10m by default, above zero), counting it and the <n>
+  before it, trips the breaker, and so does one that makes more than five times
+  <n> within six times --window, however far apart inside that span they came:
+  at 20 and 10m, more than 20 posts within 10m or more than 100 within 1h. The
   message that trips it is held, with every later one, until the chair posts;
-  the chair's post releases them in order ahead of itself and clears the count
-  and the record of times. Nothing is released by time passing, so a loop, fast
-  or slow, stays stopped until the chair looks, while pokes spread over hours
-  and a backlog spread over days do not trip it. --cap 0 turns the breaker off.
-  Held posts live in this process's memory only, so a restart loses them, and so
-  does a gap in the stream's history, which the delivery says; a gap keeps the
-  count and the record of times. The chair is the human's registered nick,
-  another voice than --nick. --window is refused with the other skills.
+  the chair's post releases them in order ahead of itself and clears the record
+  of times. Nothing is released by time passing, so a loop, fast or slow, stays
+  stopped until the chair looks, while pokes spread over hours and a backlog
+  spread over days do not trip it. When the breaker trips, the front sends the
+  chair one IRC NOTICE, to the chair's nick and not to the channel, so it is
+  never a post and no front counts it, naming the front, the channel and the
+  rule that tripped; a new one follows only a release and a new trip, and
+  nothing is sent into the session. The file stream sends none. --cap 0 turns
+  the breaker off. Held posts live in this process's memory only, so a restart
+  loses them, and so does a gap in the stream's history, which the delivery
+  says; a gap keeps the record of times. The chair is the human's registered
+  nick, another voice than --nick. --window is refused with the other skills.
 
 stream specs:
   file:<path>              one append-only NDJSON file, which stock tools can
@@ -721,6 +728,14 @@ type skillFlags struct {
 // enough that a loop does within minutes.
 const defaultLineWindow = 10 * time.Minute
 
+// defaultLineCap is the --cap of a line made by `parley line new` when none is
+// given: with the default window, a line is held at more than 20 posts within 10
+// minutes or more than 100 within an hour, which sessions poking each other as
+// work finishes do not reach and a loop does. The fronts a session runs under
+// take no default: line new records the cap and line add passes it on, so a
+// front launched by hand names the limit it means.
+const defaultLineCap = 20
+
 func addSkillFlags(fs *flag.FlagSet, gate bool) skillFlags {
 	k := skillFlags{
 		skill:    fs.String("skill", string(primer.SkillBuild), "the protocol the text names: build (two peers), table (a seat at a table, which also needs --cap on channel) or line (a session on a line, which needs --chair and --cap and takes no --target or --worktree)"),
@@ -739,7 +754,7 @@ func addSkillFlags(fs *flag.FlagSet, gate bool) skillFlags {
 }
 
 func addCapFlag(fs *flag.FlagSet) *int {
-	return fs.Int("cap", 0, "with --skill table: hold every post by anyone but the chair once more than this many have gone by since the chair last posted, until the chair posts; with --skill line: hold every post by anyone but the chair once more than this many have arrived within --window, or more than five times this many since the chair last posted, until the chair posts; 0 turns the cap off; required with --skill table and --skill line. "+
+	return fs.Int("cap", 0, "with --skill table: hold every post by anyone but the chair once more than this many have gone by since the chair last posted, until the chair posts; with --skill line: hold every post by anyone but the chair once more than this many have arrived within --window, or more than five times this many within six times --window, until the chair posts, and send the chair one IRC NOTICE when that happens; 0 turns the cap off; required with --skill table and --skill line. "+
 		"Held posts are kept in memory only, so a restart or a gap in the history loses them")
 }
 
@@ -749,7 +764,7 @@ func addWindowFlag(fs *flag.FlagSet, gate bool) *time.Duration {
 	if !gate {
 		return fs.Duration("window", defaultLineWindow, "with --skill line, refused with the others: the breaker's window, a Go duration above zero such as 10m or 90s, the number the text states as a fact; primer holds nothing, so set the same value on the channel or codex front")
 	}
-	return fs.Duration("window", defaultLineWindow, "with --skill line, refused with the others: the breaker's window, a Go duration above zero such as 10m or 90s: a post by anyone but the chair that makes more than --cap of them within this window, counting this participant's own, is held with every later one until the chair posts; nothing is released by time passing")
+	return fs.Duration("window", defaultLineWindow, "with --skill line, refused with the others: the breaker's window, a Go duration above zero such as 10m or 90s: a post by anyone but the chair that makes more than --cap of them within this window, or more than five times --cap within six times it, counting this participant's own, is held with every later one until the chair posts; nothing is released by time passing")
 }
 
 // launch is what channel and primer resolve their skill flags to.
@@ -894,7 +909,7 @@ func checkWindow(fs *flag.FlagSet, skill primer.Skill, window time.Duration) err
 
 // gateOptions returns the Deliverer options the skill stands for: the gate is
 // installed iff the skill is table (the seal and the breaker) or line (the
-// breaker alone, a rate over --window), and then --cap is required. The chair is
+// breaker alone, two rates over --window), and then --cap is required. The chair is
 // the caller's, and checked by it.
 func gateOptions(fs *flag.FlagSet, skill primer.Skill, chair string, capN int, window time.Duration) ([]stream.Option, error) {
 	if err := checkCap(fs, skill, capN); err != nil {
@@ -907,7 +922,10 @@ func gateOptions(fs *flag.FlagSet, skill primer.Skill, chair string, capN int, w
 	case primer.SkillTable:
 		return []stream.Option{stream.WithTable(chair, capN)}, nil
 	case primer.SkillLine:
-		return []stream.Option{stream.WithLine(chair, capN, window)}, nil
+		// A trip is told to the chair by a notice that is best-effort and costs
+		// the front nothing when it fails, so stderr, which the harness keeps
+		// beside the front's other logs, is where a person learns it was not sent.
+		return []stream.Option{stream.WithLine(chair, capN, window), stream.WithNoticeLog(os.Stderr)}, nil
 	}
 	return nil, nil
 }

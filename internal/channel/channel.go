@@ -186,9 +186,9 @@ type Config struct {
 	Chair    string
 	Target   string
 	Worktree string
-	// Cap and Window are the line breaker's rate, facts the line form states:
-	// more than Cap posts within Window hold deliveries, and a Cap of 0 is no
-	// breaker. The same values go to the Deliverer's gate, which the caller
+	// Cap and Window are the line breaker's rates, facts the line form states:
+	// more than Cap posts within Window hold deliveries, as do more than five
+	// times Cap within six times Window, and a Cap of 0 is no breaker. The same values go to the Deliverer's gate, which the caller
 	// builds; this package does not read them back from there. A line needs a
 	// Window above zero, whatever its Cap. Other skills ignore both.
 	Cap    int

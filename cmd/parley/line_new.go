@@ -29,7 +29,7 @@ func cmdLineNew(args []string) error {
 		fs.PrintDefaults()
 	}
 	chair := fs.String("chair", "", "required: your registered nick on the server, the human whose posts release the breaker")
-	capN := fs.Int("cap", 0, "required: the breaker's cap, the most posts by anyone but you that may arrive within --window before every front holds the next until you post; 0 turns the breaker off")
+	capN := fs.Int("cap", defaultLineCap, "the breaker's cap, the most posts by anyone but you that may arrive within --window before every front holds the next until you post, and tells you so with one IRC NOTICE; more than five times it within six times --window trips it too; 0 turns the breaker off")
 	window := fs.Duration("window", defaultLineWindow, "the breaker's window, a Go duration above zero such as 10m or 90s")
 	server := fs.String("server", defaultListen, "the loopback IP:port of the IRC server the line uses (a host name is refused)")
 	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ and lines/ (default $XDG_STATE_HOME/parley)")
@@ -44,7 +44,7 @@ func cmdLineNew(args []string) error {
 	}
 	switch {
 	case len(pos) == 0:
-		return cfgErrf("the line id is required: parley line new <id> --chair <nick> --cap <n>")
+		return cfgErrf("the line id is required: parley line new <id> --chair <nick>")
 	case len(pos) > 1:
 		return cfgErrf("unexpected argument %q", pos[1])
 	}
@@ -58,8 +58,11 @@ func cmdLineNew(args []string) error {
 	if err := stream.ValidNick(*chair); err != nil {
 		return cfgErrf("--chair %q %v", *chair, err)
 	}
-	if err := checkCap(fs, primer.SkillLine, *capN); err != nil {
-		return err
+	// The cap has a default here, so it is never missing; a negative one is the
+	// one thing left to refuse. The fronts a session runs under take no default,
+	// and checkCap still requires --cap of them.
+	if *capN < 0 {
+		return cfgErrf("--cap must not be negative")
 	}
 	if err := checkWindow(fs, primer.SkillLine, *window); err != nil {
 		return err
@@ -245,7 +248,8 @@ func lineRunbook(rec lineRecord, serverDown bool, self string) string {
 	}
 	cmd := func(line string) { fmt.Fprintf(&b, "    %s\n", line) }
 
-	breaker := fmt.Sprintf("breaker: more than %d posts within %s", rec.Cap, rec.Window)
+	window := rec.windowDuration()
+	breaker := "breaker: " + stream.LineRule(rec.Cap, window) + ", or " + stream.LineRule(stream.LineBackstop(rec.Cap, window))
 	if rec.Cap == 0 {
 		breaker = "breaker off"
 	}
@@ -267,6 +271,9 @@ func lineRunbook(rec lineRecord, serverDown bool, self string) string {
 	b.WriteString("\n   If INFO says it is not registered, register it, and identify on every later connect:\n\n")
 	cmd("/msg NickServ REGISTER <password>")
 	b.WriteString("\n   An unregistered chair nick could be taken by a session's process, and the breaker would then\n   release on that session's posts as if they were yours.\n")
+	if rec.Cap > 0 {
+		fmt.Fprintf(&b, "\n   When a session's breaker trips, it sends you one NOTICE, to your nick and not to the channel,\n   saying so; any post of yours in #%s releases it.\n", rec.ID)
+	}
 
 	next("Add each session, one `parley line add` per session, then launch it as that command prints:")
 	cmd(fmt.Sprintf("%s line add %s --nick <nick> --harness <claude|codex|opencode> [--model <model>] [--workdir <absolute dir>] --state-dir %s", q(self), rec.ID, q(rec.StateDir)))

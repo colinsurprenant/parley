@@ -123,7 +123,7 @@ func lineUsage(w io.Writer) {
 }
 
 const (
-	lineUsageNew  = "usage: parley line new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]"
+	lineUsageNew  = "usage: parley line new <id> --chair <nick> [--cap 20] [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]"
 	lineUsageAdd  = "usage: parley line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>] [--state-dir <dir>]"
 	lineUsageDrop = "usage: parley line drop <id> <nick> [--force] [--state-dir <dir>]"
 	lineUsageEnd  = "usage: parley line end <id> [--force] [--state-dir <dir>]"
