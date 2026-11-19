@@ -427,16 +427,18 @@ func TestParseInterleavedTakesPositionalsAnywhere(t *testing.T) {
 	}
 }
 
-// TestUsageDocumentsTheLineVerbs: the top usage lists the four verbs and says
+// TestUsageDocumentsTheLineVerbs: the top usage lists the five verbs and says
 // what each does, and each verb answers -h on stdout with exit 0.
 func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 	top := mustRun(t, "", "-h").stdout
 	for _, want := range []string{
 		"parley line    new <id> --chair <nick> [--cap 20] [--window 10m]",
 		"parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>]",
+		"parley line    set <id> [--cap <n>] [--window 10m]",
 		"parley line    drop <id> <nick> [--force]",
 		"parley line    end <id> [--force]",
-		"line     set up a line, put sessions on it, take them off and take it down",
+		"line     set up a line, put sessions on it, change its breaker, take them off and take it down",
+		"set <id> changes the breaker of a line that is running",
 		"lines/<id>/line.json under the state base",
 		"sha256 of its exact bytes",
 		"turns network on for Codex in that working directory",
@@ -450,7 +452,14 @@ func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 			t.Errorf("usage does not mention %q", want)
 		}
 	}
-	for _, verb := range []string{"new", "add", "drop", "end"} {
+	// The text is wrapped, so what spans a line break is looked for flattened.
+	flat := strings.Join(strings.Fields(top), " ")
+	for _, want := range []string{"each session's primer still states the old numbers", "a session started outside add is not in the record and is not touched"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("usage does not mention %q", want)
+		}
+	}
+	for _, verb := range []string{"new", "add", "set", "drop", "end"} {
 		help := runParley(t, "", "line", verb, "-h")
 		if help.code != 0 {
 			t.Errorf("line %s -h exited %d", verb, help.code)
@@ -460,7 +469,7 @@ func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 		}
 	}
 	all := mustRun(t, "", "line", "-h").stdout
-	for _, verb := range []string{"new", "add", "drop", "end"} {
+	for _, verb := range []string{"new", "add", "set", "drop", "end"} {
 		if !strings.Contains(all, "parley line "+verb) {
 			t.Errorf("line -h does not list %s: %q", verb, all)
 		}
@@ -468,10 +477,10 @@ func TestUsageDocumentsTheLineVerbs(t *testing.T) {
 	if res := runParley(t, ""); res.code != 2 {
 		t.Errorf("bare parley exited %d", res.code)
 	}
-	if res := runParley(t, "", "line"); res.code != 2 || !strings.Contains(res.stderr, "needs a verb") {
+	if res := runParley(t, "", "line"); res.code != 2 || !strings.Contains(res.stderr, "needs a verb: new, add, set, drop or end") {
 		t.Errorf("parley line exited %d: %s", res.code, res.stderr)
 	}
-	if res := runParley(t, "", "line", "frob"); res.code != 2 || !strings.Contains(res.stderr, "unknown line verb") {
+	if res := runParley(t, "", "line", "frob"); res.code != 2 || !strings.Contains(res.stderr, "unknown line verb") || !strings.Contains(res.stderr, "the verbs are new, add, set, drop and end") {
 		t.Errorf("parley line frob exited %d: %s", res.code, res.stderr)
 	}
 }

@@ -195,7 +195,7 @@ func lockID(base, id string) (release func(), err error) {
 	if err != nil {
 		var held *state.IDLockedError
 		if errors.As(err, &held) {
-			return nil, fmt.Errorf("%q is in use by another parley table or build command (new or end), or line command (new, add, drop or end): its lock %s is held; wait for that command to finish, then run this again", id, held.Path)
+			return nil, fmt.Errorf("%q is in use by another parley table or build command (new or end), or line command (new, add, set, drop or end): its lock %s is held; wait for that command to finish, then run this again", id, held.Path)
 		}
 		return nil, err
 	}

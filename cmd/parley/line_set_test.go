@@ -1,0 +1,682 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/colinsurprenant/parley/internal/state"
+)
+
+func (b *lineBench) lset(id string, extra ...string) []string {
+	return append([]string{"line", "set", id, "--state-dir", b.base}, extra...)
+}
+
+// mcpArgsWith is mcpArgs for a line whose cap and window are these.
+func (b *lineBench) mcpArgsWith(id, capN, window string) []string {
+	args := b.mcpArgs(id)
+	for i, a := range args {
+		switch a {
+		case "--cap":
+			args[i+1] = capN
+		case "--window":
+			args[i+1] = window
+		}
+	}
+	return args
+}
+
+// readMCP is the command and the args of the one server a .mcp.json holds.
+func readMCP(t *testing.T, path string) (string, []string) {
+	t.Helper()
+	var doc struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	raw := mustRead(t, path)
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("%s is not JSON: %v\n%s", path, err, raw)
+	}
+	srv, ok := doc.MCPServers["parley"]
+	if !ok || len(doc.MCPServers) != 1 {
+		t.Fatalf("%s holds servers %v, want only parley", path, doc.MCPServers)
+	}
+	return srv.Command, srv.Args
+}
+
+func (b *lineBench) wantMCP(t *testing.T, path, id, capN, window string) {
+	t.Helper()
+	cmd, args := readMCP(t, path)
+	if want := b.mcpArgsWith(id, capN, window); cmd != binPath || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("%s runs %q with\n%q\nwant %q with\n%q", path, cmd, args, binPath, want)
+	}
+}
+
+// wantNoTempFiles fails if a directory holds what an interrupted atomic write leaves.
+func wantNoTempFiles(t *testing.T, dirs ...string) {
+	t.Helper()
+	for _, d := range dirs {
+		ents, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range ents {
+			if strings.HasPrefix(e.Name(), ".tmp-") {
+				t.Errorf("%s holds the temp file %s", d, e.Name())
+			}
+		}
+	}
+}
+
+// TestLineSetRaisesTheCapOfAClaudeAndACodexSession: the Claude session's .mcp.json
+// is written again with the new cap and nothing else changed, the digest the record
+// holds for it follows, so that `line drop` still shows it is the line's; the Codex
+// config, which carries neither number, is left as it is; the record holds the new
+// cap, the window it had, and the output says what each session has to do.
+func TestLineSetRaisesTheCapOfAClaudeAndACodexSession(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-build")
+	pristine1, pristine2 := treeListing(t, co1), treeListing(t, co2)
+	b.mustAdd(t, "demo", "plan", "claude", co1, "--model", "opus")
+	b.mustAdd(t, "demo", "build", "codex", co2)
+	mcp := filepath.Join(co1, ".mcp.json")
+	cfg := filepath.Join(co2, ".codex", "config.toml")
+	cfgBefore := mustRead(t, cfg)
+	before := b.record(t, "demo")
+	if fi, err := os.Stat(mcp); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Fatalf("%s: %v, %v", mcp, fi, err)
+	}
+
+	res := mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	t.Logf("stderr:\n%s", res.stderr)
+
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+	if fi, err := os.Stat(mcp); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Errorf("%s mode %v (%v), want 0644 as it was", mcp, fi, err)
+	}
+	if got := mustRead(t, cfg); string(got) != string(cfgBefore) {
+		t.Errorf("the Codex config changed:\n%s\nwas\n%s", got, cfgBefore)
+	}
+	wantNoTempFiles(t, co1, filepath.Dir(cfg), co2)
+	if got := gitIn(t, co1, "status", "--porcelain"); got != "" {
+		t.Errorf("the working directory is not clean: %s", got)
+	}
+
+	rec := b.record(t, "demo")
+	if rec.Cap != 30 || rec.Window != "10m" {
+		t.Errorf("record cap %d window %q, want 30 and 10m", rec.Cap, rec.Window)
+	}
+	plan, build := sessionByNick(t, rec, "plan"), sessionByNick(t, rec, "build")
+	oldPlan := sessionByNick(t, before, "plan")
+	if f := plan.Files[0]; f.SHA256 != fileDigestOf(t, mcp) || f.SHA256 == oldPlan.Files[0].SHA256 || f.ExcludeFile != oldPlan.Files[0].ExcludeFile {
+		t.Errorf("plan's file entry %+v, want the new digest %s and the rest as it was (%+v)", f, fileDigestOf(t, mcp), oldPlan.Files[0])
+	}
+	if fmt.Sprint(build) != fmt.Sprint(sessionByNick(t, before, "build")) {
+		t.Errorf("build's session changed: %+v", build)
+	}
+
+	pump := fmt.Sprintf("'%s' codex --stream '%s' --nick build --state-dir '%s' --thread auto --skill line --chair colin --cap 30 --window 10m", binPath, b.stream("demo"), b.base)
+	wantInOrder(t, res.stdout, []string{
+		"Line demo now has cap 30 (was 8) and window 10m (unchanged).",
+		"Rewrote " + mcp + " (session plan).",
+		"Left " + cfg + " as it is (session build): it carries neither number.",
+		"Updated " + filepath.Join(b.base, "lines", "demo", "line.json") + ".",
+		"Nothing that is running changes yet: each session's front process reads its cap and window once, when it starts.",
+		"plan (Claude Code): reconnect parley's MCP server in that session, or restart it:",
+		fmt.Sprintf("cd '%s'", co1),
+		"PARLEY_NICK=plan claude --dangerously-load-development-channels server:parley --model 'opus' --resume <session-id>",
+		"build (Codex): stop its pump, which holds the old numbers, and start this one in its place; the Codex session itself keeps running:",
+		pump,
+		"Each session's primer still states the old numbers, a Claude Code session's channel instructions too, and a session started outside line add is not in the record, so it was not touched.",
+	})
+	if strings.Contains(res.stdout, "codex resume") {
+		t.Errorf("a Codex session is not resumed again:\n%s", res.stdout)
+	}
+
+	// The digests are what `line drop` proves a file is the line's by.
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+	mustLine(t, b, b.ldrop("demo", "build")...)
+	if got := treeListing(t, co1); got != pristine1 {
+		t.Errorf("co-plan is not as it was.\nbefore:\n%s\nafter:\n%s", pristine1, got)
+	}
+	if got := treeListing(t, co2); got != pristine2 {
+		t.Errorf("co-build is not as it was.\nbefore:\n%s\nafter:\n%s", pristine2, got)
+	}
+}
+
+// TestLineSetWindowAloneChangesOnlyTheWindow: the cap is the one the record had, in
+// the file and in the record, and the output says it is unchanged.
+func TestLineSetWindowAloneChangesOnlyTheWindow(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+
+	res := mustLine(t, b, b.lset("demo", "--window", "15m")...)
+	b.wantMCP(t, mcp, "demo", "8", "15m")
+	rec := b.record(t, "demo")
+	if rec.Cap != 8 || rec.Window != "15m" {
+		t.Errorf("record cap %d window %q, want 8 and 15m", rec.Cap, rec.Window)
+	}
+	if f := rec.Sessions[0].Files[0]; f.SHA256 != fileDigestOf(t, mcp) {
+		t.Errorf("file entry %+v, want digest %s", f, fileDigestOf(t, mcp))
+	}
+	if !strings.Contains(res.stdout, "Line demo now has cap 8 (unchanged) and window 15m (was 10m).") {
+		t.Errorf("stdout:\n%s", res.stdout)
+	}
+
+	// A window that is a number of seconds is recorded and written as a person writes it.
+	mustLine(t, b, b.lset("demo", "--window", "90s", "--cap", "0")...)
+	b.wantMCP(t, mcp, "demo", "0", "1m30s")
+	if rec := b.record(t, "demo"); rec.Cap != 0 || rec.Window != "1m30s" {
+		t.Errorf("record cap %d window %q, want 0 and 1m30s", rec.Cap, rec.Window)
+	}
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+}
+
+// TestLineSetSaysWhenThereIsNothingToChange: the numbers the line has already are not
+// written again.
+func TestLineSetSaysWhenThereIsNothingToChange(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	before := b.lsnap(t, co)
+	res := mustLine(t, b, b.lset("demo", "--cap", "8", "--window", "10m")...)
+	if !strings.Contains(res.stdout, "Line demo already has cap 8 and window 10m: nothing was changed.") {
+		t.Errorf("stdout:\n%s", res.stdout)
+	}
+	b.wantLineUnchanged(t, before, co)
+}
+
+// TestLineSetWritesWhatLineAddWould: the bytes of a rewritten file are the ones `line
+// add` writes for a line that had these numbers from the start.
+func TestLineSetWritesWhatLineAddWould(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co, "--model", "opus")
+	mustLine(t, b, b.lset("demo", "--cap", "30", "--window", "15m")...)
+	mcp := filepath.Join(co, ".mcp.json")
+	got := mustRead(t, mcp)
+
+	mustLine(t, b, b.lend("demo")...)
+	mustLine(t, b, b.lnew("demo", "--cap", "30", "--window", "15m")...)
+	b.mustAdd(t, "demo", "plan", "claude", co, "--model", "opus")
+	if want := mustRead(t, mcp); string(got) != string(want) {
+		t.Errorf("line set wrote\n%s\nline add writes\n%s", got, want)
+	}
+}
+
+// TestLineSetPrintsThePumpLinesLineAddPrints: a Codex and an OpenCode session's
+// lines are `line add`'s, with the new numbers, and name the codex the line was made
+// with; an OpenCode session has no launch file, so nothing is written for it.
+func TestLineSetPrintsThePumpLinesLineAddPrints(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo", "--codex-bin", b.codex)
+	cx, oc := b.gitWorkdir(t, "co-build"), b.gitWorkdir(t, "co-review")
+	addCodex := b.mustAdd(t, "demo", "build", "codex", cx)
+	addOC := mustLine(t, b.lineBench, b.ladd("demo", "review", "opencode", oc)...)
+	wantCodex := strings.Replace(lineWith(t, addCodex.stdout, " codex --stream "), "--cap 8", "--cap 30", 1)
+	wantOC := strings.Replace(lineWith(t, addOC.stdout, " opencode --stream "), "--cap 8", "--cap 30", 1)
+	if !strings.Contains(wantCodex, "--cap 30") || !strings.Contains(wantCodex, "--codex-bin '"+b.codex+"'") || !strings.Contains(wantOC, "--cap 30") {
+		t.Fatalf("the lines line add printed are not what the test expects:\n%s\n%s", wantCodex, wantOC)
+	}
+	codexCalls, ocCalls := b.lineBench.callCount(), b.callCount()
+	treeOC := treeListing(t, oc)
+
+	res := mustLine(t, b.lineBench, b.lset("demo", "--cap", "30")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	wantInOrder(t, res.stdout, []string{
+		"Line demo now has cap 30 (was 8) and window 10m (unchanged).",
+		"Left " + filepath.Join(cx, ".codex", "config.toml") + " as it is (session build): it carries neither number.",
+		"build (Codex): stop its pump, which holds the old numbers, and start this one in its place; the Codex session itself keeps running:",
+		wantCodex,
+		"review (OpenCode): stop its pump, which holds the old numbers, and start this one in its place; the OpenCode session itself keeps running:",
+		wantOC,
+	})
+	if strings.Count(res.stdout, "Rewrote") != 0 || strings.Contains(res.stdout, oc+"/") {
+		t.Errorf("a file was written, or the OpenCode working directory named as one:\n%s", res.stdout)
+	}
+	if got := treeListing(t, oc); got != treeOC {
+		t.Errorf("the OpenCode working directory changed.\nbefore:\n%s\nafter:\n%s", treeOC, got)
+	}
+	// Nothing was run: neither codex nor opencode.
+	if b.lineBench.callCount() != codexCalls || b.callCount() != ocCalls {
+		t.Errorf("set ran a harness: codex calls %d (was %d), opencode calls %d (was %d)", b.lineBench.callCount(), codexCalls, b.callCount(), ocCalls)
+	}
+	if rec := b.record(t, "demo"); rec.Cap != 30 || rec.CodexBin != b.codex {
+		t.Errorf("record cap %d codex_bin %q", rec.Cap, rec.CodexBin)
+	}
+}
+
+// TestLineSetRewritesASharedFileOnce: two Claude sessions of one working directory
+// share a file, which is written once, and the record holds its new digest under both.
+func TestLineSetRewritesASharedFileOnce(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	b.mustAdd(t, "demo", "review", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	before, err := os.Stat(mcp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+	if got := strings.Count(res.stdout, "Rewrote"); got != 1 || !strings.Contains(res.stdout, "Rewrote "+mcp+" (sessions plan, review).") {
+		t.Errorf("stdout says it rewrote %d files, want the shared one once:\n%s", got, res.stdout)
+	}
+	if after, err := os.Stat(mcp); err != nil || os.SameFile(before, after) {
+		t.Errorf("the file was not replaced (or is gone): %v", err)
+	}
+	rec := b.record(t, "demo")
+	want := fileDigestOf(t, mcp)
+	for _, s := range rec.Sessions {
+		if len(s.Files) != 1 || s.Files[0].SHA256 != want {
+			t.Errorf("session %s holds %+v, want the digest %s", s.Nick, s.Files, want)
+		}
+	}
+	if !strings.Contains(res.stdout, "plan (Claude Code)") || !strings.Contains(res.stdout, "review (Claude Code)") {
+		t.Errorf("each session is told what to do:\n%s", res.stdout)
+	}
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+	mustLine(t, b, b.ldrop("demo", "review")...)
+}
+
+// TestLineSetRefusesBeforeAnyChange: a missing or invalid flag is exit 2 and the
+// line, its files and its record are as they were.
+func TestLineSetRefusesBeforeAnyChange(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	before := b.lsnap(t, co)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"neither flag", b.lset("demo"), "--cap or --window is required"},
+		{"a negative cap", b.lset("demo", "--cap", "-1"), "--cap must not be negative"},
+		{"a cap that is no number", b.lset("demo", "--cap", "many"), "invalid value"},
+		{"a window of zero", b.lset("demo", "--window", "0"), "--window must be above zero"},
+		{"a negative window", b.lset("demo", "--window", "-5m"), "--window must be above zero"},
+		{"a window that is no duration", b.lset("demo", "--window", "soon"), "invalid value"},
+		{"a window with no unit", b.lset("demo", "--window", "5"), "invalid value"},
+		{"a good cap and a bad window", b.lset("demo", "--cap", "30", "--window", "0s"), "--window must be above zero"},
+		{"no id", []string{"line", "set", "--cap", "30", "--state-dir", b.base}, "the line id is required"},
+		{"a bad id", b.lset("Demo!", "--cap", "30"), "must match"},
+		{"a second id", b.lset("demo", "--cap", "30", "other"), `unexpected argument "other"`},
+		{"an unknown flag", b.lset("demo", "--cap", "30", "--force"), "flag provided but not defined"},
+	} {
+		res := b.run(t, tc.args...)
+		if res.code != 2 || !strings.Contains(res.stderr, tc.want) {
+			t.Errorf("%s: exit %d, want 2 saying %q\nstdout: %s\nstderr: %s", tc.name, res.code, tc.want, res.stdout, res.stderr)
+		}
+		b.wantLineUnchanged(t, before, co)
+	}
+	// And a cap of 0 is not a refusal: it turns the breaker off.
+	mustLine(t, b, b.lset("demo", "--cap", "0")...)
+	b.wantMCP(t, filepath.Join(co, ".mcp.json"), "demo", "0", "10m")
+}
+
+// TestLineSetRefusesALaunchFileThatIsNotTheLines: one file edited, wherever it is in
+// the record, refuses the whole run, names the file, and leaves every file, those
+// before it in the record included, and the record as they were.
+func TestLineSetRefusesALaunchFileThatIsNotTheLines(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tamper func(t *testing.T, mcp1, mcp2, cfg string) string
+		want   string
+	}{
+		{"a Claude file edited", func(t *testing.T, mcp1, mcp2, cfg string) string {
+			edit(t, mcp2, "\n")
+			return mcp2
+		}, "it was edited or replaced"},
+		{"a Claude file replaced by one that is not the line's", func(t *testing.T, mcp1, mcp2, cfg string) string {
+			if err := os.WriteFile(mcp2, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return mcp2
+		}, "it was edited or replaced"},
+		{"the first Claude file edited", func(t *testing.T, mcp1, mcp2, cfg string) string {
+			edit(t, mcp1, " ")
+			return mcp1
+		}, "it was edited or replaced"},
+		{"a Codex config edited, which would not have been written", func(t *testing.T, mcp1, mcp2, cfg string) string {
+			edit(t, cfg, "# mine\n")
+			return cfg
+		}, "it was edited or replaced"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newLineBench(t)
+			lineUp(t, b, "demo")
+			co1, co2, co3 := b.gitWorkdir(t, "co-a"), b.gitWorkdir(t, "co-b"), b.gitWorkdir(t, "co-c")
+			b.mustAdd(t, "demo", "plan", "claude", co1)
+			b.mustAdd(t, "demo", "review", "claude", co2)
+			b.mustAdd(t, "demo", "build", "codex", co3)
+			mcp1, mcp2 := filepath.Join(co1, ".mcp.json"), filepath.Join(co2, ".mcp.json")
+			cfg := filepath.Join(co3, ".codex", "config.toml")
+			bad := tc.tamper(t, mcp1, mcp2, cfg)
+			before := b.lsnap(t, co1, co2, co3)
+
+			res := b.run(t, b.lset("demo", "--cap", "30")...)
+			if res.code != 1 || !strings.Contains(res.stderr, "will not rewrite "+bad+": ") || !strings.Contains(res.stderr, tc.want) || !strings.Contains(res.stderr, "nothing was changed") {
+				t.Fatalf("exit %d, want 1 naming %s and saying %q\nstdout: %s\nstderr: %s", res.code, bad, tc.want, res.stdout, res.stderr)
+			}
+			if res.stdout != "" {
+				t.Errorf("a refusal printed on stdout:\n%s", res.stdout)
+			}
+			b.wantLineUnchanged(t, before, co1, co2, co3)
+			wantNoTempFiles(t, co1, co2, co3)
+		})
+	}
+}
+
+func edit(t *testing.T, path, more string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(more); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLineSetRefusesALaunchFileThatIsALink: a link at the path, to a file with the
+// very bytes the line wrote, is not the line's file, and neither is a file in a
+// .codex that became a link. Nothing is written through either.
+func TestLineSetRefusesALaunchFileThatIsALink(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-build")
+	b.mustAdd(t, "demo", "plan", "claude", co1)
+	b.mustAdd(t, "demo", "build", "codex", co2)
+	mcp := filepath.Join(co1, ".mcp.json")
+
+	elsewhere := filepath.Join(b.root, "elsewhere.json")
+	if err := os.WriteFile(elsewhere, mustRead(t, mcp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(mcp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, mcp); err != nil {
+		t.Fatal(err)
+	}
+	before := b.lsnap(t, co1, co2)
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 || !strings.Contains(res.stderr, "will not rewrite "+mcp+": it is a symlink") {
+		t.Fatalf("exit %d, want 1 naming the link\nstderr: %s", res.code, res.stderr)
+	}
+	b.wantLineUnchanged(t, before, co1, co2)
+	if got, _ := os.Readlink(mcp); got != elsewhere || fileDigestOf(t, elsewhere) != sessionByNick(t, b.record(t, "demo"), "plan").Files[0].SHA256 {
+		t.Errorf("the link now leads to %q, or its target was written", got)
+	}
+
+	// Put the file back, and make the Codex session's .codex a link.
+	if err := os.Remove(mcp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(elsewhere, mcp); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(b.root, "dot-codex")
+	if err := os.Rename(filepath.Join(co2, ".codex"), moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, filepath.Join(co2, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	before = b.lsnap(t, co1, co2)
+	res = b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 || !strings.Contains(res.stderr, "will not rewrite "+filepath.Join(co2, ".codex", "config.toml")+": its directory "+filepath.Join(co2, ".codex")+" is a symlink now") {
+		t.Fatalf("exit %d, want 1 naming the linked directory\nstderr: %s", res.code, res.stderr)
+	}
+	b.wantLineUnchanged(t, before, co1, co2)
+	b.wantMCP(t, mcp, "demo", "8", "10m")
+}
+
+// TestLineSetLeavesAFileThatIsNotThereNotThere: a launch file the user removed is
+// not made again, and the record still gets the numbers.
+func TestLineSetLeavesAFileThatIsNotThereNotThere(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-review")
+	b.mustAdd(t, "demo", "plan", "claude", co1)
+	b.mustAdd(t, "demo", "review", "claude", co2)
+	gone, kept := filepath.Join(co1, ".mcp.json"), filepath.Join(co2, ".mcp.json")
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	goneDigest := sessionByNick(t, b.record(t, "demo"), "plan").Files[0].SHA256
+
+	res := mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if _, err := os.Lstat(gone); err == nil {
+		t.Error("the file that was not there is there")
+	}
+	b.wantMCP(t, kept, "demo", "30", "10m")
+	if !strings.Contains(res.stdout, gone+" is not there (session plan), so nothing was written for it.") || !strings.Contains(res.stdout, "Rewrote "+kept+" (session review).") {
+		t.Errorf("stdout:\n%s", res.stdout)
+	}
+	rec := b.record(t, "demo")
+	if got := sessionByNick(t, rec, "plan").Files[0].SHA256; rec.Cap != 30 || got != goneDigest {
+		t.Errorf("record cap %d, plan's digest %s, want 30 and the one it had (%s)", rec.Cap, got, goneDigest)
+	}
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+	mustLine(t, b, b.ldrop("demo", "review")...)
+}
+
+// TestLineSetFailurePartWayIsReportedAndRunningAgainFinishes: the second of two files
+// cannot be written. The first is, and the output says which were and which were
+// not, and that the record was not; nothing is rolled back. Once the cause is gone,
+// the same command finishes, recognizing the file already written by its bytes.
+func TestLineSetFailurePartWayIsReportedAndRunningAgainFinishes(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a directory's mode does not stop root writing in it")
+	}
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-review")
+	b.mustAdd(t, "demo", "plan", "claude", co1)
+	b.mustAdd(t, "demo", "review", "claude", co2)
+	mcp1, mcp2 := filepath.Join(co1, ".mcp.json"), filepath.Join(co2, ".mcp.json")
+	recBefore := string(mustRead(t, filepath.Join(b.base, "lines", "demo", "line.json")))
+	oldDigest2 := fileDigestOf(t, mcp2)
+
+	if err := os.Chmod(co2, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(co2, 0o755) })
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 {
+		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	for _, want := range []string{"rewritten: " + mcp1 + ";", "not rewritten: " + mcp2 + ";", "line.json was not written and still holds cap 8, window 10m", "run this again to finish"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, res.stderr)
+		}
+	}
+	b.wantMCP(t, mcp1, "demo", "30", "10m")
+	b.wantMCP(t, mcp2, "demo", "8", "10m")
+	if got := string(mustRead(t, filepath.Join(b.base, "lines", "demo", "line.json"))); got != recBefore {
+		t.Errorf("the record changed:\n%s", got)
+	}
+	wantNoTempFiles(t, co1, co2)
+
+	if err := os.Chmod(co2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res = mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	for _, want := range []string{
+		mcp1 + " already held the new numbers (session plan), as a run cut short leaves it: its digest is recorded.",
+		"Rewrote " + mcp2 + " (session review).",
+	} {
+		if !strings.Contains(res.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+		}
+	}
+	b.wantMCP(t, mcp2, "demo", "30", "10m")
+	rec := b.record(t, "demo")
+	if got := sessionByNick(t, rec, "plan").Files[0].SHA256; rec.Cap != 30 || got != fileDigestOf(t, mcp1) || sessionByNick(t, rec, "review").Files[0].SHA256 != fileDigestOf(t, mcp2) || fileDigestOf(t, mcp2) == oldDigest2 {
+		t.Errorf("record %+v", rec)
+	}
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+	mustLine(t, b, b.ldrop("demo", "review")...)
+}
+
+// TestLineSetOnALineThatIsNotThere: exit 2, naming it, with no lock made.
+func TestLineSetOnALineThatIsNotThere(t *testing.T) {
+	b := newLineBench(t)
+	res := b.run(t, b.lset("nope", "--cap", "30")...)
+	if res.code != 2 || !strings.Contains(res.stderr, `no line "nope"`) {
+		t.Errorf("exit %d, want 2 naming the line\n%s", res.code, res.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(b.base, ".ids")); err == nil {
+		t.Error("set on a line that is not there made the id lock")
+	}
+}
+
+// TestLineSetHoldsTheIDLock: with the id's lock held by another command, set refuses
+// at once, as the other line verbs do, and changes nothing; with it free, it runs,
+// and leaves it free.
+func TestLineSetHoldsTheIDLock(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	before := b.lsnap(t, co)
+	l, err := state.LockID(b.base, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 || !strings.Contains(res.stderr, idInUse) || !strings.Contains(res.stderr, "line command (new, add, set, drop or end)") {
+		t.Errorf("set with the id's lock held: exit %d\n%s", res.code, res.stderr)
+	}
+	b.wantLineUnchanged(t, before, co)
+	if err := l.Release(); err != nil {
+		t.Fatal(err)
+	}
+	mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	free, err := state.LockID(b.base, "demo")
+	if err != nil {
+		t.Fatalf("a finished line set left the id's lock held: %v", err)
+	}
+	free.Release()
+}
+
+// TestLineSetDialsNothing: with something listening at the line's server, set
+// makes no connection to it, and runs no harness.
+func TestLineSetDialsNothing(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-build")
+	b.mustAdd(t, "demo", "plan", "claude", co1)
+	b.mustAdd(t, "demo", "build", "codex", co2)
+	// The line's server is the bench's own free address; the adds are done, so
+	// whatever they asked of it is behind us. Take the address, and watch it.
+	ln, err := net.Listen("tcp", b.db.server)
+	if err != nil {
+		t.Skipf("the bench's address was taken since the adds: %v", err)
+	}
+	defer ln.Close()
+	calls := b.callCount()
+
+	mustLine(t, b, b.lset("demo", "--cap", "30", "--window", "20m")...)
+
+	if err := ln.(*net.TCPListener).SetDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := ln.Accept(); err == nil {
+		c.Close()
+		t.Error("set connected to the line's server")
+	}
+	if b.callCount() != calls {
+		t.Error("set ran codex")
+	}
+}
+
+// TestLineSetStopsWhenInterrupted: an interrupt that has come before the first file
+// is written stops the run with nothing written, and says so.
+func TestLineSetStopsWhenInterrupted(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	before := b.lsnap(t, co)
+	rec, _, err := readLineRecord(b.base, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLineSet(rec, b.base, binPath, 30, "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = plan.apply(ctx, filepath.Join(b.base, "lines", "demo"))
+	if err == nil || !strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), "rewritten: none; not rewritten: "+filepath.Join(co, ".mcp.json")) {
+		t.Fatalf("apply under a cancelled context: %v", err)
+	}
+	b.wantLineUnchanged(t, before, co)
+}
+
+// TestPlanLineSetRefusesAClaudeLaunchItWouldPushOverTheCap: the instructions of a
+// Claude session are measured with the new numbers, and a window that makes them
+// longer than Claude Code's cap refuses the run before any file is judged.
+func TestPlanLineSetRefusesAClaudeLaunchItWouldPushOverTheCap(t *testing.T) {
+	const longest = "2562047h47m16.854775807s"
+	rec := goodLineRecord("/b")
+	fits := func(n int, window string) bool {
+		rec.StateDir = "/" + strings.Repeat("b", n)
+		next := rec
+		next.Window = window
+		return measureLineClaude(next, "plan", rec.StateDir, "x") == nil
+	}
+	// The longest state directory the instructions still hold at the default window.
+	lo, hi := 0, 4096
+	if !fits(lo, "10m") || fits(hi, "10m") {
+		t.Fatalf("the search does not start from a fit and an overflow")
+	}
+	for hi-lo > 1 {
+		mid := (lo + hi) / 2
+		if fits(mid, "10m") {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	rec.StateDir = "/" + strings.Repeat("b", lo)
+	if fits(lo, longest) {
+		t.Fatalf("the longest window does not push the instructions over the cap")
+	}
+	if _, err := planLineSet(rec, rec.StateDir, "/bin/parley", rec.Cap, longest); err == nil ||
+		!strings.Contains(err.Error(), "over Claude Code's cap") || !strings.Contains(err.Error(), "--window") {
+		t.Errorf("planLineSet with a window that overflows: %v", err)
+	}
+	// The same record and a window that fits is judged on to the files, which are not there.
+	if _, err := planLineSet(rec, rec.StateDir, "/bin/parley", rec.Cap, "15m"); err != nil {
+		t.Errorf("planLineSet with a window that fits: %v", err)
+	}
+}

@@ -126,6 +126,7 @@ usage:
   parley line    new <id> --chair <nick> [--cap 20] [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]
                  [--opencode-bin opencode]
   parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>] [--state-dir <dir>]
+  parley line    set <id> [--cap <n>] [--window 10m] [--state-dir <dir>]
   parley line    drop <id> <nick> [--force] [--state-dir <dir>]
   parley line    end <id> [--force] [--state-dir <dir>]
   parley version
@@ -436,7 +437,7 @@ verbs:
            directory and the build directory, never a branch or a Codex
            session: it prints the kept branches and the git branch -D line for
            each, and a codex delete line for each Codex peer
-  line     set up a line, put sessions on it, take them off and take it down.
+  line     set up a line, put sessions on it, change its breaker, take them off and take it down.
            A line is a few long-running sessions, each in a working directory of
            its own, and one human on one channel, under --skill line: no seal, a
            breaker of two rates that tells the human when it trips, no target and
@@ -541,6 +542,29 @@ verbs:
            the rule that makes it ask), on what the run did with permissions, on
            the service's password, on an interrupt holding deliveries, and what
            OpenCode version parley was last verified against.
+           set <id> changes the breaker of a line that is running: --cap <n>,
+           --window <duration>, or both, at least one, each held to what new holds
+           it to (a cap of 0 or more, a window above zero), exit 2 and nothing
+           changed otherwise. It takes the id's lock, touches no server and posts
+           nothing. Every launch file the record lists must still be a regular
+           file whose bytes hash to the recorded digest, in a directory that is
+           not a link, or it refuses, exit 1, naming the file, before it writes
+           any; a file that is not there is left that way. Each Claude session's
+           .mcp.json is then written again with the new --cap and --window, by
+           the function add writes it with, through a temp file and a rename and
+           never through a link, and the digest every session that shares it holds
+           is updated (a Codex session's config.toml carries neither number and
+           is left as it is); the record's cap and window are written last. A
+           Claude launch whose instructions would then be over Claude Code's
+           cap is refused. A failure partway says which files were written and
+           which were not, rolls nothing back, and running the verb again
+           finishes. It prints, for each session, what is left for the human,
+           since each front reads its cap and window once, at launch: reconnect
+           parley's MCP server in a Claude Code session, or restart it; for a
+           Codex or an OpenCode session, the pump line, as add prints it, with
+           the new numbers. It says that each session's primer still states the
+           old numbers, and that a session started outside add is not in the
+           record and is not touched.
            drop <id> <nick> takes the
            id's lock and the session's nick lock without waiting and refuses,
            exit 1, while either is held. It removes the session's thread record

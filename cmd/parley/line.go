@@ -21,8 +21,8 @@ import (
 
 // A line is a few long-running sessions, each in a working directory of its own,
 // and one human on one channel, under --skill line. What `line new` keeps of it is
-// <state base>/lines/<id>/line.json, the record `line add`, `line drop` and `line
-// end` read and write; the rest is elsewhere: each session's launch file in its
+// <state base>/lines/<id>/line.json, the record `line add`, `line set`, `line drop`
+// and `line end` read and write; the rest is elsewhere: each session's launch file in its
 // working directory (.mcp.json or .codex/config.toml, and a line in the
 // repository's info/exclude when the directory is a repository's top; an OpenCode
 // session has none), a Codex session's thread record or
@@ -32,8 +32,8 @@ import (
 // same base, as "tables" and "builds" do, which is why no participant may be
 // called any of the three.
 //
-// What parley trusts, for the commands in line_new.go, line_add.go and
-// line_drop.go (written out in docs/line.md, "What parley trusts"):
+// What parley trusts, for the commands in line_new.go, line_add.go, line_set.go
+// and line_drop.go (written out in docs/line.md, "What parley trusts"):
 //
 //   - Trusted: parley's own state (line.json under <state base>/lines/<id>/,
 //     made 0700; the thread records, cursors and lock files under the nicks' own
@@ -41,8 +41,9 @@ import (
 //     A deliberate hand edit of that state is out of scope.
 //   - Not parley's state: the user's working directories. A launch file there is the
 //     line's only if its bytes still hash to the digest the record holds, and
-//     only that proof lets `line drop` delete it. Nothing in a working directory is
-//     overwritten, written through a link or removed on any other ground.
+//     only that proof lets `line drop` delete it or `line set` rewrite it, and
+//     `line set` does it atomically and never through a link. Nothing in a working
+//     directory is overwritten, written through a link or removed on any other ground.
 //   - Untrusted: Codex's output and the thread id it announces (checked to be a
 //     UUID), OpenCode's output and the session id it announces (checked to have
 //     the shape of one, and to be the one every event of the turn carries),
@@ -94,12 +95,12 @@ func checkNotALine(base, id, what string) error {
 	return nil
 }
 
-// cmdLine runs the line verbs: new sets a line up, add puts a session on it,
-// drop takes one off and end takes the line down.
+// cmdLine runs the line verbs: new sets a line up, add puts a session on it, set
+// changes its breaker, drop takes a session off and end takes the line down.
 func cmdLine(args []string) error {
 	if len(args) == 0 {
 		lineUsage(os.Stderr)
-		return cfgErrf("parley line needs a verb: new, add, drop or end")
+		return cfgErrf("parley line needs a verb: new, add, set, drop or end")
 	}
 	switch args[0] {
 	case "-h", "-help", "--help", "help":
@@ -109,22 +110,25 @@ func cmdLine(args []string) error {
 		return cmdLineNew(args[1:])
 	case "add":
 		return cmdLineAdd(args[1:])
+	case "set":
+		return cmdLineSet(args[1:])
 	case "drop":
 		return cmdLineDrop(args[1:])
 	case "end":
 		return cmdLineEnd(args[1:])
 	}
 	lineUsage(os.Stderr)
-	return cfgErrf("unknown line verb %q: the verbs are new, add, drop and end", args[0])
+	return cfgErrf("unknown line verb %q: the verbs are new, add, set, drop and end", args[0])
 }
 
 func lineUsage(w io.Writer) {
-	fmt.Fprint(w, lineUsageNew+"\n"+lineUsageAdd+"\n"+lineUsageDrop+"\n"+lineUsageEnd+"\n")
+	fmt.Fprint(w, lineUsageNew+"\n"+lineUsageAdd+"\n"+lineUsageSet+"\n"+lineUsageDrop+"\n"+lineUsageEnd+"\n")
 }
 
 const (
 	lineUsageNew  = "usage: parley line new <id> --chair <nick> [--cap 20] [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]"
 	lineUsageAdd  = "usage: parley line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>] [--state-dir <dir>]"
+	lineUsageSet  = "usage: parley line set <id> [--cap <n>] [--window 10m] [--state-dir <dir>]  (at least one of --cap and --window)"
 	lineUsageDrop = "usage: parley line drop <id> <nick> [--force] [--state-dir <dir>]"
 	lineUsageEnd  = "usage: parley line end <id> [--force] [--state-dir <dir>]"
 )

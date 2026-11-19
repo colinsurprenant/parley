@@ -462,7 +462,7 @@ func TestLineVerbsHoldTheIDLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{b.lnew("demo"), b.ladd("demo", "plan", "claude", co), b.ldrop("demo", "plan"), b.lend("demo")} {
+	for _, args := range [][]string{b.lnew("demo"), b.ladd("demo", "plan", "claude", co), b.lset("demo", "--cap", "30"), b.ldrop("demo", "plan"), b.lend("demo")} {
 		res := b.run(t, args...)
 		if res.code != 1 || !strings.Contains(res.stderr, idInUse) || !strings.Contains(res.stderr, "line command") {
 			t.Errorf("%v with the id's lock held: exit %d\n%s", args[:2], res.code, res.stderr)
@@ -485,7 +485,7 @@ func TestLineVerbsHoldTheIDLock(t *testing.T) {
 func TestLineVerbsOnALineThatIsNotThereTakeNoLock(t *testing.T) {
 	b := newLineBench(t)
 	co := b.gitWorkdir(t, "co")
-	for _, args := range [][]string{b.ladd("nope", "plan", "claude", co), b.ldrop("nope", "plan"), b.lend("nope")} {
+	for _, args := range [][]string{b.ladd("nope", "plan", "claude", co), b.lset("nope", "--cap", "30"), b.ldrop("nope", "plan"), b.lend("nope")} {
 		res := b.run(t, args...)
 		if res.code != 2 || !strings.Contains(res.stderr, `no line "nope"`) {
 			t.Errorf("%v: exit %d, want 2 naming the line\n%s", args[:2], res.code, res.stderr)
