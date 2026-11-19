@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -105,10 +106,13 @@ func cmdLineSet(args []string) error {
 		return err
 	}
 	dir := lineDirOf(base, id)
+	signal.Ignore(syscall.SIGPIPE)
+	if _, err := io.WriteString(os.Stdout, plan.notes()); err != nil {
+		return fmt.Errorf("could not write to standard output (%v); nothing was changed", err)
+	}
 	if err := plan.apply(ctx, dir); err != nil {
 		return err
 	}
-	signal.Ignore(syscall.SIGPIPE)
 	if _, err := io.WriteString(os.Stdout, plan.report(filepath.Join(dir, lineRecordName))); err != nil {
 		return fmt.Errorf("line %s is changed (cap %d, window %s) but what is left for you could not be written: %v", id, newCap, newWindow, err)
 	}
@@ -144,6 +148,10 @@ type lineSetFile struct {
 	// .mcp.json, empty for a file that carries neither number.
 	data   []byte
 	digest string
+	// command is the parley binary the file runs now, read from the bytes the
+	// digest proved are the line's, for a file that is written again; "" when it
+	// could not be read.
+	command string
 }
 
 // lineSetPlan is everything `line set` has judged before it changes anything.
@@ -245,9 +253,47 @@ func planLineSet(rec lineRecord, base, self string, newCap int, newWindow string
 			lf.act = setUntouched
 		default:
 			lf.act = setRewrite
+			lf.command = launchCommand(f)
 		}
 	}
 	return p, nil
+}
+
+// launchCommand is the command of the parley server in the Claude launch file f,
+// read from its bytes only if they hash to the recorded digest, so that what is
+// parsed is what `line add` wrote; "" when they do not, or cannot be read.
+func launchCommand(f lineFile) string {
+	b, err := readLaunchFile(f.Path)
+	if err != nil || tableDigest(b) != f.SHA256 {
+		return ""
+	}
+	var doc struct {
+		MCPServers map[string]struct {
+			Command string `json:"command"`
+		} `json:"mcpServers"`
+	}
+	if json.Unmarshal(b, &doc) != nil {
+		return ""
+	}
+	return doc.MCPServers["parley"].Command
+}
+
+// notes are the lines printed before anything is written, so that they are said
+// even when the run fails part way: a launch file that runs one parley binary and
+// is about to run another, the one running `line set`, which a dev build or a
+// moved binary would otherwise make a session's front without a word. The run goes on.
+func (p *lineSetPlan) notes() string {
+	var b strings.Builder
+	for _, lf := range p.files {
+		switch {
+		case lf.act != setRewrite || lf.command == p.self:
+		case lf.command == "":
+			fmt.Fprintf(&b, "Note: the parley command in %s could not be read; this run writes %s, the binary running line set.\n", lf.path, p.self)
+		default:
+			fmt.Fprintf(&b, "Note: the parley command in %s is %s; this run writes %s, the binary running line set.\n", lf.path, lf.command, p.self)
+		}
+	}
+	return b.String()
 }
 
 // apply writes what the plan judged: each launch file, one at a time, judged again
@@ -366,7 +412,7 @@ func (p *lineSetPlan) report(recordPath string) string {
 	for _, s := range old.Sessions {
 		switch s.Harness {
 		case harnessClaude:
-			fmt.Fprintf(&b, "\n%s (Claude Code): reconnect parley's MCP server in that session, or restart it:\n\n", s.Nick)
+			fmt.Fprintf(&b, "\n%s (Claude Code): restart it, resuming its conversation:\n\n", s.Nick)
 			fmt.Fprintf(&b, "    cd %s\n    %s --resume <session-id>\n", q(s.Workdir), claudeLaunch(s.Nick, s.Model))
 		case harnessCodex:
 			fmt.Fprintf(&b, "\n%s (Codex): stop its pump, which holds the old numbers, and start this one in its place; the Codex session itself keeps running:\n\n", s.Nick)

@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,7 +88,7 @@ func TestLineSetRaisesTheCapOfAClaudeAndACodexSession(t *testing.T) {
 	lineUp(t, b, "demo")
 	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-build")
 	pristine1, pristine2 := treeListing(t, co1), treeListing(t, co2)
-	b.mustAdd(t, "demo", "plan", "claude", co1, "--model", "opus")
+	addPlan := b.mustAdd(t, "demo", "plan", "claude", co1, "--model", "opus")
 	b.mustAdd(t, "demo", "build", "codex", co2)
 	mcp := filepath.Join(co1, ".mcp.json")
 	cfg := filepath.Join(co2, ".codex", "config.toml")
@@ -132,7 +134,7 @@ func TestLineSetRaisesTheCapOfAClaudeAndACodexSession(t *testing.T) {
 		"Left " + cfg + " as it is (session build): it carries neither number.",
 		"Updated " + filepath.Join(b.base, "lines", "demo", "line.json") + ".",
 		"Nothing that is running changes yet: each session's front process reads its cap and window once, when it starts.",
-		"plan (Claude Code): reconnect parley's MCP server in that session, or restart it:",
+		"plan (Claude Code): restart it, resuming its conversation:",
 		fmt.Sprintf("cd '%s'", co1),
 		"PARLEY_NICK=plan claude --dangerously-load-development-channels server:parley --model 'opus' --resume <session-id>",
 		"build (Codex): stop its pump, which holds the old numbers, and start this one in its place; the Codex session itself keeps running:",
@@ -141,6 +143,14 @@ func TestLineSetRaisesTheCapOfAClaudeAndACodexSession(t *testing.T) {
 	})
 	if strings.Contains(res.stdout, "codex resume") {
 		t.Errorf("a Codex session is not resumed again:\n%s", res.stdout)
+	}
+	// The Claude launch is the one `line add` printed, development-channels flag
+	// included, and nothing speaks of reconnecting a server.
+	if resume := lineWith(t, addPlan.stdout, "claude --dangerously-load-development-channels", "--resume <session-id>"); !strings.Contains(res.stdout, resume) || !strings.Contains(resume, "--dangerously-load-development-channels server:parley") {
+		t.Errorf("the restart line is not the one line add printed (%q):\n%s", resume, res.stdout)
+	}
+	if strings.Contains(strings.ToLower(res.stdout), "reconnect") {
+		t.Errorf("the output tells a session to reconnect:\n%s", res.stdout)
 	}
 
 	// The digests are what `line drop` proves a file is the line's by.
@@ -151,6 +161,119 @@ func TestLineSetRaisesTheCapOfAClaudeAndACodexSession(t *testing.T) {
 	}
 	if got := treeListing(t, co2); got != pristine2 {
 		t.Errorf("co-build is not as it was.\nbefore:\n%s\nafter:\n%s", pristine2, got)
+	}
+}
+
+// runBinaryIn runs the parley binary at bin, which is not the one the tests built,
+// in the bench's environment.
+func (b *lineBench) runBinaryIn(t *testing.T, bin string, args ...string) result {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), b.env()...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	res := result{}
+	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("run %s %v: %v", bin, args, err)
+		}
+		res.code = exit.ExitCode()
+	}
+	res.stdout, res.stderr = stdout.String(), stderr.String()
+	return res
+}
+
+// TestLineSetWarnsWhenTheCommandPathChanges: a launch file that runs one parley
+// binary, rewritten by another (a dev build, a moved binary), is named with both
+// paths before anything is said of the sessions, and the run goes on; run again
+// by the binary the file now names, it says nothing.
+func TestLineSetWarnsWhenTheCommandPathChanges(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	if cmd, _ := readMCP(t, mcp); cmd != binPath {
+		t.Fatalf("line add wrote the command %q, want %q", cmd, binPath)
+	}
+	dev := filepath.Join(b.root, "parley-dev")
+	if err := os.WriteFile(dev, mustRead(t, binPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := b.runBinaryIn(t, dev, b.lset("demo", "--cap", "30")...)
+	if res.code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	// The command is whatever path the other binary knows itself by.
+	cmd, _ := readMCP(t, mcp)
+	if cmd == binPath || filepath.Base(cmd) != "parley-dev" {
+		t.Fatalf("the rewritten file runs %q, want the other binary", cmd)
+	}
+	note := fmt.Sprintf("Note: the parley command in %s is %s; this run writes %s, the binary running line set.", mcp, binPath, cmd)
+	wantInOrder(t, res.stdout, []string{
+		note,
+		"Line demo now has cap 30 (was 8) and window 10m (unchanged).",
+		"Rewrote " + mcp + " (session plan).",
+		"plan (Claude Code): restart it, resuming its conversation:",
+	})
+	if got := strings.Count(res.stdout, "Note:"); got != 1 {
+		t.Errorf("%d notes, want one:\n%s", got, res.stdout)
+	}
+	if rec := b.record(t, "demo"); rec.Cap != 30 || sessionByNick(t, rec, "plan").Files[0].SHA256 != fileDigestOf(t, mcp) {
+		t.Errorf("the run did not go on: %+v", rec)
+	}
+
+	// The file runs this binary now, so the same binary has nothing to say.
+	res = b.runBinaryIn(t, dev, b.lset("demo", "--cap", "40")...)
+	if res.code != 0 || strings.Contains(res.stdout, "Note:") || strings.Contains(res.stderr, "Note:") {
+		t.Errorf("a second run by the same binary: exit %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	if cmd2, args := readMCP(t, mcp); cmd2 != cmd || strings.Join(args, "\x00") != strings.Join(b.mcpArgsWith("demo", "40", "10m"), "\x00") {
+		t.Errorf("the file runs %q with %q", cmd2, args)
+	}
+}
+
+// TestLineSetStaysQuietWhenTheCommandPathIsTheSame: the binary that wrote the file
+// is the one that rewrites it, and nothing is said of its path.
+func TestLineSetStaysQuietWhenTheCommandPathIsTheSame(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-build")
+	b.mustAdd(t, "demo", "plan", "claude", co1)
+	b.mustAdd(t, "demo", "build", "codex", co2)
+	for _, args := range [][]string{b.lset("demo", "--cap", "30"), b.lset("demo", "--window", "5m")} {
+		res := mustLine(t, b, args...)
+		if strings.Contains(res.stdout, "Note:") || strings.Contains(res.stdout, "parley command") || strings.Contains(res.stderr, "Note:") {
+			t.Errorf("%v said something of the command path:\nstdout: %s\nstderr: %s", args[3:], res.stdout, res.stderr)
+		}
+	}
+}
+
+// TestLaunchCommandReadsOnlyBytesThatHashToTheDigest: the command is read from the
+// file only when its bytes are the ones the record has a digest of.
+func TestLaunchCommandReadsOnlyBytesThatHashToTheDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".mcp.json")
+	data := []byte(`{"mcpServers":{"parley":{"command":"/opt/parley","args":[]}}}`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := launchCommand(lineFile{Path: path, SHA256: tableDigest(data)}); got != "/opt/parley" {
+		t.Errorf("command %q, want /opt/parley", got)
+	}
+	if got := launchCommand(lineFile{Path: path, SHA256: tableDigest([]byte("other"))}); got != "" {
+		t.Errorf("command %q from bytes that do not hash to the digest, want none", got)
+	}
+	if got := launchCommand(lineFile{Path: path + ".gone", SHA256: tableDigest(data)}); got != "" {
+		t.Errorf("command %q from a file that is not there, want none", got)
+	}
+	bad := []byte(`{"mcpServers":`)
+	if err := os.WriteFile(path, bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := launchCommand(lineFile{Path: path, SHA256: tableDigest(bad)}); got != "" {
+		t.Errorf("command %q from JSON that is cut off, want none", got)
 	}
 }
 

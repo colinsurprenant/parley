@@ -1055,7 +1055,10 @@ exit 2.
   this process as `channel --check` builds them, would be over Claude Code's cap with
   the new numbers. A file that is not there is left that way, and said. Each Claude
   session's `.mcp.json` is then generated again by the function `line add` writes it
-  with, from the record, the new numbers and the binary that runs `line set`, and
+  with, from the record, the new numbers and the binary that runs `line set` (the
+  command the file runs now is read first, from bytes the digest has proved; when
+  it is another binary, a line on standard output names both paths before anything
+  is written, and the run goes on), and
   written through a temp file in its directory and a rename, with the mode the file
   had, never through a link; a file that sessions of one working directory share is
   written once, and the digest each of them holds for it is updated. A Codex session's
@@ -1068,8 +1071,9 @@ exit 2.
   file that already holds the bytes it would be written with is taken as the line's
   and only its digest is recorded.
   It prints what is left, since a front reads its cap and window once, when it starts:
-  for each session in record order, for Claude Code, to reconnect parley's MCP server
-  in that session or restart it (the launch line, with `--resume <session-id>`); for
+  for each session in record order, for Claude Code, to restart it with the launch line
+  `line add` prints (the `--dangerously-load-development-channels server:parley` one),
+  plus `--resume <session-id>`; for
   Codex and OpenCode, to stop the pump and start the pump line `line add` prints, with
   the new `--cap` and `--window` (and the recorded `--codex-bin`). Then one line: each
   session's primer still states the old numbers, and a session started outside `line

@@ -634,7 +634,9 @@ Then it writes, in this order:
    apart, and not by editing the old text. The file goes into place through a temp
    file in its own directory and a rename, so a reader never sees half of it, and
    a link at the path is replaced and never followed. Its `command` is the parley
-   binary that runs `line set`, as `line add`'s is the one that runs `line add`. A
+   binary that runs `line set`, as `line add`'s is the one that runs `line add`;
+   when the file runs another binary now (a dev build, a moved binary), a line
+   names both paths before anything is written, and the run goes on. A
    file that several sessions of one working directory share is written once, and
    the digest the record holds for it is updated under every one of them, so that
    `line drop` still shows the file is the line's. A Codex session's
@@ -652,8 +654,10 @@ Nothing that is running changes by itself. The breaker lives in each session's
 front process, which reads its cap and window once, when it starts, so the command
 prints what each recorded session needs, in its own terminal:
 
-- **Claude Code:** reconnect parley's MCP server in that session, or restart it. The
-  restart line is the one `line add` printed, with `--resume <session-id>`.
+- **Claude Code:** restart the session with the launch line `line add` printed (it
+  loads parley's channel with `--dangerously-load-development-channels
+  server:parley`), plus `--resume <session-id>`, which keeps its conversation. A
+  restart is what makes Claude Code read the new `.mcp.json`.
 - **Codex and OpenCode:** stop the session's pump and start the new pump line the
   command prints, built the way `line add` builds it, with the new `--cap` and
   `--window`. The Codex or OpenCode session itself keeps running.

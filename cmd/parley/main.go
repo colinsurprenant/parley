@@ -559,12 +559,14 @@ verbs:
            cap is refused. A failure partway says which files were written and
            which were not, rolls nothing back, and running the verb again
            finishes. It prints, for each session, what is left for the human,
-           since each front reads its cap and window once, at launch: reconnect
-           parley's MCP server in a Claude Code session, or restart it; for a
-           Codex or an OpenCode session, the pump line, as add prints it, with
-           the new numbers. It says that each session's primer still states the
-           old numbers, and that a session started outside add is not in the
-           record and is not touched.
+           since each front reads its cap and window once, at launch: restart a
+           Claude Code session with the launch line add prints, plus --resume
+           <session-id>; for a Codex or an OpenCode session, the pump line, as
+           add prints it, with the new numbers. Before it writes, it names a
+           launch file whose parley command is not the binary running set, and
+           goes on. It says that each session's primer still states the old
+           numbers, and that a session started outside add is not in the record
+           and is not touched.
            drop <id> <nick> takes the
            id's lock and the session's nick lock without waiting and refuses,
            exit 1, while either is held. It removes the session's thread record

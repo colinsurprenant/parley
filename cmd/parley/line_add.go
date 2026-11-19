@@ -480,19 +480,29 @@ const fileMax = 1 << 20
 // fileDigest is the digest of the exact bytes of the regular file at path, which
 // is not opened if it is a link. A file past fileMax is not one the line wrote.
 func fileDigest(path string) (string, error) {
-	f, err := state.OpenRegular(path)
+	b, err := readLaunchFile(path)
 	if err != nil {
 		return "", err
+	}
+	return tableDigest(b), nil
+}
+
+// readLaunchFile reads the exact bytes of the regular file at path, which is not
+// opened if it is a link. A file past fileMax is not one the line wrote.
+func readLaunchFile(path string) ([]byte, error) {
+	f, err := state.OpenRegular(path)
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, fileMax+1))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(b) > fileMax {
-		return "", fmt.Errorf("%s is larger than %d bytes", path, fileMax)
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, fileMax)
 	}
-	return tableDigest(b), nil
+	return b, nil
 }
 
 // mcpJSON is the working directory's .mcp.json: one server, parley, whose args are the
