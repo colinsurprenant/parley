@@ -3,6 +3,7 @@ package primer
 import (
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -863,8 +864,9 @@ func TestTheLineFormPrintsTheChairTheCapAndTheWindowAsSpelled(t *testing.T) {
 		{12, 30 * time.Second, "breaker: more than 12 posts within 30s, or more than 60 posts within 18m, hold deliveries until Colin posts."},
 		{12, 500 * time.Millisecond, "breaker: more than 12 posts within 500ms, or more than 60 posts within 18s, hold deliveries until Colin posts."},
 		{12, 36 * time.Hour, "breaker: more than 12 posts within 36h, or more than 60 posts within 1296h, hold deliveries until Colin posts."},
-		// The backstop's count saturates where five times the cap would wrap.
-		{math.MaxInt/5 + 1, 10 * time.Minute, "breaker: more than 1844674407370955162 posts within 10m, or more than 9223372036854775807 posts within 6h, hold deliveries until Colin posts."},
+		// The backstop's count saturates where five times the cap would wrap, at
+		// whatever width int has on the platform.
+		{math.MaxInt/5 + 1, 10 * time.Minute, "breaker: more than " + strconv.Itoa(math.MaxInt/5+1) + " posts within 10m, or more than " + strconv.Itoa(math.MaxInt) + " posts within 6h, hold deliveries until Colin posts."},
 		{0, 10 * time.Minute, "breaker off (cap 0)."},
 		{0, time.Hour, "breaker off (cap 0)."},
 	} {
