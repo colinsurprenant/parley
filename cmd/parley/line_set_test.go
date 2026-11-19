@@ -794,9 +794,11 @@ func TestPlanLineSetRefusesAClaudeLaunchItWouldPushOverTheCap(t *testing.T) {
 	if fits(lo, longest) {
 		t.Fatalf("the longest window does not push the instructions over the cap")
 	}
-	if _, err := planLineSet(rec, rec.StateDir, "/bin/parley", rec.Cap, longest); err == nil ||
-		!strings.Contains(err.Error(), "over Claude Code's cap") || !strings.Contains(err.Error(), "--window") {
-		t.Errorf("planLineSet with a window that overflows: %v", err)
+	_, err := planLineSet(rec, rec.StateDir, "/bin/parley", rec.Cap, longest)
+	var cfg *configError
+	if err == nil || !errors.As(err, &cfg) || !strings.Contains(err.Error(), "claude session plan") ||
+		!strings.Contains(err.Error(), "over Claude Code's cap") || !strings.Contains(err.Error(), "shorten --cap, --window,") {
+		t.Errorf("planLineSet with a window that overflows: %v (a configuration error, exit 2, naming the session and what to shorten, wanted)", err)
 	}
 	// The same record and a window that fits is judged on to the files, which are not there.
 	if _, err := planLineSet(rec, rec.StateDir, "/bin/parley", rec.Cap, "15m"); err != nil {

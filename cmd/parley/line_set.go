@@ -212,7 +212,7 @@ func planLineSet(rec lineRecord, base, self string, newCap int, newWindow string
 	}
 	for _, s := range rec.Sessions {
 		if s.Harness == harnessClaude {
-			if err := measureLineClaude(p.next, s.Nick, base, "--window, the state directory or the path of the parley binary"); err != nil {
+			if err := measureLineClaude(p.next, s.Nick, base, "--cap, --window, the state directory or the path of the parley binary"); err != nil {
 				return nil, err
 			}
 		}
