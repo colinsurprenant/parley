@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -96,18 +98,20 @@ func cmdLineSet(args []string) error {
 	if windowGiven {
 		newWindow = lineWindowFlag(*window)
 	}
-	if newCap == rec.Cap && newWindow == rec.Window {
-		_, err := fmt.Fprintf(os.Stdout, "Line %s already has cap %d and window %s: nothing was changed.\n", id, rec.Cap, rec.Window)
-		return err
-	}
 
+	// The files are judged whether or not the numbers change: a line that already
+	// has them is not said to, while a launch file disagrees with its record.
 	self := selfPath()
 	plan, err := planLineSet(rec, base, self, newCap, newWindow)
 	if err != nil {
 		return err
 	}
-	dir := lineDirOf(base, id)
 	signal.Ignore(syscall.SIGPIPE)
+	if newCap == rec.Cap && newWindow == rec.Window && !plan.staleDigests() {
+		_, err := fmt.Fprintf(os.Stdout, "Line %s already has cap %d and window %s, and every launch file that is there is as the record has it: nothing was changed.\n", id, rec.Cap, rec.Window)
+		return err
+	}
+	dir := lineDirOf(base, id)
 	if _, err := io.WriteString(os.Stdout, plan.notes()); err != nil {
 		return fmt.Errorf("could not write to standard output (%v); nothing was changed", err)
 	}
@@ -243,7 +247,7 @@ func planLineSet(rec lineRecord, base, self string, newCap int, newWindow string
 			}
 		}
 		if problem != "" {
-			return nil, fmt.Errorf("will not rewrite %s: %s; it is not shown to be the file line add wrote for session %s, so look at it, then run this again; nothing was changed", f.Path, problem, owner.Nick)
+			return nil, p.refuse(lf, problem)
 		}
 		switch {
 		case act == fileGone:
@@ -258,6 +262,102 @@ func planLineSet(rec lineRecord, base, self string, newCap int, newWindow string
 		}
 	}
 	return p, nil
+}
+
+// staleDigests is whether a launch file holds the bytes this run would write, and
+// the record still holds the digest of other bytes: the record disagrees with the
+// file, and writing it down is a change even when the numbers are the same.
+func (p *lineSetPlan) staleDigests() bool {
+	for _, lf := range p.files {
+		if lf.act == setHolds {
+			return true
+		}
+	}
+	return false
+}
+
+// setCommand is the line that runs this verb for the line with these numbers, as
+// the binary self: runnable as it stands.
+func (p *lineSetPlan) setCommand(self string, capN int, window string) string {
+	return fmt.Sprintf("%s line set %s --cap %d --window %s --state-dir %s", q(self), p.old.ID, capN, window, q(p.base))
+}
+
+// refuse is the refusal for a launch file that is not shown to be the line's:
+// problem, which completes "it ...", says why, and the rest says what unblocks it.
+// A file that holds what `line set` writes for other numbers, which an earlier run
+// cut short leaves, is told so, with the command that finishes that run; any file
+// can be restored, or its sessions taken off with --force (which leaves the file),
+// the path cleared and the sessions added again, which `line add` then writes
+// with the record's numbers.
+func (p *lineSetPlan) refuse(lf *lineSetFile, problem string) error {
+	owner := p.old.Sessions[lf.owners[0]]
+	f := owner.Files[0]
+	var b strings.Builder
+	fmt.Fprintf(&b, "will not rewrite %s: %s; it is not shown to be the file line add wrote for session %s", lf.path, problem, owner.Nick)
+	if owner.Harness == harnessClaude {
+		if cmd, c, w, ok := lineSetOutput(p.old, p.base, f.Path); ok && (c != p.old.Cap || w != p.old.Window) {
+			fmt.Fprintf(&b, "; it holds what line set writes for cap %d and window %s when run as %s, and the record has cap %d and window %s, so an earlier run was probably cut short: running it again finishes it, then run this again: %s", c, w, cmd, p.old.Cap, p.old.Window, p.setCommand(cmd, c, w))
+		}
+	}
+	var drops, adds []string
+	codex := false
+	for _, i := range lf.owners {
+		s := p.old.Sessions[i]
+		codex = codex || s.Harness == harnessCodex
+		drops = append(drops, fmt.Sprintf("%s line drop %s %s --force --state-dir %s", q(p.self), p.old.ID, s.Nick, q(p.base)))
+		add := fmt.Sprintf("%s line add %s --nick %s --harness %s --workdir %s", q(p.self), p.old.ID, s.Nick, s.Harness, q(s.Workdir))
+		if s.Model != "" {
+			add += " --model " + q(s.Model)
+		}
+		adds = append(adds, add+" --state-dir "+q(p.base))
+	}
+	fmt.Fprintf(&b, "; to go on, restore the file to the bytes the record has a digest of (%s), or take its sessions off the line (stop each first), move what is at %s aside, and add them again: %s; then %s",
+		f.SHA256, lf.path, strings.Join(drops, "; "), strings.Join(adds, "; "))
+	if codex {
+		b.WriteString(" (a Codex session then starts a new thread)")
+	}
+	b.WriteString("; nothing was changed")
+	return errors.New(b.String())
+}
+
+// lineSetOutput tells whether the Claude launch file at path holds exactly what
+// `line set` (or `line add`) writes for the line rec with some cap, window and parley
+// command, and if so which: the file is parsed, written again from what it says, and
+// compared byte for byte. It is how an interrupted run's file is told from any other.
+func lineSetOutput(rec lineRecord, base, path string) (command string, capN int, window string, ok bool) {
+	b, err := readLaunchFile(path)
+	if err != nil {
+		return "", 0, "", false
+	}
+	var doc struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if json.Unmarshal(b, &doc) != nil {
+		return "", 0, "", false
+	}
+	srv := doc.MCPServers["parley"]
+	flagValue := func(name string) (string, bool) {
+		i := slices.Index(srv.Args, name)
+		if i < 0 || i+1 >= len(srv.Args) {
+			return "", false
+		}
+		return srv.Args[i+1], true
+	}
+	capText, okCap := flagValue("--cap")
+	window, okWindow := flagValue("--window")
+	if capN, err = strconv.Atoi(capText); !okCap || !okWindow || err != nil || capN < 0 {
+		return "", 0, "", false
+	}
+	other := rec
+	other.Cap, other.Window = capN, window
+	want, err := lineMCPJSON(srv.Command, other, base)
+	if err != nil || !bytes.Equal(want, b) {
+		return "", 0, "", false
+	}
+	return srv.Command, capN, window, true
 }
 
 // launchCommand is the command of the parley server in the Claude launch file f,
@@ -366,8 +466,8 @@ func (p *lineSetPlan) failed(err error, wrote, pending []string) error {
 		}
 		return strings.Join(paths, ", ")
 	}
-	return fmt.Errorf("%w; rewritten: %s; not rewritten: %s; line.json was not written and still holds cap %d, window %s: run this again to finish, a file already rewritten is recognized by its bytes",
-		err, list(wrote), list(pending), p.old.Cap, p.old.Window)
+	return fmt.Errorf("%w; rewritten: %s; not rewritten: %s; line.json was not written and still holds cap %d, window %s: once the cause is cleared, finish with %s, which recognizes a file already rewritten by its bytes (the same numbers, the same binary)",
+		err, list(wrote), list(pending), p.old.Cap, p.old.Window, p.setCommand(p.self, p.next.Cap, p.next.Window))
 }
 
 // report is what goes to stdout: what was changed, and for each session what is
