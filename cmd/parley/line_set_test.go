@@ -803,3 +803,52 @@ func TestPlanLineSetRefusesAClaudeLaunchItWouldPushOverTheCap(t *testing.T) {
 		t.Errorf("planLineSet with a window that fits: %v", err)
 	}
 }
+
+// TestLineSetKeepsTheRecordShapeOfSessionsItDoesNotTouch: an OpenCode session's
+// "files": [] stays an empty list and not null, and every session set leaves alone
+// keeps its JSON in the record byte for byte.
+func TestLineSetKeepsTheRecordShapeOfSessionsItDoesNotTouch(t *testing.T) {
+	b := newOCLineBench(t)
+	lineUp(t, b.lineBench, "demo")
+	cx, oc, cl := b.gitWorkdir(t, "co-build"), b.gitWorkdir(t, "co-review"), b.gitWorkdir(t, "co-plan")
+	b.mustAdd(t, "demo", "build", "codex", cx)
+	mustLine(t, b.lineBench, b.ladd("demo", "review", "opencode", oc)...)
+	b.mustAdd(t, "demo", "plan", "claude", cl)
+	sessions := func() map[string]string {
+		var doc struct {
+			Sessions []json.RawMessage `json:"sessions"`
+		}
+		if err := json.Unmarshal(mustRead(t, filepath.Join(b.base, "lines", "demo", "line.json")), &doc); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, raw := range doc.Sessions {
+			var n struct {
+				Nick string `json:"nick"`
+			}
+			if err := json.Unmarshal(raw, &n); err != nil {
+				t.Fatal(err)
+			}
+			out[n.Nick] = string(raw)
+		}
+		return out
+	}
+	before := sessions()
+	if !strings.Contains(before["review"], `"files": []`) {
+		t.Fatalf("the OpenCode session's record has no empty files list:\n%s", before["review"])
+	}
+
+	mustLine(t, b.lineBench, b.lset("demo", "--cap", "30", "--window", "20m")...)
+	after := sessions()
+	for _, nick := range []string{"build", "review"} {
+		if after[nick] != before[nick] {
+			t.Errorf("session %s changed in the record.\nbefore: %s\nafter:  %s", nick, before[nick], after[nick])
+		}
+	}
+	if !strings.Contains(after["review"], `"files": []`) || strings.Contains(after["review"], "null") {
+		t.Errorf("the OpenCode session's files list is not an empty list:\n%s", after["review"])
+	}
+	if after["plan"] == before["plan"] {
+		t.Errorf("the Claude session's record did not change its digest:\n%s", after["plan"])
+	}
+}

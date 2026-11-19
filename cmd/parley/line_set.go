@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -173,7 +174,7 @@ func planLineSet(rec lineRecord, base, self string, newCap int, newWindow string
 	p.next.Cap, p.next.Window = newCap, newWindow
 	p.next.Sessions = make([]lineSession, len(rec.Sessions))
 	for i, s := range rec.Sessions {
-		s.Files = append([]lineFile(nil), s.Files...)
+		s.Files = slices.Clone(s.Files)
 		p.next.Sessions[i] = s
 	}
 
