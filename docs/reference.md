@@ -898,7 +898,7 @@ each of them directly, instead of trying them in the sandbox first. It does not
 tell the session to widen its sandbox, and the claude line form, which has no room
 for it under its cap, does not carry it.
 
-`parley line` has four verbs, which set a line up and take it down the way `table
+`parley line` has five verbs, which set a line up, change its breaker and take it down the way `table
 new` and `table end` do a table, and share their helpers: the id lock, the nick
 locks, the rollback and the checks. The id is `[a-z0-9][a-z0-9-]{0,31}`, the
 channel `#<id>` and a directory name, in one namespace with the tables and the
@@ -1038,6 +1038,42 @@ exit 2.
   service's password is in its service file and is sent to its loopback address
   only, that an interrupt holds deliveries until you send the session something,
   and what OpenCode version parley was last verified against).
+- `line set <id> [--cap <n>] [--window <duration>] [--state-dir <dir>]` changes the
+  breaker of a line that is running. At least one of `--cap` and `--window` is
+  required; the one left out keeps the recorded value. Both are held to what `line
+  new` holds them to, a cap of 0 or more (`--cap 0` is no breaker) and a window above
+  zero, and the window is recorded as `line new` records one (`90s` as `1m30s`). Exit 2, with nothing changed, for: neither
+  flag; a negative cap; a window that is not above zero or not a duration; no such
+  line; an extra argument. Naming the numbers the line already has changes nothing and
+  says so. It takes the id's lock, so a second command for the id refuses at once,
+  exit 1, and it touches no server, runs no harness and posts nothing.
+  Every launch file the record lists is judged before the first is written, by the
+  proof `line drop` uses: a regular file whose bytes hash to the recorded digest, in a
+  directory that is not a link, in the working directory as recorded. A file that is
+  not that, a link at the path included, refuses the whole run, exit 1, naming the
+  file, with nothing changed; so does a Claude session whose instructions, built in
+  this process as `channel --check` builds them, would be over Claude Code's cap with
+  the new numbers. A file that is not there is left that way, and said. Each Claude
+  session's `.mcp.json` is then generated again by the function `line add` writes it
+  with, from the record, the new numbers and the binary that runs `line set`, and
+  written through a temp file in its directory and a rename, with the mode the file
+  had, never through a link; a file that sessions of one working directory share is
+  written once, and the digest each of them holds for it is updated. A Codex session's
+  `.codex/config.toml` is a constant body behind a nonce and carries neither number,
+  so it is judged and left as it is, and an OpenCode session has no launch file. The
+  record, with the new cap and window and the new digests, is written last, through
+  a temp file and a rename. A failure or an interrupt after a file was written is
+  reported with the files written and those not, says that `line.json` was not
+  written, and rolls nothing back; running the same command again finishes, since a
+  file that already holds the bytes it would be written with is taken as the line's
+  and only its digest is recorded.
+  It prints what is left, since a front reads its cap and window once, when it starts:
+  for each session in record order, for Claude Code, to reconnect parley's MCP server
+  in that session or restart it (the launch line, with `--resume <session-id>`); for
+  Codex and OpenCode, to stop the pump and start the pump line `line add` prints, with
+  the new `--cap` and `--window` (and the recorded `--codex-bin`). Then one line: each
+  session's primer still states the old numbers, and a session started outside `line
+  add` is not in the record and was not touched.
 - `line drop <id> <nick> [--force] [--state-dir <dir>]` takes one session off. It
   takes the id's lock and the session's nick lock without waiting, and refuses, exit
   1, while the session or its pump holds the latter. It removes the session's
@@ -1081,7 +1117,8 @@ exit 2.
   so), and `new` for that id says to run `end`.
 
 Nothing a working directory holds is parley's state. The record is trusted; a launch file is
-the line's only while its digest matches, and `line drop` and `line end` delete
+the line's only while its digest matches, `line set` rewrites it on that proof alone,
+atomically and never through a link, and `line drop` and `line end` delete
 nothing else there. `docs/line.md` has the trust rules.
 
 ## Checking the machine

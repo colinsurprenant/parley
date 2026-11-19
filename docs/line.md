@@ -19,10 +19,11 @@ ledger, a commit, a PR; the line only points at them.
 
 `parley line new` makes a line and `parley line add` puts a session on it, the way
 `parley table new` sets a table up and `parley build new` a build; `parley line
-drop` takes a session off, and `parley line end` takes the line down. They write
-what the steps below would have you write by hand, check it first, undo it if a
-step fails, and print what is left for you. What they do not cover is in "By
-hand", after the steps.
+set` changes a running line's breaker, `parley line drop` takes a session off, and
+`parley line end` takes the line down. They write what the steps below would have
+you write by hand, check it first, undo it if a step fails (`line set` reports what
+it had done instead, see "Changing the breaker of a running line"), and print what
+is left for you. What they do not cover is in "By hand", after the steps.
 
 Placeholders are in angle brackets: `<channel>` is the line's channel,
 `#<channel>`, which is also its id, `<chair>` your nick, `<nick>` one session's,
@@ -100,7 +101,8 @@ expected to work.
    holds later.
    `--cap 0` turns both off, and then nothing stops two sessions from waking each
    other for as long as they have something to say; the window must still be above
-   zero.
+   zero. Both can be changed later, on a running line, with `parley line set`
+   ("Changing the breaker of a running line").
 
 4. **Make the line.** The channel names the line, and the line is a record of its
    facts, which every session added to it inherits:
@@ -439,8 +441,9 @@ The verbs cover a working directory with no launch file of its own. For one that
 `.mcp.json` of its own, or a Codex or OpenCode session you want to start yourself,
 you write what `line add` would have, and the pump takes the thread or session id
 in place of `auto`, since no record of it is made. Nothing in `<base>/lines/` knows about a
-session you set up this way, so `line drop` and `line end` leave it alone, and you
-take it down by hand too ("Taking it down", below).
+session you set up this way, so `line set`, `line drop` and `line end` leave it alone:
+you change its cap and window in its launch yourself, and take it down by hand too
+("Taking it down", below).
 
 - **A Claude Code session.** Put the `parley` server of step 5 in the working directory's
   `.mcp.json`, adding it to the file if there is one, and keep the file out of `git
@@ -597,6 +600,71 @@ before it has read the others', run a table instead: a line has no seal.
 - **An over-cap channel shows only in `/mcp`.** Run `--check` first.
 - **Cost.** Each post wakes every other session.
 
+## Changing the breaker of a running line
+
+A line that is busy can be given more room, or less, without ending it:
+
+```
+parley line set <channel> [--cap <cap>] [--window <window>] [--state-dir <base>]
+```
+
+At least one of `--cap` and `--window` is required, and the one left out keeps the
+value the record has. Both are held to what `line new` holds them to: a cap of 0 or
+more (`--cap 0` turns the breaker off), and a window that is a Go duration above
+zero. Anything else is refused, exit 2, with nothing changed, and so is a line that
+does not exist. The command takes the line's lock like every other line verb, and
+refuses at once when another command holds it. It touches no server and dials
+nothing, and it never posts: not in the channel, and not as you.
+
+It judges before it writes. Every launch file the record lists must still be the one
+`line add` wrote, by the proof `line drop` removes a file on: a regular file whose
+bytes hash to the digest the record holds, in a real directory, in the working
+directory where it was recorded. If one is not (you edited it, replaced it, it
+became a link, its directory did, or the working directory was moved and a link put
+in its place), the command refuses, exit 1, names that file and changes nothing,
+though every other file is the line's and some would have been rewritten first. A
+file that is not there is left that way, and the output says so. A Claude Code
+session's instructions, as `channel --check` measures them, must still fit Claude
+Code's cap with the new numbers; one that does not is refused the same way.
+
+Then it writes, in this order:
+
+1. Each Claude Code session's `.mcp.json`, written again with the new `--cap` and
+   `--window` by the same code `line add` writes it with, so the two cannot drift
+   apart, and not by editing the old text. The file goes into place through a temp
+   file in its own directory and a rename, so a reader never sees half of it, and
+   a link at the path is replaced and never followed. Its `command` is the parley
+   binary that runs `line set`, as `line add`'s is the one that runs `line add`. A
+   file that several sessions of one working directory share is written once, and
+   the digest the record holds for it is updated under every one of them, so that
+   `line drop` still shows the file is the line's. A Codex session's
+   `.codex/config.toml` carries neither number, so it is checked and left as it is,
+   and an OpenCode session has no launch file.
+2. `line.json`, last, with the new cap and window, through a temp file and a rename.
+
+If a step fails or you interrupt it after something was written, the command says
+which files it had written and which it had not, and that `line.json` was not
+written; nothing is rolled back. Fix the cause and run the same command again: a
+file that already holds the bytes it would write is recognized by them, and only its
+digest is recorded.
+
+Nothing that is running changes by itself. The breaker lives in each session's
+front process, which reads its cap and window once, when it starts, so the command
+prints what each recorded session needs, in its own terminal:
+
+- **Claude Code:** reconnect parley's MCP server in that session, or restart it. The
+  restart line is the one `line add` printed, with `--resume <session-id>`.
+- **Codex and OpenCode:** stop the session's pump and start the new pump line the
+  command prints, built the way `line add` builds it, with the new `--cap` and
+  `--window`. The Codex or OpenCode session itself keeps running.
+
+Until a session's front starts again it holds the old numbers, so a line can have
+two for a while. And each session's primer, which `line add` wrote with the numbers
+the line had then, still states the old ones, a Claude Code session's channel
+instructions too; say so in the channel if a session's behaviour depends on them. A
+session started outside `line add` ("By hand") is not in the record, so the command
+does not touch it.
+
 ## Taking it down
 
 - **One session**: `parley line drop <channel> <nick>`. It takes the line's lock and
@@ -682,12 +750,16 @@ inputs a line has.
   it anywhere, bounds what it reads from the server and checks its shapes, and
   does not treat it as hostile.
 - **Not parley's state: your working directories.** `line add` writes one launch file in a
-  working directory and a line in its exclude file, and `line drop` removes them again, but
+  working directory and a line in its exclude file, `line set` writes the launch file
+  again with new numbers, and `line drop` removes them, but
   a working directory is yours and a session works in it. A file there is the line's only
   while its bytes still hash to the digest `line.json` holds; the verbs never
   overwrite another file, write through a link, or delete a file on any other
-  ground, and a refusal names the file. An OpenCode session has no launch file, and
-  `line add` writes nothing in its working directory.
+  ground, and a refusal names the file. `line set` rewrites a launch file on that
+  same proof and no other, atomically (a temp file beside it, then a rename) and never
+  through a link, and judges every file before it writes the first. An OpenCode
+  session has no launch file, and `line add` and `line set` write nothing in its
+  working directory.
 - **Out of scope: a deliberate edit of that state**, and a session that decides to
   do what a peer asked against its own permissions. What a session does with its
   harness's permissions is not parley's to police: parley is not a sandbox, and the
