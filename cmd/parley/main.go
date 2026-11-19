@@ -548,17 +548,19 @@ verbs:
            changed otherwise. It takes the id's lock, touches no server and posts
            nothing. Every launch file the record lists must still be a regular
            file whose bytes hash to the recorded digest, in a directory that is
-           not a link, or it refuses, exit 1, naming the file, before it writes
-           any; a file that is not there is left that way. Each Claude session's
+           not a link, or it refuses, exit 1, naming the file and what unblocks
+           it, before it writes any, the numbers being the record's or not; a file
+           that is not there is left that way. Each Claude session's
            .mcp.json is then written again with the new --cap and --window, by
            the function add writes it with, through a temp file and a rename and
            never through a link, and the digest every session that shares it holds
            is updated (a Codex session's config.toml carries neither number and
            is left as it is); the record's cap and window are written last. A
            Claude launch whose instructions would then be over Claude Code's
-           cap is refused. A failure partway says which files were written and
-           which were not, rolls nothing back, and running the verb again
-           finishes. It prints, for each session, what is left for the human,
+           cap is refused, exit 2. A failure partway says which files were written
+           and which were not, rolls nothing back, and ends with the command that
+           finishes it, the same numbers and binary. It prints, for each session,
+           what is left for the human,
            since each front reads its cap and window once, at launch: restart a
            Claude Code session with the launch line add prints, plus --resume
            <session-id>; for a Codex or an OpenCode session, the pump line, as

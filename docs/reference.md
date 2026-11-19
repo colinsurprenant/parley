@@ -1045,15 +1045,27 @@ exit 2.
   zero, and the window is recorded as `line new` records one (`90s` as `1m30s`). Exit 2, with nothing changed, for: neither
   flag; a negative cap; a window that is not above zero or not a duration; no such
   line; an extra argument. Naming the numbers the line already has changes nothing and
-  says so. It takes the id's lock, so a second command for the id refuses at once,
+  says so, but only after the launch files are judged as below: one that disagrees
+  with the record is refused, not passed over. It takes the id's lock, so a second command for the id refuses at once,
   exit 1, and it touches no server, runs no harness and posts nothing.
   Every launch file the record lists is judged before the first is written, by the
   proof `line drop` uses: a regular file whose bytes hash to the recorded digest, in a
   directory that is not a link, in the working directory as recorded. A file that is
   not that, a link at the path included, refuses the whole run, exit 1, naming the
-  file, with nothing changed; so does a Claude session whose instructions, built in
-  this process as `channel --check` builds them, would be over Claude Code's cap with
-  the new numbers. A file that is not there is left that way, and said. Each Claude
+  file, with nothing changed, and saying what unblocks it: for a file that holds
+  what `line set` writes for other numbers (parsed, written again from what it says,
+  and compared byte for byte), the command that finishes that earlier run, as the
+  binary that wrote it; for any file, restoring it to the digest the record has, or
+  `line drop <id> <nick> --force` for each session that uses it (the file is left),
+  moving what is at the path aside, and `line add` for each, which writes the file
+  with the record's numbers (a Codex session then starts a new thread). A Claude
+  session whose instructions, built in this process as `channel --check` builds them,
+  would be over Claude Code's cap with the new numbers is refused too, but as a
+  configuration error, exit 2, naming the session, and telling to shorten `--cap`,
+  `--window`, the state directory or the binary's path. A file that is not there is
+  left that way, and said; a Claude session whose file it is is told that a restart
+  loads no parley server, and to `line drop` and `line add` it, which writes the file
+  with the new numbers for every session of the working directory. Each Claude
   session's `.mcp.json` is then generated again by the function `line add` writes it
   with, from the record, the new numbers and the binary that runs `line set` (the
   command the file runs now is read first, from bytes the digest has proved; when
@@ -1067,9 +1079,11 @@ exit 2.
   record, with the new cap and window and the new digests, is written last, through
   a temp file and a rename. A failure or an interrupt after a file was written is
   reported with the files written and those not, says that `line.json` was not
-  written, and rolls nothing back; running the same command again finishes, since a
-  file that already holds the bytes it would be written with is taken as the line's
-  and only its digest is recorded.
+  written, and rolls nothing back; it ends with the command that finishes the job, the
+  same numbers and the same binary, as a line that runs as it stands, and running it
+  finishes, since a file that already holds the bytes it would be written with is
+  taken as the line's and only its digest is recorded. Another binary would write
+  another command, and the file would not hold what it would write.
   It prints what is left, since a front reads its cap and window once, when it starts:
   for each session in record order, for Claude Code, to restart it with the launch line
   `line add` prints (the `--dangerously-load-development-channels server:parley` one),
