@@ -1118,6 +1118,82 @@ func TestLineSetKeepsTheRecordShapeOfSessionsItDoesNotTouch(t *testing.T) {
 	}
 }
 
+// TestLineSetRechecksTheFileJustBeforeItWritesIt: a file that was the line's when
+// planLineSet looked and was edited before apply wrote it is not written, and the
+// failure says what was and was not.
+func TestLineSetRechecksTheFileJustBeforeItWritesIt(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	rec, _, err := readLineRecord(b.base, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLineSet(rec, b.base, binPath, 30, "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit(t, mcp, "\n")
+	edited := mustRead(t, mcp)
+	recBefore := string(mustRead(t, filepath.Join(b.base, "lines", "demo", "line.json")))
+
+	err = plan.apply(context.Background(), filepath.Join(b.base, "lines", "demo"))
+	if err == nil || !strings.Contains(err.Error(), "will not rewrite "+mcp+": ") || !strings.Contains(err.Error(), "it was edited or replaced; it changed since it was checked") ||
+		!strings.Contains(err.Error(), "rewritten: none; not rewritten: "+mcp+";") {
+		t.Fatalf("apply on a file edited since it was judged: %v", err)
+	}
+	if got := mustRead(t, mcp); string(got) != string(edited) {
+		t.Errorf("the edited file was written over:\n%s", got)
+	}
+	if got := string(mustRead(t, filepath.Join(b.base, "lines", "demo", "line.json"))); got != recBefore {
+		t.Errorf("the record changed:\n%s", got)
+	}
+	wantNoTempFiles(t, co)
+}
+
+// TestLineSetRefusesAWorkingDirectoryThatBecameALink: a recorded working directory
+// that now resolves elsewhere is refused, with nothing written behind the link; one
+// that is gone is left alone, and said.
+func TestLineSetRefusesAWorkingDirectoryThatBecameALink(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	real := filepath.Join(b.root, "co-real")
+	if err := os.Rename(co, real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, co); err != nil {
+		t.Fatal(err)
+	}
+	mcp := filepath.Join(co, ".mcp.json")
+	data := mustRead(t, filepath.Join(real, ".mcp.json"))
+	before := b.lsnap(t, real)
+
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 || !strings.Contains(res.stderr, "will not rewrite "+mcp+": its working directory "+co+" now resolves to "+real) || !strings.Contains(res.stderr, "nothing was changed") {
+		t.Fatalf("exit %d, want 1 naming the directory\nstderr: %s", res.code, res.stderr)
+	}
+	b.wantLineUnchanged(t, before, real)
+	if got := mustRead(t, filepath.Join(real, ".mcp.json")); string(got) != string(data) {
+		t.Errorf("the file behind the link was written:\n%s", got)
+	}
+
+	// Gone altogether: nothing is there to rewrite.
+	if err := os.Remove(co); err != nil {
+		t.Fatal(err)
+	}
+	res = mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if !strings.Contains(res.stdout, mcp+" is not there (session plan)") {
+		t.Errorf("stdout:\n%s", res.stdout)
+	}
+	if rec := b.record(t, "demo"); rec.Cap != 30 {
+		t.Errorf("record cap %d, want 30", rec.Cap)
+	}
+}
+
 // TestPlanLineSetSameNumbersWithAStaleDigestIsNotANoOp: numbers the record already
 // has, with a file that holds what would be written under another digest, is a
 // change (the digest is recorded); with the digest right, it is not.
