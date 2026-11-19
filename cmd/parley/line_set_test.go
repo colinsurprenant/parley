@@ -806,6 +806,54 @@ func TestPlanLineSetRefusesAClaudeLaunchItWouldPushOverTheCap(t *testing.T) {
 	}
 }
 
+// TestLineSetTellsAClaudeSessionWithNoLaunchFileHowToGetItBack: a restart would load
+// no parley server, so the session is told to be taken off and added again, which
+// writes the file with the new numbers for every session of the working directory;
+// the commands run as they stand.
+func TestLineSetTellsAClaudeSessionWithNoLaunchFileHowToGetItBack(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co, "--model", "opus")
+	b.mustAdd(t, "demo", "review", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	if err := os.Remove(mcp); err != nil {
+		t.Fatal(err)
+	}
+
+	res := mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	if strings.Contains(res.stdout, "--resume") {
+		t.Errorf("a session with no launch file is told to resume:\n%s", res.stdout)
+	}
+	for _, nick := range []string{"plan", "review"} {
+		want := nick + " (Claude Code): " + mcp + " is not there, so restarting it loads no parley server."
+		if !strings.Contains(res.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+		}
+	}
+	drop := lineWith(t, res.stdout, "line drop demo plan")
+	add := lineWith(t, res.stdout, "line add demo --nick plan")
+	if want := fmt.Sprintf("%s line add demo --nick plan --harness claude --workdir %s --model 'opus' --state-dir %s", q(binPath), q(co), q(b.base)); add != want {
+		t.Errorf("the add line is\n%s\nwant\n%s", add, want)
+	}
+	for _, line := range []string{drop, add} {
+		if r := b.runBinaryIn(t, "sh", "-c", line); r.code != 0 {
+			t.Fatalf("%s exited %d\n%s%s", line, r.code, r.stdout, r.stderr)
+		}
+	}
+	// The file is back with the new numbers, and both sessions hold its digest.
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+	rec := b.record(t, "demo")
+	for _, s := range rec.Sessions {
+		if s.Files[0].SHA256 != fileDigestOf(t, mcp) {
+			t.Errorf("session %s holds %+v, want the new file's digest", s.Nick, s.Files)
+		}
+	}
+	mustLine(t, b, b.ldrop("demo", "review")...)
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+}
+
 // TestLineSetKeepsTheRecordShapeOfSessionsItDoesNotTouch: an OpenCode session's
 // "files": [] stays an empty list and not null, and every session set leaves alone
 // keeps its JSON in the record byte for byte.

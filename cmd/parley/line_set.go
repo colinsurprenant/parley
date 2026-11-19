@@ -410,9 +410,29 @@ func (p *lineSetPlan) report(recordPath string) string {
 		return b.String()
 	}
 	b.WriteString("\nNothing that is running changes yet: each session's front process reads its cap and window once, when it starts.\nWhat is left is yours, for each session, in its own terminal:\n")
-	for _, s := range old.Sessions {
+	gone := map[int]*lineSetFile{}
+	for _, lf := range p.files {
+		if lf.act == setGone {
+			for _, i := range lf.owners {
+				gone[i] = lf
+			}
+		}
+	}
+	for i, s := range old.Sessions {
 		switch s.Harness {
 		case harnessClaude:
+			if lf, ok := gone[i]; ok {
+				// A restart would load no parley server at all. A session taken off and
+				// added again is given the file, written with the record's numbers, and
+				// every session of the working directory shares it.
+				add := fmt.Sprintf("%s line add %s --nick %s --harness claude --workdir %s", q(p.self), old.ID, s.Nick, q(s.Workdir))
+				if s.Model != "" {
+					add += " --model " + q(s.Model)
+				}
+				fmt.Fprintf(&b, "\n%s (Claude Code): %s is not there, so restarting it loads no parley server. Stop it, take it off the line and add it again, which writes the file with the new numbers (the other sessions of the working directory share it), then launch it as line add prints:\n\n", s.Nick, lf.path)
+				fmt.Fprintf(&b, "    %s line drop %s %s --state-dir %s\n    %s --state-dir %s\n", q(p.self), old.ID, s.Nick, q(p.base), add, q(p.base))
+				continue
+			}
 			fmt.Fprintf(&b, "\n%s (Claude Code): restart it, resuming its conversation:\n\n", s.Nick)
 			fmt.Fprintf(&b, "    cd %s\n    %s --resume <session-id>\n", q(s.Workdir), claudeLaunch(s.Nick, s.Model))
 		case harnessCodex:
