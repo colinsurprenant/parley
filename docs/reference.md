@@ -1044,9 +1044,12 @@ exit 2.
   new` holds them to, a cap of 0 or more (`--cap 0` is no breaker) and a window above
   zero, and the window is recorded as `line new` records one (`90s` as `1m30s`). Exit 2, with nothing changed, for: neither
   flag; a negative cap; a window that is not above zero or not a duration; no such
-  line; an extra argument. Naming the numbers the line already has changes nothing and
-  says so, but only after the launch files are judged as below: one that disagrees
-  with the record is refused, not passed over; a run that only brings a recorded
+  line; an extra argument. Every run goes the same way, whatever numbers it names,
+  and judges the files against the numbers asked for, not the record's: naming the
+  numbers the line already has is not passed over while a launch file disagrees. It
+  writes nothing and says that nothing was changed only when the record and every
+  file already have the numbers and none is gone; a run that finds a file gone writes
+  nothing too, and says what is gone (below). A run that only brings a recorded
   digest up to date says that no session needs a restart. It takes the id's lock, so a second command for the id refuses at once,
   exit 1, and it touches no server, runs no harness and posts nothing.
   Every launch file the record lists is judged before the first is written, by the
@@ -1054,8 +1057,9 @@ exit 2.
   directory that is not a link, in the working directory as recorded. A file that is
   not that, a link at the path included, refuses the whole run, exit 1, naming the
   file, with nothing changed, and saying what unblocks it: that a `line set` cut short
-  is finished by running it again with the same numbers from the same binary, the
-  command it printed if it failed (nothing is read from a file
+  between replacing the file and recording its digest (killed there, or the record
+  could not be written) is finished by running it again with the same numbers from the
+  same binary, the command a failed run printed (nothing is read from a file
   whose bytes do not hash to the recorded digest, so no value from one is printed or
   acted on); for any file, restoring it to the digest the record has, or
   `line drop <id> <nick> --force` for each session that uses it (the file is left),
@@ -1066,28 +1070,46 @@ exit 2.
   session whose instructions, built in this process as `channel --check` builds them,
   would be over Claude Code's cap with the new numbers is refused too, but as a
   configuration error, exit 2, naming the session, and telling to shorten `--cap`,
-  `--window`, the state directory or the binary's path. A file that is not there is
-  left that way, and said; a Claude session whose file it is is told that a restart
+  `--window`, the state directory or the binary's path; so is a record that would come
+  out larger than the line verbs read (64 KiB), exit 1: every record the run will write
+  is checked before the first file is. A file that is not there is
+  left that way, and said, with or without a number changing; a Claude session whose
+  file it is is told that a restart
   loads no parley server, and to `line drop` and `line add` it, which writes the file
-  with the new numbers for every session of the working directory. Each Claude
-  session's `.mcp.json` is then generated again by the function `line add` writes it
+  with the line's numbers for every session of the working directory. A Claude
+  file that is the line's by its digest is read, from those bytes: its `--cap` and
+  `--window` are taken, and it is current, and left as it is, when both are the numbers
+  asked for, whatever the record holds (a file restored from an older copy, or left by a
+  run cut short, is judged by what it says); otherwise, or when its numbers cannot be
+  read, its `.mcp.json` is generated again by the function `line add` writes it
   with, from the record, the new numbers and the binary that runs `line set` (the
   command the file runs now is read first, from bytes the digest has proved; when
   it is another binary, a line on standard output names both paths before anything
-  is written, and the run goes on), and
+  is written, and the run goes on; a current file that runs another binary is named
+  and left), and
   written through a temp file in its directory and a rename, with the mode the file
   had, never through a link; a file that sessions of one working directory share is
-  written once, and the digest each of them holds for it is updated. A Codex session's
+  written once. After each file the record is written at once, with that file's new
+  digest under every session that shares it and the numbers it had, after the file is
+  proved again by the digest of the bytes written, so `line drop` and a later `line set`
+  find every file the line's at every point. A file that already holds the bytes the run
+  would write, under another digest (what a run killed between a rename and that record
+  write leaves), is recognized by those exact bytes, never parsed, proved again, and its
+  digest recorded. A Codex session's
   `.codex/config.toml` is a constant body behind a nonce and carries neither number,
   so it is judged and left as it is, and an OpenCode session has no launch file. The
-  record, with the new cap and window and the new digests, is written last, through
-  a temp file and a rename. A failure or an interrupt after a file was written is
-  reported with the files written and those not, says that `line.json` was not
-  written, and rolls nothing back; it ends with the command that finishes the job, the
-  same numbers and the same binary, as a line that runs as it stands, and running it
-  finishes, since a file that already holds the bytes it would be written with is
-  taken as the line's and only its digest is recorded. Another binary would write
-  another command, and the file would not hold what it would write.
+  new cap and window are written last, in a record of their own, through a temp file
+  and a rename, and not at all when they are the record's. The context is checked
+  before each file is written, before a held file's digest is recorded and before the
+  numbers are, so an interrupt stops the run between two steps. A failure or an interrupt
+  after a file was written is reported with the files written and those not and what
+  `line.json` holds, and rolls nothing back; every state it leaves is one a later run
+  goes on from with any numbers, the old ones too, since each digest the record holds
+  is its file's own bytes and each file says its own numbers: it ends with a line that
+  repeats the run, as it stands, and says that running it with the numbers you want goes
+  on from there. The exception is a file replaced whose record write failed, which the run names:
+  the same numbers and the same binary finish it, since the file then holds exactly the
+  bytes they would write, and other numbers are refused for that file until then.
   It prints what is left, since a front reads its cap and window once, when it starts:
   for each session in record order, for Claude Code, to restart it with the launch line
   `line add` prints (the `--dangerously-load-development-channels server:parley` one),
@@ -1095,7 +1117,8 @@ exit 2.
   Codex and OpenCode, to stop the pump and start the pump line `line add` prints, with
   the new `--cap` and `--window` (and the recorded `--codex-bin`). Then one line: each
   session's primer still states the old numbers, and a session started outside `line
-  add` is not in the record and was not touched.
+  add` is not in the record and was not touched. When no number changed, only the Claude
+  sessions whose file the run wrote, or that have none, are told anything.
 - `line drop <id> <nick> [--force] [--state-dir <dir>]` takes one session off. It
   takes the id's lock and the session's nick lock without waiting, and refuses, exit
   1, while the session or its pump holds the latter. It removes the session's

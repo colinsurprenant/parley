@@ -614,11 +614,14 @@ more (`--cap 0` turns the breaker off), and a window that is a Go duration above
 zero. Anything else is refused, exit 2, with nothing changed, and so is a line that
 does not exist. The command takes the line's lock like every other line verb, and
 refuses at once when another command holds it. It touches no server and dials
-nothing, and it never posts: not in the channel, and not as you. Naming the numbers
-the line already has changes nothing, but the launch files are judged all the same,
-as below, and the command does not say that nothing was changed while one of them
-disagrees with the record. When all it does is bring a recorded digest up to date, it
-says that no number changed and no session needs a restart.
+nothing, and it never posts: not in the channel, and not as you. Every run goes the
+same way, whatever numbers it names: the launch files are judged as below against
+the numbers asked for, and not against the ones the record holds, so a line that
+already has the numbers is not passed over while a file disagrees. Only when the
+record and every file already have them, and none is gone, does the command write
+nothing and say that nothing was changed; when it finds a file gone it writes nothing
+too, and says that, and what is gone. When all it does is bring a recorded digest up
+to date, it says that no number changed and no session needs a restart.
 
 It judges before it writes. Every launch file the record lists must still be the one
 `line add` wrote, by the proof `line drop` removes a file on: a regular file whose
@@ -627,23 +630,31 @@ directory where it was recorded. If one is not (you edited it, replaced it, it
 became a link, its directory did, or the working directory was moved and a link put
 in its place), the command refuses, exit 1, names that file and changes nothing,
 though every other file is the line's and some would have been rewritten first. A
-file that is not there is left that way, and the output says so. A Claude Code
-session's instructions, as `channel --check` measures them, must still fit Claude
-Code's cap with the new numbers (the cap's and the window's digits, the state
+file that is not there is left that way, and the output says so, with the way back
+for the Claude Code sessions that use it, whether or not a number changes. A Claude
+Code session's instructions, as `channel --check` measures them, must still fit
+Claude Code's cap with the new numbers (the cap's and the window's digits, the state
 directory and the binary's path all count); one that does not is refused, exit 2,
-naming the session, with nothing changed.
+naming the session, with nothing changed. So is a record that would come out larger
+than the line verbs read (64 KiB): every record the run will write is checked before
+the first file is, since a refusal after the files were replaced would leave their
+digests behind the record's.
 
 What a refusal for a file says unblocks it, and the commands are printed as they
 stand:
 
-- If an earlier `line set` on this line was cut short, running that same `line set`
-  again, with the same numbers and from the same binary, finishes it; it is the
-  command it printed if it failed, and a run killed outright printed none. Run
-  that, then run yours again. The refusal says so without
-  reading the file, whatever it holds: `line set` prints and decides nothing from the
-  bytes of a launch file that do not hash to the digest the record has, since a
-  command or a window in them could be anyone's. That goes for going back to the
-  numbers the record has, too: finish the interrupted run, or restore the file, first.
+- If an earlier `line set` on this line was cut short between replacing this file and
+  recording its digest (it was killed in that moment, or the record could not be
+  written, which a failed run says), running that same `line set` again, with the same
+  numbers and from the same binary, finishes it: the file holds exactly the bytes that
+  run writes, which is how it is recognized, and its digest is recorded. A run killed
+  outright printed no command; a run that failed printed that one. Run it, then run
+  yours again. The refusal says so without reading the file, whatever it holds: `line
+  set` prints and decides nothing from the bytes of a launch file that do not hash to
+  the digest the record has, since a command or a window in them could be anyone's.
+  That goes for other numbers, too, including the record's: finish the interrupted
+  run, or restore the file, first. Any other cut-short run leaves every file as the
+  record has it, and needs no such step (see below).
 - Any refused file can be restored to the bytes the record has a digest of, which the
   refusal gives, or its sessions can be taken off with `parley line drop <channel>
   <nick> --force` (stop each first; `--force` leaves the file where it is), what is
@@ -659,30 +670,47 @@ stand:
 
 Then it writes, in this order:
 
-1. Each Claude Code session's `.mcp.json`, written again with the new `--cap` and
-   `--window` by the same code `line add` writes it with, so the two cannot drift
-   apart, and not by editing the old text. The file goes into place through a temp
-   file in its own directory and a rename, so a reader never sees half of it, and
-   a link at the path is replaced and never followed. Its `command` is the parley
-   binary that runs `line set`, as `line add`'s is the one that runs `line add`;
-   when the file runs another binary now (a dev build, a moved binary), a line
-   names both paths before anything is written, and the run goes on. A
-   file that several sessions of one working directory share is written once, and
-   the digest the record holds for it is updated under every one of them, so that
-   `line drop` still shows the file is the line's. A Codex session's
+1. Each Claude Code session's `.mcp.json` that does not already say the numbers asked
+   for. A file that is the line's by its digest is read: its `--cap` and `--window`
+   are taken from those bytes, which are parley's own, and it is current, and left
+   as it is, when both are the numbers asked for, whatever numbers the record holds;
+   one that says others, or whose numbers cannot be read, is written again with the new
+   `--cap` and `--window` by the same code `line add` writes it with, so the two
+   cannot drift apart, and not by editing the old text. The file goes into place
+   through a temp file in its own directory and a rename, so a reader never sees half
+   of it, and a link at the path is replaced and never followed. Its `command` is the
+   parley binary that runs `line set`, as `line add`'s is the one that runs `line add`;
+   when the file runs another binary now (a dev build, a moved binary), a line names
+   both paths before anything is written, and the run goes on; a current file that
+   runs another binary is named the same way, and left. A file that several sessions
+   of one working directory share is written once. A Codex session's
    `.codex/config.toml` carries neither number, so it is checked and left as it is,
    and an OpenCode session has no launch file.
-2. `line.json`, last, with the new cap and window, through a temp file and a rename.
+2. `line.json`, **after each file**: the file is proved again, by the digest of the
+   bytes just written, and the record is written at once with that file's new digest
+   under every session that shares it, and the numbers the record had. A file that
+   already holds the bytes the run would write (what a run killed between a file's
+   rename and this write leaves) is proved the same way, against the digest of those
+   bytes, and its digest recorded; a file that changed in between is not recorded, and
+   the run stops. So `line drop` shows every file is the line's at every point, and
+   each file says its own numbers.
+3. `line.json`, last, with the new cap and window, through a temp file and a rename;
+   not written when they are the ones it has.
 
-If a step fails or you interrupt it after something was written, the command says
-which files it had written and which it had not, and that `line.json` was not
-written; nothing is rolled back. It ends with the command that finishes the job,
-with the same numbers and the same binary, as a line to run once the cause is
-cleared: a file that already holds the bytes it would write is recognized by them,
-and only its digest is recorded. The same binary matters: another binary would write
-another `command`, and the file would no longer hold what it would write. Until the
-job is finished, `line drop` refuses those files too, since the record still has
-their old digests.
+An interrupt is looked for before each file is written, before a held file's digest is
+recorded and before the numbers are, so Ctrl-C stops the run between two steps and
+never between a file and its record (a kill cannot be caught, and can land there: the
+first bullet above). If a step fails or you interrupt it after
+something was written, the command says which files it had written and which it had
+not, and what `line.json` holds; nothing is rolled back. Every state it can leave is
+one a later run goes on from, with any numbers, the old ones included: each digest the
+record holds is its file's own bytes, and each file says its own numbers, so a run
+writes the files that do not say the numbers asked for, leaves those that do, and
+writes the numbers last. It ends with a line that repeats the run, as it stands, which
+is not the only way to go on: run it with the numbers you want. The one exception is a
+file replaced whose record could not be written (the run says so and names it): the same
+numbers from the same binary finish it, as above, and other numbers are refused for that
+file until then.
 
 Nothing that is running changes by itself. The breaker lives in each session's
 front process, which reads its cap and window once, when it starts, so the command
@@ -799,11 +827,15 @@ inputs a line has.
   overwrite another file, write through a link, or delete a file on any other
   ground, and a refusal names the file. `line set` rewrites a launch file on that
   same proof and no other, atomically (a temp file beside it, then a rename) and never
-  through a link, and judges every file before it writes the first. `line set` prints
-  and decides nothing from the bytes of a launch file unless they hash to that
-  digest: a command, a window or a path in other bytes could be anyone's, so a refusal
-  echoes none of them. The one other thing it does with such bytes is compare them
-  with what the run would write, which never parses them. An OpenCode
+  through a link, and judges every file, and every record it will write, before it
+  writes the first. `line set` prints and decides nothing from the bytes of a launch
+  file unless they hash to that digest: a command, a window or a path in other bytes
+  could be anyone's, so a refusal echoes none of them. Bytes that do hash to it are
+  parsed, for the command and for the cap and window, which is how it tells that a
+  file already says the numbers asked for. The one other thing it does with bytes that
+  do not is compare them with what the run would write, which never parses them, and
+  which recognizes a file a run left after it replaced it and before it recorded it;
+  the file is proved again just before its digest is recorded. An OpenCode
   session has no launch file, and `line add` and `line set` write nothing in its
   working directory.
 - **Out of scope: a deliberate edit of that state**, and a session that decides to
