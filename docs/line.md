@@ -620,8 +620,9 @@ the numbers asked for, and not against the ones the record holds, so a line that
 already has the numbers is not passed over while a file disagrees. Only when the
 record and every file already have them, and none is gone, does the command write
 nothing and say that nothing was changed; when it finds a file gone it writes nothing
-too, and says that, and what is gone. When all it does is bring a recorded digest up
-to date, it says that no number changed and no session needs a restart.
+too, and says that, and what is gone. When no number changes, only the Claude Code
+sessions whose file the run wrote, or found already holding the bytes it would write,
+or that have none, are told anything.
 
 It judges before it writes. Every launch file the record lists must still be the one
 `line add` wrote, by the proof `line drop` removes a file on: a regular file whose
@@ -635,10 +636,11 @@ for the Claude Code sessions that use it, whether or not a number changes. A Cla
 Code session's instructions, as `channel --check` measures them, must still fit
 Claude Code's cap with the new numbers (the cap's and the window's digits, the state
 directory and the binary's path all count); one that does not is refused, exit 2,
-naming the session, with nothing changed. So is a record that would come out larger
-than the line verbs read (64 KiB): every record the run will write is checked before
-the first file is, since a refusal after the files were replaced would leave their
-digests behind the record's.
+naming the session, with nothing changed. A record that would come out larger than
+the line verbs read (64 KiB) is refused too, but as a failure, exit 1, again with
+nothing changed: every record the run will write is checked before the first file is,
+since a refusal after the files were replaced would leave their digests behind the
+record's.
 
 What a refusal for a file says unblocks it, and the commands are printed as they
 stand:
@@ -708,9 +710,15 @@ record holds is its file's own bytes, and each file says its own numbers, so a r
 writes the files that do not say the numbers asked for, leaves those that do, and
 writes the numbers last. It ends with a line that repeats the run, as it stands, which
 is not the only way to go on: run it with the numbers you want. The one exception is a
-file replaced whose record could not be written (the run says so and names it): the same
-numbers from the same binary finish it, as above, and other numbers are refused for that
-file until then.
+file replaced whose record could not be written, which is the one gap there is: a kill
+between the rename and the record write leaves it, and so does a record write that
+fails after the rename (the record's directory not writable, a full disk), which the
+run says and names the file for. The same command, with the same numbers from the same
+binary, finishes it, as above, and other numbers are refused for that file until then.
+A `line add` run between a failed `line set` and its rerun can share a file the failed
+run had already rewritten, since the record holds its new digest, so the session added
+then has numbers ahead of the record's; the next `line set` brings every file and the
+record into line.
 
 Nothing that is running changes by itself. The breaker lives in each session's
 front process, which reads its cap and window once, when it starts, so the command

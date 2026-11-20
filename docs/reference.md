@@ -1049,8 +1049,7 @@ exit 2.
   numbers the line already has is not passed over while a launch file disagrees. It
   writes nothing and says that nothing was changed only when the record and every
   file already have the numbers and none is gone; a run that finds a file gone writes
-  nothing too, and says what is gone (below). A run that only brings a recorded
-  digest up to date says that no session needs a restart. It takes the id's lock, so a second command for the id refuses at once,
+  nothing too, and says what is gone (below). It takes the id's lock, so a second command for the id refuses at once,
   exit 1, and it touches no server, runs no harness and posts nothing.
   Every launch file the record lists is judged before the first is written, by the
   proof `line drop` uses: a regular file whose bytes hash to the recorded digest, in a
@@ -1071,8 +1070,8 @@ exit 2.
   would be over Claude Code's cap with the new numbers is refused too, but as a
   configuration error, exit 2, naming the session, and telling to shorten `--cap`,
   `--window`, the state directory or the binary's path; so is a record that would come
-  out larger than the line verbs read (64 KiB), exit 1: every record the run will write
-  is checked before the first file is. A file that is not there is
+  out larger than the line verbs read (64 KiB), refused as a failure, exit 1, not as a
+  configuration error: every record the run will write is checked before the first file is. A file that is not there is
   left that way, and said, with or without a number changing; a Claude session whose
   file it is is told that a restart
   loads no parley server, and to `line drop` and `line add` it, which writes the file
@@ -1107,9 +1106,15 @@ exit 2.
   goes on from with any numbers, the old ones too, since each digest the record holds
   is its file's own bytes and each file says its own numbers: it ends with a line that
   repeats the run, as it stands, and says that running it with the numbers you want goes
-  on from there. The exception is a file replaced whose record write failed, which the run names:
-  the same numbers and the same binary finish it, since the file then holds exactly the
-  bytes they would write, and other numbers are refused for that file until then.
+  on from there. The exception is a file replaced whose record write did not happen,
+  the one gap there is: a kill between the rename and the record write leaves it, and
+  so does a record write that fails after the rename (the record's directory not
+  writable, a full disk), which the run names. The same numbers and the same binary
+  finish it, since the file then holds exactly the bytes they would write, and other
+  numbers are refused for that file until then. A `line add` between a failed run and its
+  rerun can share a file the failed run had already rewritten, since the record holds its
+  new digest, so the session added then has numbers ahead of the record's; the next
+  `line set` brings every file and the record into line.
   It prints what is left, since a front reads its cap and window once, when it starts:
   for each session in record order, for Claude Code, to restart it with the launch line
   `line add` prints (the `--dangerously-load-development-channels server:parley` one),
@@ -1118,7 +1123,8 @@ exit 2.
   the new `--cap` and `--window` (and the recorded `--codex-bin`). Then one line: each
   session's primer still states the old numbers, and a session started outside `line
   add` is not in the record and was not touched. When no number changed, only the Claude
-  sessions whose file the run wrote, or that have none, are told anything.
+  sessions whose file the run wrote or found already holding the bytes it would write, or
+  that have none, are told anything.
 - `line drop <id> <nick> [--force] [--state-dir <dir>]` takes one session off. It
   takes the id's lock and the session's nick lock without waiting, and refuses, exit
   1, while the session or its pump holds the latter. It removes the session's
