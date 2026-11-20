@@ -46,9 +46,12 @@ import (
 //     directory is overwritten, written through a link or removed on any other ground.
 //     Nor does `line set` print or decide anything from the bytes of a launch file
 //     unless they hash to the recorded digest: a command, a window or a path in
-//     other bytes could be anyone's, and a refusal echoes none of them. The one
-//     other thing it does with such bytes is compare them with what the run would
-//     write, which never parses them.
+//     other bytes could be anyone's, and a refusal echoes none of them. Bytes that
+//     do hash to it are parsed, for the command and the numbers, which is how it
+//     knows a file already has the numbers asked for. The one other thing it does
+//     with bytes that do not is compare them with what the run would write, which
+//     never parses them, and which a file left by a run cut short after it replaced
+//     the file is recognized by; it proves them again before it records their digest.
 //   - Untrusted: Codex's output and the thread id it announces (checked to be a
 //     UUID), OpenCode's output and the session id it announces (checked to have
 //     the shape of one, and to be the one every event of the turn carries),
@@ -349,6 +352,20 @@ func readLineRecord(base, id string) (lineRecord, []byte, error) {
 // temp file and a rename, and refuses one the reader would refuse for its size.
 // It returns the bytes it wrote.
 func writeLineRecord(dir string, rec lineRecord) ([]byte, error) {
+	data, err := encodeLineRecord(rec)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, lineRecordName), data, 0o600); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// encodeLineRecord is the bytes writeLineRecord stores for rec, or the refusal it
+// would give: a verb that has to write several records asks it of each of them
+// before it writes the first.
+func encodeLineRecord(rec lineRecord) ([]byte, error) {
 	if rec.Sessions == nil {
 		rec.Sessions = []lineSession{}
 	}
@@ -367,9 +384,6 @@ func writeLineRecord(dir string, rec lineRecord) ([]byte, error) {
 	}
 	if buf.Len() > lineRecordMax {
 		return nil, fmt.Errorf("the line record would be %d bytes, over the %d bytes the line verbs read, and they would then refuse to take the line down: shorten what it holds (the paths, the models)", buf.Len(), lineRecordMax)
-	}
-	if err := writeFileAtomic(filepath.Join(dir, lineRecordName), buf.Bytes(), 0o600); err != nil {
-		return nil, err
 	}
 	return buf.Bytes(), nil
 }

@@ -550,16 +550,22 @@ verbs:
            file whose bytes hash to the recorded digest, in a directory that is
            not a link, or it refuses, exit 1, naming the file and what unblocks
            it, before it writes any, the numbers being the record's or not; a file
-           that is not there is left that way. Each Claude session's
-           .mcp.json is then written again with the new --cap and --window, by
-           the function add writes it with, through a temp file and a rename and
-           never through a link, and the digest every session that shares it holds
-           is updated (a Codex session's config.toml carries neither number and
-           is left as it is); the record's cap and window are written last. A
-           Claude launch whose instructions would then be over Claude Code's
-           cap is refused, exit 2. A failure partway says which files were written
-           and which were not, rolls nothing back, and ends with the command that
-           finishes it, the same numbers and binary. It prints, for each session,
+           that is not there is left that way, and said. Each Claude session's
+           .mcp.json that does not already say the numbers asked for (read from
+           the bytes the digest proved, whatever the record holds) is written
+           again with the new --cap and --window, by the function add writes it
+           with, through a temp file and a rename and never through a link, and
+           the record is written at once with that file's new digest under every
+           session that shares it and the numbers it had (a Codex session's
+           config.toml carries neither number and is left as it is); the record's
+           cap and window are written last. Every record it will write is checked
+           before the first file is, and a Claude launch whose instructions would
+           then be over Claude Code's cap is refused, exit 2. A failure or an
+           interrupt partway says which files were written and which were not and
+           what the record holds, rolls nothing back, and says to run set again
+           with the numbers you want: any numbers go on from where it stopped. A
+           run that has nothing to change goes the same way and says nothing was
+           changed only when no launch file is gone. It prints, for each session,
            what is left for the human,
            since each front reads its cap and window once, at launch: restart a
            Claude Code session with the launch line add prints, plus --resume
