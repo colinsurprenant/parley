@@ -634,7 +634,7 @@ func TestLineSetFailurePartWayIsReportedAndRunningAgainFinishes(t *testing.T) {
 	if res.code != 1 {
 		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
 	}
-	finish := fmt.Sprintf("%s line set demo --cap 30 --window 10m --state-dir %s", q(binPath), q(b.base))
+	finish := b.setLine(binPath, 30, "10m")
 	for _, want := range []string{"rewritten: " + mcp1 + ";", "not rewritten: " + mcp2 + ";", "line.json was not written and still holds cap 8, window 10m", "once the cause is cleared, finish with " + finish + ","} {
 		if !strings.Contains(res.stderr, want) {
 			t.Errorf("stderr lacks %q:\n%s", want, res.stderr)
@@ -811,6 +811,12 @@ func TestPlanLineSetRefusesAClaudeLaunchItWouldPushOverTheCap(t *testing.T) {
 	}
 }
 
+// setLine is the line a failed run prints to finish it: the numbers it had, as the
+// binary that ran it, every value quoted.
+func (b *lineBench) setLine(bin string, capN int, window string) string {
+	return fmt.Sprintf("%s line set %s --cap %d --window %s --state-dir %s", q(bin), q("demo"), capN, q(window), q(b.base))
+}
+
 // partWay makes line demo of two Claude sessions in two working directories whose
 // second directory cannot be written, and runs `line set --cap 30` by bin (the
 // tests' own binary when empty) so that it fails after it wrote the first file. It
@@ -844,23 +850,27 @@ func (b *lineBench) partWay(t *testing.T, bin string) (mcp1, mcp2 string, res re
 }
 
 // TestLineSetAfterAFailurePartWayNeverSaysNothingChanged: the first file holds cap 30
-// and the record says 8. Naming the record's numbers, or others, is refused, with the
-// command that finishes the interrupted run, and not passed over as a no-op; once
-// that run is finished the file and the record agree and the other numbers go in.
+// and the record says 8. Naming the record's numbers, or others, is refused, saying
+// that the command the failure printed finishes the interrupted run, and not passed
+// over as a no-op; once that run is finished the file and the record agree and the
+// other numbers go in.
 func TestLineSetAfterAFailurePartWayNeverSaysNothingChanged(t *testing.T) {
 	b := newLineBench(t)
-	mcp1, _, _ := b.partWay(t, "")
+	mcp1, _, failure := b.partWay(t, "")
 	recBefore := string(mustRead(t, filepath.Join(b.base, "lines", "demo", "line.json")))
-	finish := fmt.Sprintf("%s line set demo --cap 30 --window 10m --state-dir %s", q(binPath), q(b.base))
+	finish := b.setLine(binPath, 30, "10m")
+	if !strings.Contains(failure.stderr, "finish with "+finish+",") {
+		t.Fatalf("the failure does not print %q:\n%s", finish, failure.stderr)
+	}
 
 	for _, capN := range []string{"8", "40"} {
 		res := b.run(t, b.lset("demo", "--cap", capN)...)
-		if res.code != 1 || res.stdout != "" || strings.Contains(res.stdout, "nothing was changed") {
+		if res.code != 1 || res.stdout != "" {
 			t.Fatalf("--cap %s: exit %d, want a refusal\nstdout: %s\nstderr: %s", capN, res.code, res.stdout, res.stderr)
 		}
 		for _, want := range []string{
 			"will not rewrite " + mcp1 + ": ",
-			"it holds what line set writes for cap 30 and window 10m when run as " + binPath + ", and the record has cap 8 and window 10m, so an earlier run was probably cut short: running it again finishes it, then run this again: " + finish,
+			"; if an earlier line set on this line was cut short, the command it printed when it failed finishes it, then run this again; to go on, restore the file",
 		} {
 			if !strings.Contains(res.stderr, want) {
 				t.Errorf("--cap %s: stderr lacks %q:\n%s", capN, want, res.stderr)
@@ -870,9 +880,9 @@ func TestLineSetAfterAFailurePartWayNeverSaysNothingChanged(t *testing.T) {
 			t.Errorf("--cap %s changed the record:\n%s", capN, got)
 		}
 	}
-	// What the refusal says works: finish the run, then the other numbers go in.
+	// What the failure printed works: finish the run, then the other numbers go in.
 	if res := b.runBinaryIn(t, "sh", "-c", finish); res.code != 0 {
-		t.Fatalf("the command the refusal named exited %d\n%s%s", res.code, res.stdout, res.stderr)
+		t.Fatalf("the command the failure printed exited %d\n%s%s", res.code, res.stdout, res.stderr)
 	}
 	mustLine(t, b, b.lset("demo", "--cap", "8")...)
 	b.wantMCP(t, mcp1, "demo", "8", "10m")
@@ -886,7 +896,8 @@ func TestLineSetAfterAFailurePartWayNeverSaysNothingChanged(t *testing.T) {
 
 // TestLineSetFinishCommandNamesTheBinaryThatWroteTheFile: a run by another binary
 // that failed part way prints the line that finishes it as that binary, which runs;
-// the tests' own binary, run for the same numbers, is told whose output the file is.
+// the tests' own binary, run for the same numbers, is refused without a word of the
+// file's command in the refusal.
 func TestLineSetFinishCommandNamesTheBinaryThatWroteTheFile(t *testing.T) {
 	b := newLineBench(t)
 	dev := filepath.Join(b.root, "parley-dev")
@@ -898,14 +909,15 @@ func TestLineSetFinishCommandNamesTheBinaryThatWroteTheFile(t *testing.T) {
 	if cmd == binPath || filepath.Base(cmd) != "parley-dev" {
 		t.Fatalf("the first file runs %q, want the other binary", cmd)
 	}
-	finish := fmt.Sprintf("%s line set demo --cap 30 --window 10m --state-dir %s", q(cmd), q(b.base))
+	finish := b.setLine(cmd, 30, "10m")
 	if !strings.Contains(res.stderr, "finish with "+finish+",") {
 		t.Fatalf("stderr does not print %q:\n%s", finish, res.stderr)
 	}
 
-	// The same numbers from this binary: the file holds what another binary writes.
+	// The same numbers from this binary: the file is not what this binary would write,
+	// and the refusal does not read it to say whose it is.
 	res = b.run(t, b.lset("demo", "--cap", "30")...)
-	if res.code != 1 || !strings.Contains(res.stderr, "when run as "+cmd+", and the record has cap 8") || !strings.Contains(res.stderr, finish) {
+	if res.code != 1 || strings.Contains(res.stderr, cmd) || strings.Contains(res.stderr, "parley-dev") || !strings.Contains(res.stderr, "the command it printed when it failed finishes it") {
 		t.Errorf("exit %d\nstderr: %s", res.code, res.stderr)
 	}
 	// The printed line runs, and finishes it.
@@ -918,6 +930,54 @@ func TestLineSetFinishCommandNamesTheBinaryThatWroteTheFile(t *testing.T) {
 	}
 	// And `line drop` recognizes the files again.
 	mustLine(t, b, b.ldrop("demo", "plan")...)
+}
+
+// TestLineSetRefusalEchoesNoByteOfAFileThatIsNotTheLines: a .mcp.json that is the
+// shape `line set` writes, with a command and a window that hold shell
+// metacharacters, a quote and a control character, is refused, and neither the
+// refusal nor anything else printed holds one of them: nothing is decided from
+// bytes that do not hash to the recorded digest.
+func TestLineSetRefusalEchoesNoByteOfAFileThatIsNotTheLines(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	marker := filepath.Join(b.root, "marker-touched")
+	hostile := []string{"/tmp/not-parley", "touch " + marker, "marker-touched", "\a", "evil'quote", "$(id)"}
+	rec := b.record(t, "demo")
+	evil := rec
+	evil.Cap = 30
+	evil.Window = "10m; touch " + marker + "; echo evil'quote $(id)\a"
+	data, err := lineMCPJSON("/tmp/not-parley", evil, b.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mcp, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := b.lsnap(t, co)
+
+	res := b.run(t, b.lset("demo", "--cap", "40")...)
+	if res.code != 1 || res.stdout != "" || !strings.Contains(res.stderr, "will not rewrite "+mcp+": ") || !strings.Contains(res.stderr, "nothing was changed") {
+		t.Fatalf("exit %d, want a refusal\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	for _, bad := range hostile {
+		if strings.Contains(res.stderr, bad) || strings.Contains(res.stdout, bad) {
+			t.Errorf("the refusal holds %q, which came from the file:\n%s", bad, res.stderr)
+		}
+	}
+	b.wantLineUnchanged(t, before, co)
+	// Running what the refusal prints does nothing the file asked for.
+	for _, line := range strings.FieldsFunc(res.stderr, func(r rune) bool { return r == ';' }) {
+		if strings.Contains(line, " line drop ") {
+			b.runBinaryIn(t, "sh", "-c", strings.TrimSpace(line))
+			break
+		}
+	}
+	if _, err := os.Lstat(marker); err == nil {
+		t.Errorf("%s was made: something in the refusal ran the file's bytes", marker)
+	}
 }
 
 // TestLineSetRefusalNamesWhatUnblocksIt: for a file that is not the line's, the

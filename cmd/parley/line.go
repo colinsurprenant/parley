@@ -44,6 +44,11 @@ import (
 //     only that proof lets `line drop` delete it or `line set` rewrite it, and
 //     `line set` does it atomically and never through a link. Nothing in a working
 //     directory is overwritten, written through a link or removed on any other ground.
+//     Nor does `line set` print or decide anything from the bytes of a launch file
+//     unless they hash to the recorded digest: a command, a window or a path in
+//     other bytes could be anyone's, and a refusal echoes none of them. The one
+//     other thing it does with such bytes is compare them with what the run would
+//     write, which never parses them.
 //   - Untrusted: Codex's output and the thread id it announces (checked to be a
 //     UUID), OpenCode's output and the session id it announces (checked to have
 //     the shape of one, and to be the one every event of the turn carries),
