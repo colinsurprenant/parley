@@ -298,7 +298,7 @@ func (p *lineSetPlan) refuse(lf *lineSetFile, problem string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "will not rewrite %s: %s; it is not shown to be the file line add wrote for session %s", lf.path, problem, owner.Nick)
 	if owner.Harness == harnessClaude {
-		b.WriteString("; if an earlier line set on this line was cut short, the command it printed when it failed finishes it, then run this again")
+		b.WriteString("; if an earlier line set on this line was cut short, running that same line set again, with the same numbers and from the same binary, finishes it (it is the command it printed if it failed), then run this again")
 	}
 	var drops, adds []string
 	codex := false

@@ -636,8 +636,10 @@ naming the session, with nothing changed.
 What a refusal for a file says unblocks it, and the commands are printed as they
 stand:
 
-- If an earlier `line set` on this line was cut short, the command it printed when it
-  failed finishes it; run that, then run yours again. The refusal says so without
+- If an earlier `line set` on this line was cut short, running that same `line set`
+  again, with the same numbers and from the same binary, finishes it; it is the
+  command it printed if it failed, and a run killed outright printed none. Run
+  that, then run yours again. The refusal says so without
   reading the file, whatever it holds: `line set` prints and decides nothing from the
   bytes of a launch file that do not hash to the digest the record has, since a
   command or a window in them could be anyone's. That goes for going back to the

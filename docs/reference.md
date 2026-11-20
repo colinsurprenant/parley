@@ -1054,7 +1054,8 @@ exit 2.
   directory that is not a link, in the working directory as recorded. A file that is
   not that, a link at the path included, refuses the whole run, exit 1, naming the
   file, with nothing changed, and saying what unblocks it: that a `line set` cut short
-  is finished by the command it printed when it failed (nothing is read from a file
+  is finished by running it again with the same numbers from the same binary, the
+  command it printed if it failed (nothing is read from a file
   whose bytes do not hash to the recorded digest, so no value from one is printed or
   acted on); for any file, restoring it to the digest the record has, or
   `line drop <id> <nick> --force` for each session that uses it (the file is left),

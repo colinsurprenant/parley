@@ -870,7 +870,7 @@ func TestLineSetAfterAFailurePartWayNeverSaysNothingChanged(t *testing.T) {
 		}
 		for _, want := range []string{
 			"will not rewrite " + mcp1 + ": ",
-			"; if an earlier line set on this line was cut short, the command it printed when it failed finishes it, then run this again; to go on, restore the file",
+			"; if an earlier line set on this line was cut short, running that same line set again, with the same numbers and from the same binary, finishes it (it is the command it printed if it failed), then run this again; to go on, restore the file",
 		} {
 			if !strings.Contains(res.stderr, want) {
 				t.Errorf("--cap %s: stderr lacks %q:\n%s", capN, want, res.stderr)
@@ -917,7 +917,7 @@ func TestLineSetFinishCommandNamesTheBinaryThatWroteTheFile(t *testing.T) {
 	// The same numbers from this binary: the file is not what this binary would write,
 	// and the refusal does not read it to say whose it is.
 	res = b.run(t, b.lset("demo", "--cap", "30")...)
-	if res.code != 1 || strings.Contains(res.stderr, cmd) || strings.Contains(res.stderr, "parley-dev") || !strings.Contains(res.stderr, "the command it printed when it failed finishes it") {
+	if res.code != 1 || strings.Contains(res.stderr, cmd) || strings.Contains(res.stderr, "parley-dev") || !strings.Contains(res.stderr, "running that same line set again, with the same numbers and from the same binary, finishes it") {
 		t.Errorf("exit %d\nstderr: %s", res.code, res.stderr)
 	}
 	// The printed line runs, and finishes it.
