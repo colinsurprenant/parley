@@ -82,6 +82,11 @@
 // nobody is waiting is not lost, and the live stream never has to be trusted as
 // a second source of order.
 //
+// The one line this adapter writes that is not a message is Notice: a NOTICE to a
+// nick, which is how a line's front tells the human that its breaker tripped. It
+// goes to the nick and not the channel, so it is in no history and no reader's
+// count, and it is written without a label and never waited on.
+//
 // Boundaries. Loopback only, and enforced twice: ParseSpec takes 127.0.0.0/8,
 // ::1 and localhost and nothing else, and dial checks what the name actually
 // resolved to before a password goes anywhere near the socket. The reason is
@@ -312,6 +317,57 @@ func (s *Stream) Send(ctx context.Context, body string) (stream.Message, error) 
 		TS:     parseTime(first.tags["time"]),
 		Body:   body,
 	}, nil
+}
+
+// Channel is the channel this stream reads and posts to, as the spec spells it:
+// what a trip notice tells the chair to post in.
+func (s *Stream) Channel() string { return s.spec.Channel }
+
+// Notice sends text as a NOTICE addressed to nick, which is how a front tells the
+// human, whose nick it is, that the line's breaker tripped. It is not a post: a
+// NOTICE to a nick is not the channel's, so it is in no history and no reader of
+// the channel sees it, and nothing counts it toward the breaker it reports.
+//
+// It is fire and forget, and that is what keeps it from ever costing a delivery
+// anything. The line is written and Notice returns; it carries no label and
+// waits for no reply, because there is none it could rely on. With echo-message
+// the server sends our own NOTICE back to us, and a nick that is not connected
+// gets no answer from ergo at all — a NOTICE is never answered with an error, as
+// RFC 2812 asks of every server — though another server may send 401
+// ERR_NOSUCHNICK. None of those lines carries a label, so the dispatcher drops
+// each as a line nobody asked for (see conn.dispatch), and none wakes a Wait,
+// which only a PRIVMSG to the channel does. Whether the human saw it is not
+// known here, and nothing retries it.
+//
+// text is one line, and must be one a client can show as it is: any control
+// character in it — the NUL, CR and CTCP delimiter Send refuses, and the LF that
+// would end the line and start a command of someone else's choosing — is an
+// error and nothing is sent, as is a nick outside parley's grammar and a line
+// longer than the server will relay with this connection's own prefix on it.
+// Like Send, it dials when there is no connection, which is bounded only by ctx.
+func (s *Stream) Notice(ctx context.Context, nick, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := stream.ValidNick(nick); err != nil {
+		return fmt.Errorf("irc: notice target %q %v", nick, err)
+	}
+	if text == "" {
+		return errors.New("irc: empty notice text")
+	}
+	for i := range len(text) {
+		if b := text[i]; b < 0x20 || b == 0x7f {
+			return fmt.Errorf("irc: notice text holds the control character 0x%02x at offset %d; it travels as one line a client shows as it is", b, i)
+		}
+	}
+	c, err := s.ensure(ctx)
+	if err != nil {
+		return err
+	}
+	if limit := c.noticeLimit(nick); len(text) > limit {
+		return fmt.Errorf("irc: notice text is %d bytes, the server relays at most %d to %s", len(text), limit, nick)
+	}
+	return c.writeLines(ctx, line{command: "NOTICE", params: []string{nick, text}, colon: true})
 }
 
 // Read returns the messages after cursor, in the order the server replays them.

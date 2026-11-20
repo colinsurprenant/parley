@@ -323,6 +323,14 @@ func (c *conn) chunkSize() int {
 	return max(1, min(maxChunk, left))
 }
 
+// noticeLimit is how much text one NOTICE to target may carry: what is left of
+// the 512-byte line once the server has stamped this connection's own prefix and
+// the target on it. A notice is one line and is never cut into chunks, so a text
+// over it is refused instead.
+func (c *conn) noticeLimit(target string) int {
+	return max(1, maxRestLen-len("\r\n")-len(":")-len(c.prefix)-len(" NOTICE ")-len(target)-len(" :"))
+}
+
 // cutRunes returns the largest prefix of s that fits in limit bytes without
 // splitting a rune. A single rune longer than the limit is still taken whole:
 // half a rune is not a smaller message, it is a broken one.

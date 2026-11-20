@@ -781,40 +781,108 @@ with the other two skills.
 The gate is two rules and nothing else: there is no seal and no first hold, so a
 session receives every other session's post as it arrives, before it has posted
 itself. A table's breaker counts posts since the chair last posted; a line runs
-for days and its pokes are slow, so that count alone would hold the ninth ordinary
-poke though nothing loops, and a loop is fast. So the first rule is a rate. Every
-message by anyone but the chair, this session's own included, is counted and
-timed, by its timestamp or by the time the front received it when the transport
-gave none. A message trips the breaker when it makes more than `<n>` messages
-within `--window`: the `<n>`+1 most recent messages by anyone but the chair, it
-included, span no more than the window. The span is the latest of those times
-less the earliest, so a transport that reports times from one clock out of order
-cannot hide a burst; IRC's are the server's, and writers whose clocks differ by
-more than the window, as a file stream's can, can make a burst look spread. The
-second rule is a backstop for the loop that is slow: a message trips it too when
-it makes more than five times `<n>` messages since the chair last posted, however
-slowly they came, which is the table's count at five times the cap. Once tripped,
-the message and every later such message are held until the chair posts, and the
-chair's post releases them ahead of itself, in stream order, un-trips the breaker
-and clears the count and the record of times, so the released messages count in
-neither. Nothing is released by time passing: a loop, fast or slow, stays stopped
-until the human looks. Posts spread beyond the window never trip the rate however
-many there are, which is also why the first delivery of a session joining a line
-under way, the history the server retains, does not trip it unless the history
-holds a burst, or more than five times `<n>` messages since the chair's last in
-it. That holds for IRC, whose messages all carry the server's time; a `file:`
-stream's message with no usable timestamp is timed when received, so a backlog of
-those arrives as one instant and trips the rate at once. `--cap 0` turns both
-rules off. Held messages live in the front's memory and nowhere else: a restart
-loses them, and so does a gap in the history, which discards the held queue and
-keeps the count and the record of times, as a table's gap keeps its count; a
-delivery that is collected but never committed leaves the holds as they were.
+for days and its pokes are slow, so a count that only the chair's post forgets
+would hold the ordinary poke though nothing loops, and a loop is fast. So both
+rules count posts within a span of time. Every message by anyone but the chair,
+this session's own included, is timed, by its timestamp or by the time the front
+received it when the transport gave none. A message trips the breaker when it
+makes more than `<n>` messages within `--window`: the `<n>`+1 most recent messages
+by anyone but the chair, it included, span no more than the window. The span is
+the latest of those times less the earliest, so a transport that reports times
+from one clock out of order cannot hide a burst; IRC's are the server's, and
+writers whose clocks differ by more than the window, as a file stream's can, can
+make a burst look spread. The same holds for a time ahead of the clock: on a
+`file:` stream the writer sets the time, so posts stamped in the future sit at the
+tail of the 5`<n>`+1 record, and two of them can keep the second rule below from
+ever tripping, because the record always drops its earliest time. A `file:`
+stream's writer can already post as the chair, which releases the breaker, so
+this is no reach it did not have, and on IRC the server sets the time. The second
+rule is a backstop for the loop that is slow
+enough to keep under the first: a message trips it too when it makes more than
+five times `<n>` messages within 36 times `--window`, the 5`<n>`+1 most recent
+messages, it included, spanning no more than 36 windows, however evenly they
+came. The 36 is `backstopWindows` in `internal/stream/deliver.go`, picked from a
+line's measured traffic, and the instructions and the notice state both rules
+from the same code (`stream.LineBackstop`), so changing the span is changing that
+one constant and the prose that says 36 and six hours. On the defaults, a cap of
+20 and a window of 10m, the rules are more than 20 messages within 10m and more
+than 100 within 6h, so the slowest loop the second stops is one message every 3.6
+minutes: 100 gaps of 3.6 minutes are six hours, and a loop a second slower is not
+stopped. Both read one record of times, in time order, of the
+messages since the chair last posted, which holds at most the 5`<n>`+1 most recent,
+the longest run either rule measures; a message stamped earlier than all of them
+is checked against them and then dropped, so a burst made of it and of messages
+already dropped is not seen. Once tripped, the message and every later such
+message are held until the chair posts, and the chair's post releases them ahead
+of itself, in stream order, un-trips the breaker and clears the record of times,
+so the released messages count in neither. Nothing is released by time passing: a
+loop, fast or slow, stays stopped until the human looks. Posts spread beyond the
+window never trip the first rule, and posts spread beyond 36 windows never trip
+the second, however many there are, which is also why the first delivery of a
+session joining a line under way, the history the server retains, does not trip
+either unless the history holds a burst, or more than five times `<n>` messages
+within 36 windows. That holds for IRC, whose messages all carry the server's
+time; a `file:` stream's message with no usable timestamp is timed when received,
+so a backlog of those arrives as one instant and trips the first rule at once.
+`--cap 0` turns both rules off. Held messages live in the front's memory and
+nowhere else: a restart loses them, and so does a gap in the history, which
+discards the held queue and keeps the record of times, as a table's gap keeps its
+count; a delivery that is collected but never committed leaves the holds as they
+were.
+
+A trip is told to the human, once, by the front. When a delivery's gate state is
+installed — at its commit, or as it returns when it has nothing to hand over —
+and that leaves the breaker tripped by a trip the installed state had not
+counted, the Deliverer asks its stream, when the stream can (`stream.Noticer`: `Channel()` and `Notice(ctx, nick,
+text)`), to send the chair one line:
+
+```
+parley: <nick> is holding line deliveries in #<channel>: more than <n> posts within <window>. Post in #<channel> to release.
+```
+
+with the backstop's numbers, 5`<n>` posts within 36`<window>`, spelled as the
+figures they come to, when that rule tripped. On IRC it is a NOTICE to the chair's nick, written on the
+connection the front reads on: not a post to the channel, so it is in no history,
+no front counts it and no session is handed it, and nothing is said into the
+session. It is written unlabeled and never waited for. ergo echoes it back to the
+sender (echo-message) and answers nothing for a nick that is not connected, and
+the connection's dispatcher drops the echo, and the 401 another server might
+send, as lines nobody asked for; neither wakes a wait, and Read and Wait skip an
+inbound NOTICE as they skip every line that is not a message to the channel. It
+is best-effort: it runs on its own goroutine under a bound of 5 seconds, dialing
+if the connection is gone, is never retried, and a failure, such as a refused
+text or a dead socket, is a line on the front's standard error that changes no
+delivery. The text holds only parley's own values: the front's nick, the channel
+from the stream spec, the cap and window of the line's record, and which rule
+tripped; never a message's body, author or id, which are the stream's and
+untrusted. The IRC stream refuses, and sends nothing, for a text with a control
+character in it, a nick outside parley's grammar, or a line longer than the server
+will relay with the connection's own prefix on it. A human's hand edit of parley's
+state, and what a harness does with its permissions, are out of this scope.
+
+One notice per trip per front. The gate keeps a count of its trips, by either rule,
+which a release does not reset, and an install announces when the breaker is
+tripped and the count has moved: the flag alone cannot say it, since it reads
+tripped before and after a delivery that carries the chair's post and a burst
+after it, as a front catching up a backlog or re-reading after an idle makes. A
+delivery that is begun and not committed sends none, one collected again after a
+failed hand-off sends its trip's once, a release that does not trip again sends
+none, a trip after a release sends another, and several trips in one delivery
+send one, naming the last. Each front of a line trips and sends for itself, so a
+line of three sessions can send three. A restart forgets the trip, and the count,
+with the held messages, so a front that replays history it had already passed, a
+nick with no cursor reading the channel's backlog, can trip again and send one
+more, once per process; one that resumes from its saved cursor starts after the
+posts that tripped it, and repeats nothing unless it was stopped between handing
+a delivery over and saving the cursor. A table's breaker sends
+nothing, and neither does a stream with no such capability, the file stream.
 
 The line form of the primer is the build and table forms' framing, the reply
 recipe, the header rule and the trust sentences, word for word, with a line's
 own sentences: the command is the only way to reach the other sessions; the facts
 are the human's registered nick and the breaker, as "breaker: more than `<cap>`
-posts within `<window>`, or five times that since `<chair>` last posted, hold
+posts within `<window>`, or more than 5`<cap>` posts within 36`<window>`, each
+spelled as the numbers it comes to (100 posts within 6h on the defaults), hold
 deliveries until `<chair>` posts", or "breaker off (cap 0)"; the protocol is the
 `parley-line` skill, invoked as `/parley-line` (`$parley-line` on the codex
 front, and on the opencode front "which you load with the skill tool"); and the one carve-out to the trust rule is that a line under the human's
@@ -839,10 +907,12 @@ a second command for the id refuses at once, exit 1. `table new` and `build new`
 refuse the id of a line, as `line new` refuses the id of a table or a build, with
 exit 2.
 
-- `line new <id> --chair <nick> --cap <n> [--window 10m] [--server 127.0.0.1:6667]
+- `line new <id> --chair <nick> [--cap 20] [--window 10m] [--server 127.0.0.1:6667]
   [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]` makes the line and its record, with no
-  sessions. `--chair` must be a valid nick and `--cap` is required, `--cap 0` being
-  no breaker; `--window` is above zero. It runs `parley doctor`'s static checks for
+  sessions. `--chair` must be a valid nick and `--cap` defaults to 20, recorded as
+  given, `--cap 0` being no breaker and a negative cap refused; `--window` is above
+  zero. The fronts that `line add` starts take no such default: `--cap` stays
+  required on them, and `line add` passes the recorded one. It runs `parley doctor`'s static checks for
   the server, and for ergo when nothing answers at the server (the skills are
   checked by `add`, for the harness of each session), refuses an id that has a
   table, a build or a line (exit 2), and undoes what it made if a step fails or it

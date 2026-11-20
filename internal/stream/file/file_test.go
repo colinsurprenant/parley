@@ -1080,3 +1080,37 @@ func TestSendReturnsTheTrueOffsetUnderAStockWriter(t *testing.T) {
 		sentIsWhatAReaderSees(t, m, got)
 	}
 }
+
+// TestTheFileStreamCannotSendANoticeSoALineTripOverItIsQuiet: a trip is told to
+// the chair only by a stream that can send a notice outside itself, and an NDJSON
+// file has no such place. The breaker still holds what it should, and nothing is
+// written anywhere about a notice that was never to be sent.
+func TestTheFileStreamCannotSendANoticeSoALineTripOverItIsQuiet(t *testing.T) {
+	ctx := context.Background()
+	front, path := newStream(t, "plan")
+	if _, ok := any(front).(stream.Noticer); ok {
+		t.Fatal("the file stream implements stream.Noticer: a file has nowhere to send one")
+	}
+	var log bytes.Buffer
+	d := stream.NewDeliverer(front, "plan", stream.WithLine("colin", 2, 10*time.Minute), stream.WithNoticeLog(&log))
+	peer, err := Open(path, "build", WithPollInterval(5*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for i := range 3 {
+		if _, err := peer.Send(ctx, "poke "+strconv.Itoa(i)); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+	}
+	del, err := d.Read(ctx, "")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	d.Commit(del)
+	if got := len(del.Messages); got != 2 {
+		t.Fatalf("delivered %d of 3 posts within the window, want 2 with the third held", got)
+	}
+	if log.Len() != 0 {
+		t.Fatalf("the notice log reads %q, want nothing", log.String())
+	}
+}

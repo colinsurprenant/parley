@@ -261,6 +261,57 @@ func TestLineNewTakesTheWindowAndCodexBin(t *testing.T) {
 	}
 }
 
+// TestLineNewDefaultsTheCapToTwentyAndRecordsIt: a line is made without --cap
+// with the cap the docs recommend, and the record and the runbook say so, as they
+// say a cap that was given, and a cap of 0 is a breaker that is still off.
+func TestLineNewDefaultsTheCapToTwentyAndRecordsIt(t *testing.T) {
+	b := newLineBench(t)
+	// doctor's server check dials the address the line is made for; make it the
+	// test's own listener rather than a port that was merely free a moment ago.
+	startFakeIRC(t, b.db.server)
+	noCap := func(id string, extra ...string) []string {
+		return append([]string{"line", "new", id, "--chair", "colin", "--state-dir", b.base, "--server", b.db.server}, extra...)
+	}
+
+	res := mustLine(t, b, noCap("demo")...)
+	if rec := b.record(t, "demo"); rec.Cap != 20 || rec.Window != "10m" {
+		t.Fatalf("line.json holds cap %d and window %q, want the defaults 20 and 10m", rec.Cap, rec.Window)
+	}
+	if want := "breaker: more than 20 posts within 10m, or more than 100 posts within 6h"; !strings.Contains(res.stdout, want) {
+		t.Errorf("the runbook does not say %q:\n%s", want, res.stdout)
+	}
+	if !strings.Contains(res.stdout, "sends you one NOTICE") {
+		t.Errorf("the runbook does not say that a trip sends a notice:\n%s", res.stdout)
+	}
+
+	// A line added to it passes the recorded cap on to its front.
+	wd := b.gitWorkdir(t, "planwd")
+	mustLine(t, b, b.ladd("demo", "plan", "claude", wd)...)
+	mcp := string(mustRead(t, filepath.Join(wd, ".mcp.json")))
+	if !regexp.MustCompile(`"--cap",\s*"20"`).MatchString(mcp) {
+		t.Errorf(".mcp.json does not carry the recorded cap of 20:\n%s", mcp)
+	}
+
+	// A cap that is given is recorded as given, and 0 is still no breaker.
+	mustLine(t, b, noCap("five", "--cap", "5")...)
+	if rec := b.record(t, "five"); rec.Cap != 5 {
+		t.Errorf("--cap 5 was recorded as %d", rec.Cap)
+	}
+	res = mustLine(t, b, noCap("off", "--cap", "0")...)
+	if rec := b.record(t, "off"); rec.Cap != 0 {
+		t.Errorf("--cap 0 was recorded as %d", rec.Cap)
+	}
+	if !strings.Contains(res.stdout, "breaker off") || strings.Contains(res.stdout, "NOTICE") {
+		t.Errorf("the runbook for --cap 0 does not say only that the breaker is off:\n%s", res.stdout)
+	}
+
+	// Help shows the default.
+	help := runParley(t, "", "line", "new", "-h").stdout
+	if !strings.Contains(help, "(default 20)") || !strings.Contains(help, "[--cap 20]") {
+		t.Errorf("line new -h does not document the default cap:\n%s", help)
+	}
+}
+
 // TestLineNewRefusesBeforeAnyChange: each refusal is a configuration error, exit
 // 2, and the machine is as it was.
 func TestLineNewRefusesBeforeAnyChange(t *testing.T) {
@@ -282,9 +333,6 @@ func TestLineNewRefusesBeforeAnyChange(t *testing.T) {
 		}},
 		{"bad chair", "--chair", func(t *testing.T, b *lineBench) []string { return b.lnew("demo", "--chair", "co lin") }},
 		{"lines as the chair", "lines", func(t *testing.T, b *lineBench) []string { return b.lnew("demo", "--chair", "Lines") }},
-		{"no cap", "--cap is required", func(t *testing.T, b *lineBench) []string {
-			return []string{"line", "new", "demo", "--chair", "colin", "--state-dir", b.base}
-		}},
 		{"negative cap", "--cap", func(t *testing.T, b *lineBench) []string { return b.lnew("demo", "--cap", "-1") }},
 		{"zero window", "--window", func(t *testing.T, b *lineBench) []string { return b.lnew("demo", "--window", "0s") }},
 		{"negative window", "--window", func(t *testing.T, b *lineBench) []string { return b.lnew("demo", "--window", "-5m") }},

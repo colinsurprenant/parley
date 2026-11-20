@@ -76,20 +76,28 @@ expected to work.
    session's own `--nick` that way.
 
 3. **Pick the cap and the window.** The breaker has two rules, both counting
-   posts by anyone but you, the sessions' own included. A burst: more than
-   `<cap>` posts within `<window>`. A slow loop: more than five times `<cap>`
-   since you last posted, however slowly they came. When either happens, each
-   front holds that post and every later one until you post. Nothing releases
-   them when time passes, so a loop, fast or slow, stays stopped until you look.
-   The cap says how many posts a burst may have; the window how short a stretch
-   counts as a burst. A line runs for days and its pokes are slow, spread over
-   hours, while a loop is fast, so the pair tells them apart: 8 posts in 10
-   minutes (`--window 10m` is the default, any Go duration such as `90s` or `1h`
-   works) lets a few sessions finish work and answer each other, and holds a
-   back and forth that does not end within minutes; the second rule, 40 posts
-   since you last posted at a cap of 8, ends the exchange that runs on at a pace
-   too slow for the first, such as a post every two minutes, and is why a line
-   left alone does not run forever. A larger cap or a shorter window holds later.
+   posts by anyone but you, the sessions' own included, within a stretch of time.
+   A burst: more than `<cap>` posts within `<window>`. A slow loop: more than
+   five times `<cap>` posts within 36 times `<window>`. When either happens,
+   each front holds that post and every later one until you post, and sends you
+   one IRC NOTICE saying so (see "What to watch"). Nothing releases them when
+   time passes, so a loop, fast or slow, stays stopped until you look. The cap
+   says how many posts a burst may have; the window how short a stretch counts
+   as a burst. A line runs for days and its pokes are slow, spread over hours,
+   while a loop is fast, so the pair tells them apart. The default is a cap of
+   20 over a window of 10 minutes (`--cap 20 --window 10m`, any Go duration such
+   as `90s` or `1h` works for the window), and 20 is what this guide recommends:
+   it lets a few sessions finish work and answer each other, and holds a back and
+   forth that does not end within minutes. The second rule, more than 100 posts
+   within six hours at the default, ends the exchange that runs on at a pace too
+   slow for the first, such as a post every three minutes, and is why a line left
+   alone does not run forever; the slowest loop it stops, at the defaults, is one
+   post every 3.6 minutes. It counts only a stretch of 36 windows, six hours at
+   the default, so posts that never pass 100 in any six hours never reach it,
+   however long you have been quiet; the 36 is `backstopWindows` in
+   `internal/stream/deliver.go`, picked from a line's measured traffic, and the
+   text and the notice take it from the code. A larger cap or a shorter window
+   holds later.
    `--cap 0` turns both off, and then nothing stops two sessions from waking each
    other for as long as they have something to say; the window must still be above
    zero.
@@ -98,14 +106,15 @@ expected to work.
    facts, which every session added to it inherits:
 
    ```
-   parley line new <channel> --chair <chair> --cap <cap> [--window <window>] \
+   parley line new <channel> --chair <chair> [--cap <cap>] [--window <window>] \
      [--server 127.0.0.1:6667] [--state-dir <base>] [--codex-bin codex] [--opencode-bin opencode]
    ```
 
    The id is the channel and a directory name, `[a-z0-9][a-z0-9-]{0,31}`, and it is
    one namespace with the tables and the builds: an id that already has a table, a
    build or a line is refused, with exit 2. `--chair` is refused when it is not a
-   valid nick, and `--cap` is required (`--cap 0` for no breaker). The command runs
+   valid nick, and `--cap` defaults to 20 (`--cap 0` for no breaker; a negative cap
+   is refused). The command runs
    `parley doctor`'s static checks for the server, and for ergo when nothing
    answers at the server, makes `<base>/lines/<channel>/line.json` with no
    sessions in it, and prints the steps that remain: the server if nothing answers,
@@ -495,24 +504,46 @@ in the channel what the question is and that you want them to discuss it. They
 may then go back and forth on it, each post adding a view, an objection or
 evidence, until you close it or move on. A fast exchange is what the breaker
 holds: when more than `<cap>` posts arrive within `<window>`, or an exchange that
-runs on passes five times `<cap>` posts without you, the discussion pauses until
-you post, and any line from you lets it go on with a fresh allowance. A discussion settles nothing you hold. When you want each session's view
+runs on passes five times `<cap>` posts within 36 times `<window>`, the discussion
+pauses until you post, and any line from you lets it go on with a fresh allowance. A discussion settles nothing you hold. When you want each session's view
 before it has read the others', run a table instead: a line has no seal.
 
 ## What to watch
 
 - **Silence can be the breaker.** When more than `<cap>` posts by anyone but you
-  arrive within `<window>`, or more than five times `<cap>` have arrived since
-  you last posted, however slowly, each front holds that post and the deliveries
-  that follow until you post, however much time passes. Posts spread wider than
-  the window do not trip the first rule, so a quiet line does not trip it, but a
-  line that goes on long enough without you reaches the second. The sessions' own
-  posts still go out, and you see them in the channel. A session that is waiting
-  for an answer says so at its terminal.
+  arrive within `<window>`, or more than five times `<cap>` arrive within 36 times
+  `<window>`, each front holds that post and the deliveries that follow until you
+  post, however much time passes. Posts spread wider than the window do not trip
+  the first rule, and posts spread wider than 36 windows do not trip the second,
+  so a line that is quiet, or merely slow, never trips either, however long you
+  have been away; a loop does, fast or slow. The sessions' own posts still go out,
+  and you see them in the channel. A session that is waiting for an answer says so
+  at its terminal.
+- **A trip tells you.** When a front's breaker trips it sends you one IRC NOTICE
+  from the front's nick, addressed to your nick and not to the channel:
+
+  ```
+  parley: plan is holding line deliveries in #<channel>: more than 20 posts within 10m. Post in #<channel> to release.
+  ```
+
+  or `more than 100 posts within 6h` in place of the rule when the slow rule
+  tripped. It carries the front, the channel and the rule with its
+  numbers, and nothing a session or a peer wrote: no post, no author, no id. It is
+  never a post to the channel, so no session sees it and no front counts it, and
+  nothing is said to the session itself. Each front sends its own, once per trip,
+  so a line of three sessions can show you three, one from each; a new one comes
+  only after you post and the breaker trips again, and a post of yours releases
+  what the notice reported. Your IRC client shows a NOTICE where it shows
+  notices from other nicks, a server or query window in most, so look there if
+  the channel is quiet. It reaches you only while you are connected, and is sent
+  once and never repeated: nothing in the channel's history holds it for later,
+  and a front on a `file:` stream, which has nowhere to send one, sends none. If
+  parley cannot send it, the front says so on its standard error, beside its other
+  logs, and goes on delivering.
 - **Any line from you releases what the breaker held, and clears its record.** The
-  held deliveries go out in stream order, ahead of your line, and the count and
-  the times start again, the released posts in neither, so a question to one
-  session also buys a full new allowance.
+  held deliveries go out in stream order, ahead of your line, and the record of
+  times starts again, the released posts not in it, so a question to one session
+  also buys a full new allowance.
 - **There is no seal.** A session receives every other session's post as it
   arrives, before it has posted itself; the breaker is the only gate.
 - **An OpenCode session hears nothing while it works.** The pump posts only into
@@ -528,7 +559,12 @@ before it has read the others', run a table instead: a line has no seal.
   delivery of a nick that has not been on the channel before is what the channel
   already held, in one delivery, and not only what is posted after the pump starts.
 - **A front restart loses what it held.** Held posts live in the front's memory
-  only. A restarted session hears everything new, but not the posts the breaker
+  only, and so is the fact that it had tripped: a restarted front starts with the
+  breaker clear. One that resumes from its saved cursor starts after the posts
+  that tripped it, so it does not repeat its notice; one that reads again history
+  it had already passed, such as a nick whose cursor is gone, can trip on it again
+  and send you one more notice, once per start. A restarted
+  session hears everything new, but not the posts the breaker
   was holding for it, so ask the others to repeat what it missed; your client's
   scrollback has what was said. A gap in the channel's history, which the
   session's next delivery reports, loses the held posts the same way, because the
@@ -545,10 +581,11 @@ before it has read the others', run a table instead: a line has no seal.
   under a nick with no cursor yet reads whatever history the server still retains
   as its first delivery, and with no seal nothing holds it back but the breaker,
   which times those posts by when the server recorded them, like live ones.
-  History spread over days does not trip the rate by itself; a burst in it does,
-  and so does more than five times `<cap>` posts since your last, and then the
-  posts from there on are held until you post, a post of yours in it clearing the
-  count and the times as it does live. That holds for an IRC channel, whose
+  History spread over days does not trip either rule by itself; a burst in it
+  does, and so does more than five times `<cap>` posts within 36 windows, and
+  then the posts from there on are held until you post, and the front sends the
+  notice as it does live, a post of yours in it clearing the times as it does
+  live. That holds for an IRC channel, whose
   messages all carry the server's time; a `file:` stream's message with no usable
   timestamp is timed when it is received, so a backlog of those arrives as one
   instant and trips the rate at once. A session that returns under a nick it used
@@ -636,7 +673,8 @@ inputs a line has.
   grants a permission at a terminal or authority over a session.
 - **Trusted: the flags you give and the state directory.** `--chair`, `--cap`, `--window`,
   `--nick`, `--workdir`, `--stream` and the files under `<base>`, `line.json`
-  among them, are yours, in directories only you can write. The chair is trusted
+  among them, are yours, in directories only you can write. The trip notice is
+  built from these alone and from which rule tripped, never from a post. The chair is trusted
   only as a registered nick on IRC, which is why step 2 registers it. For an
   OpenCode session, the server is the service whose registration file is in your own
   state directory, the file the user's own `opencode` trusts to find it: the pump checks the file is
