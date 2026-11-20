@@ -905,7 +905,13 @@ channel `#<id>` and a directory name, in one namespace with the tables and the
 builds, and every verb takes `<base>/.ids/<id>.lock` first and holds it to the end;
 a second command for the id refuses at once, exit 1. `table new` and `build new`
 refuse the id of a line, as `line new` refuses the id of a table or a build, with
-exit 2.
+exit 2. Every verb takes its positionals (the id, and a nick for `drop`) among the
+flags or after a `--`, which ends the flags: a nick may begin with `-`, and then only
+a `--` before it keeps it from being read as a flag. The commands the verbs print
+(`line set`'s finish line and recipes, `line add`'s and `line new`'s lines) put every
+option first, then `--`, then the positionals, so they run as they stand for such a
+nick; the nick given to `--nick` is a flag's value, which is taken whatever it begins
+with.
 
 - `line new <id> --chair <nick> [--cap 20] [--window 10m] [--server 127.0.0.1:6667]
   [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]` makes the line and its record, with no

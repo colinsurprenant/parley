@@ -745,7 +745,9 @@ does not touch it.
 
 ## Taking it down
 
-- **One session**: `parley line drop <channel> <nick>`. It takes the line's lock and
+- **One session**: `parley line drop <channel> <nick>` (`parley line drop -- <channel>
+  <nick>` for a nick that begins with `-`, which a `--` keeps from being read as a
+  flag; the commands the verbs print are written that way). It takes the line's lock and
   the session's nick lock without waiting, and refuses, with exit 1, while the
   session or its pump holds that lock: stop them first. Then it removes what
   `line add` made for that session and can show is the line's:
