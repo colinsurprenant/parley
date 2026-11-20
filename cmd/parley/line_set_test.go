@@ -259,7 +259,7 @@ func TestLaunchSettingsReadOnlyBytesThatHashToTheDigest(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLaunchSettings(lineFile{Path: path, SHA256: tableDigest(data)}); got != (launchSettings{command: "/opt/parley", numbers: true, capN: 30, window: "5m"}) {
+	if got := readLaunchSettings(lineFile{Path: path, SHA256: tableDigest(data)}); got != (launchSettings{command: "/opt/parley", numbers: true, capN: 30, window: 5 * time.Minute}) {
 		t.Errorf("settings %+v, want the command /opt/parley and cap 30, window 5m", got)
 	}
 	if got := readLaunchSettings(lineFile{Path: path, SHA256: tableDigest([]byte("other"))}); got != (launchSettings{}) {
@@ -268,29 +268,48 @@ func TestLaunchSettingsReadOnlyBytesThatHashToTheDigest(t *testing.T) {
 	if got := readLaunchSettings(lineFile{Path: path + ".gone", SHA256: tableDigest(data)}); got != (launchSettings{}) {
 		t.Errorf("settings %+v from a file that is not there, want none", got)
 	}
-	// Bytes that hash to the digest and lack a number, or hold one that is not a
-	// number, carry no numbers: the file is then written again, never taken as current.
-	for name, doc := range map[string]string{
-		"no window":         `{"mcpServers":{"parley":{"command":"/opt/parley","args":["--cap","30"]}}}`,
-		"no cap":            `{"mcpServers":{"parley":{"command":"/opt/parley","args":["--window","5m"]}}}`,
-		"a cap that is not": `{"mcpServers":{"parley":{"command":"/opt/parley","args":["--cap","many","--window","5m"]}}}`,
-		"a flag at the end": `{"mcpServers":{"parley":{"command":"/opt/parley","args":["--window","5m","--cap"]}}}`,
-	} {
+	read := func(doc string) launchSettings {
+		t.Helper()
 		if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if got := readLaunchSettings(lineFile{Path: path, SHA256: tableDigest([]byte(doc))}); got.numbers || got.command != "/opt/parley" {
+		return readLaunchSettings(lineFile{Path: path, SHA256: tableDigest([]byte(doc))})
+	}
+	args := func(a ...string) string {
+		raw, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"parley": map[string]any{"command": "/opt/parley", "args": a}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	// Bytes that hash to the digest and that the front would refuse, or that name no cap
+	// or no window, carry no numbers: the file is then written again, never taken as
+	// current.
+	for name, doc := range map[string]string{
+		"no window":          args("channel", "--cap", "30"),
+		"no cap":             args("channel", "--window", "5m"),
+		"a cap that is not":  args("channel", "--cap", "many", "--window", "5m"),
+		"a flag at the end":  args("channel", "--window", "5m", "--cap"),
+		"a flag it lacks":    args("channel", "--cap", "30", "--window", "5m", "--nope", "x"),
+		"a positional":       args("channel", "--cap", "30", "--window", "5m", "extra"),
+		"not the channel's":  args("--cap", "30", "--window", "5m"),
+		"another subcommand": args("wait", "--cap", "30", "--window", "5m"),
+	} {
+		if got := read(doc); got.numbers || got.command != "/opt/parley" {
 			t.Errorf("%s: settings %+v, want the command and no numbers", name, got)
 		}
 	}
-	// A cap is read as the channel front's flag.Int reads it, so both see one number.
+	// The numbers are the front's: a cap is read as its flag.Int reads it, and a chair
+	// that is named like a flag is that flag's value and nothing more.
 	for arg, want := range map[string]int{"0x1e": 30, "0o36": 30, "036": 30, "30": 30, "-1": -1} {
-		doc := `{"mcpServers":{"parley":{"command":"/opt/parley","args":["--cap","` + arg + `","--window","5m"]}}}`
-		if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if got := readLaunchSettings(lineFile{Path: path, SHA256: tableDigest([]byte(doc))}); !got.numbers || got.capN != want {
+		if got := read(args("channel", "--cap", arg, "--window", "5m")); !got.numbers || got.capN != want {
 			t.Errorf("--cap %s: settings %+v, want cap %d", arg, got, want)
+		}
+	}
+	for _, chair := range []string{"--cap", "--window"} {
+		got := read(args("channel", "--stream", "irc://x/#demo", "--nick", "${PARLEY_NICK}", "--state-dir", "/b", "--skill", "line", "--chair", chair, "--cap", "30", "--window", "5m"))
+		if got != (launchSettings{command: "/opt/parley", numbers: true, capN: 30, window: 5 * time.Minute}) {
+			t.Errorf("chair %s: settings %+v, want cap 30 and window 5m", chair, got)
 		}
 	}
 	bad := []byte(`{"mcpServers":`)

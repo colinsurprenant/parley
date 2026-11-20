@@ -11,9 +11,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/colinsurprenant/parley/internal/primer"
 	"github.com/colinsurprenant/parley/internal/state"
@@ -298,7 +298,7 @@ func planLineSet(rec lineRecord, base, self string, newCap int, newWindow string
 			set := readLaunchSettings(f)
 			lf.command = set.command
 			lf.act = setRewrite
-			if set.numbers && set.capN == newCap && set.window == newWindow {
+			if set.numbers && set.capN == newCap && set.window == p.next.windowDuration() {
 				lf.act = setCurrent
 			}
 		}
@@ -405,20 +405,24 @@ func (p *lineSetPlan) refuse(lf *lineSetFile, problem string) error {
 }
 
 // launchSettings is what a Claude launch file says: the parley binary it runs and
-// the breaker's numbers, as they are in the args `line add` and `line set` write.
+// the breaker's numbers, as the front started from it would read them.
 type launchSettings struct {
 	command string
-	// numbers is whether the args name a --cap that is a number and a --window; capN
-	// and window are the last of each, as the flag package would take them.
+	// numbers is whether the args parse as the arguments of `parley channel`, with a
+	// --cap and a --window given; capN and window are then the ones the front reads.
 	numbers bool
 	capN    int
-	window  string
+	window  time.Duration
 }
 
 // readLaunchSettings reads the settings of the Claude launch file f from its bytes,
 // only if they hash to the recorded digest, so that what is parsed is what `line
 // add` or `line set` wrote; the zero value when they do not, or cannot be read or
-// parsed.
+// parsed. The numbers are read the way their consumer reads them: the args are
+// parsed with the flag set of `parley channel` (newChannelFlags), so a chair named
+// --cap or --window is that flag's value and no more, and an args list the front
+// would refuse, or that names no cap or no window, has no numbers, and the file is
+// written again.
 func readLaunchSettings(f lineFile) launchSettings {
 	b, err := readLaunchFile(f.Path)
 	if err != nil || tableDigest(b) != f.SHA256 {
@@ -435,20 +439,15 @@ func readLaunchSettings(f lineFile) launchSettings {
 	}
 	srv := doc.MCPServers["parley"]
 	set := launchSettings{command: srv.Command}
-	var capSeen, windowSeen bool
-	for i := 0; i+1 < len(srv.Args); i++ {
-		switch srv.Args[i] {
-		case "--cap":
-			// As the channel front's flag.Int reads it, so that both see the same number.
-			n, err := strconv.ParseInt(srv.Args[i+1], 0, strconv.IntSize)
-			set.capN, capSeen = int(n), err == nil
-			i++
-		case "--window":
-			set.window, windowSeen = srv.Args[i+1], true
-			i++
-		}
+	if len(srv.Args) == 0 || srv.Args[0] != "channel" {
+		return set
 	}
-	set.numbers = capSeen && windowSeen
+	fs, flags := newChannelFlags()
+	fs.SetOutput(io.Discard)
+	if fs.Parse(srv.Args[1:]) != nil || fs.NArg() > 0 || !given(fs, "cap") || !given(fs, "window") {
+		return set
+	}
+	set.numbers, set.capN, set.window = true, *flags.skills.cap, *flags.skills.window
 	return set
 }
 
@@ -494,6 +493,10 @@ type setProgress struct {
 	// those bytes are the ones this run writes, which running it again recognizes.
 	unrecorded string
 	adoptable  bool
+	// changed are the files this run replaced, or found holding the bytes it writes and
+	// recorded: the sessions that use them hold numbers they started with, and nothing
+	// but this run's own report would tell them to start again.
+	changed []*lineSetFile
 	// cur is line.json as it was last written.
 	cur lineRecord
 }
@@ -539,9 +542,13 @@ func (p *lineSetPlan) apply(ctx context.Context, dir string) error {
 				return p.failed(err, st)
 			}
 			st.rewritten, st.pending = append(st.rewritten, lf.path), st.pending[1:]
+			st.changed = append(st.changed, lf)
 		}
 		if err := p.recordFile(dir, lf, st); err != nil {
 			return p.failed(err, st)
+		}
+		if lf.act == setHolds {
+			st.changed = append(st.changed, lf)
 		}
 	}
 	if !p.numbersChange() {
@@ -650,7 +657,29 @@ func (p *lineSetPlan) failed(err error, st *setProgress) error {
 	default:
 		fmt.Fprintf(&b, "; to go on, once the cause is cleared, run line set again with the numbers you want: every file that is still the line's, by the digest the record holds, says its own numbers, so any numbers go on from here, and a file that was edited or replaced since is refused by name (%s repeats this run)", repeat)
 	}
+	// Whatever stopped the run, a file it replaced is read by a front only when the
+	// session starts again, and a rerun judges that file current and says nothing of
+	// it: so the sessions of every file this run changed are told here.
+	if need := p.changedSessions(st); len(need) > 0 {
+		b.WriteString("\n\nThis run had already changed the launch files of these sessions, and a front reads its numbers once, when it starts, so each is left to be restarted, whatever you do next; a rerun finds those files current and will not say so:\n")
+		p.relaunch(&b, need, nil, !p.numbersChange())
+	}
 	return fmt.Errorf("%w; %s", err, b.String())
+}
+
+// changedSessions are the indexes, in record order, of the sessions that use a file the
+// run changed.
+func (p *lineSetPlan) changedSessions(st *setProgress) []int {
+	var need []int
+	for i := range p.old.Sessions {
+		for _, lf := range st.changed {
+			if slices.Contains(lf.owners, i) {
+				need = append(need, i)
+				break
+			}
+		}
+	}
+	return need
 }
 
 // report is what goes to stdout: what was changed, and for each session what is
@@ -741,6 +770,20 @@ func (p *lineSetPlan) report(recordPath string) string {
 	default:
 		b.WriteString("\nNothing that is running changes yet: each session's front process reads its cap and window once, when it starts.\nWhat is left is yours, for each session, in its own terminal:\n")
 	}
+	p.relaunch(&b, need, gone, same)
+	if !same {
+		b.WriteString("\nEach session's primer still states the old numbers, a Claude Code session's channel instructions too, and a session started outside line add is not in the record, so it was not touched.\n")
+	}
+	return b.String()
+}
+
+// relaunch writes, for each session in need (indexes in the record), what is left for
+// its human, because a front reads its numbers once, when it starts: a Claude Code
+// session whose file is gone (gone) is taken off the line and added again, any other is
+// restarted, and a Codex or an OpenCode session has its pump started again with the
+// new numbers. same is whether the run left the record's numbers as they were.
+func (p *lineSetPlan) relaunch(b *strings.Builder, need []int, gone map[int]*lineSetFile, same bool) {
+	old, next := p.old, p.next
 	for _, i := range need {
 		s := old.Sessions[i]
 		switch s.Harness {
@@ -753,22 +796,18 @@ func (p *lineSetPlan) report(recordPath string) string {
 				if same {
 					which = "the line's numbers"
 				}
-				fmt.Fprintf(&b, "\n%s (Claude Code): %s is not there, so restarting it loads no parley server. Stop it, take it off the line and add it again, which writes the file with %s (the other sessions of the working directory share it), then launch it as line add prints:\n\n", s.Nick, lf.path, which)
-				fmt.Fprintf(&b, "    %s\n    %s\n", lineDropCommand(p.self, old.ID, s.Nick, p.base, false), lineAddCommand(p.self, old.ID, s, p.base))
+				fmt.Fprintf(b, "\n%s (Claude Code): %s is not there, so restarting it loads no parley server. Stop it, take it off the line and add it again, which writes the file with %s (the other sessions of the working directory share it), then launch it as line add prints:\n\n", s.Nick, lf.path, which)
+				fmt.Fprintf(b, "    %s\n    %s\n", lineDropCommand(p.self, old.ID, s.Nick, p.base, false), lineAddCommand(p.self, old.ID, s, p.base))
 				continue
 			}
-			fmt.Fprintf(&b, "\n%s (Claude Code): restart it, resuming its conversation:\n\n", s.Nick)
-			fmt.Fprintf(&b, "    cd %s\n    %s --resume <session-id>\n", q(s.Workdir), claudeLaunch(s.Nick, s.Model))
+			fmt.Fprintf(b, "\n%s (Claude Code): restart it, resuming its conversation:\n\n", s.Nick)
+			fmt.Fprintf(b, "    cd %s\n    %s --resume <session-id>\n", q(s.Workdir), claudeLaunch(s.Nick, s.Model))
 		case harnessCodex:
-			fmt.Fprintf(&b, "\n%s (Codex): stop its pump, which holds the old numbers, and start this one in its place; the Codex session itself keeps running:\n\n", s.Nick)
-			fmt.Fprintf(&b, "    %s\n", codexPump(p.self, next, s.Nick, p.base, old.CodexBin))
+			fmt.Fprintf(b, "\n%s (Codex): stop its pump, which holds the old numbers, and start this one in its place; the Codex session itself keeps running:\n\n", s.Nick)
+			fmt.Fprintf(b, "    %s\n", codexPump(p.self, next, s.Nick, p.base, old.CodexBin))
 		case harnessOpenCode:
-			fmt.Fprintf(&b, "\n%s (OpenCode): stop its pump, which holds the old numbers, and start this one in its place; the OpenCode session itself keeps running:\n\n", s.Nick)
-			fmt.Fprintf(&b, "    %s\n", openCodePump(p.self, next, s.Nick, p.base))
+			fmt.Fprintf(b, "\n%s (OpenCode): stop its pump, which holds the old numbers, and start this one in its place; the OpenCode session itself keeps running:\n\n", s.Nick)
+			fmt.Fprintf(b, "    %s\n", openCodePump(p.self, next, s.Nick, p.base))
 		}
 	}
-	if !same {
-		b.WriteString("\nEach session's primer still states the old numbers, a Claude Code session's channel instructions too, and a session started outside line add is not in the record, so it was not touched.\n")
-	}
-	return b.String()
 }

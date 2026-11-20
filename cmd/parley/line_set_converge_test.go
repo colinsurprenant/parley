@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // cancelAfter is a context that is live for its first n questions (Err) and
@@ -741,4 +742,154 @@ func TestLineSetPrintedRecipesRunForANickThatBeginsWithADash(t *testing.T) {
 	b.wantMCP(t, mcp, "demo", "40", "10m")
 	b.wantRecordTrue(t)
 	mustLine(t, b, "line", "drop", "--state-dir", b.base, "--", "demo", "-plan")
+}
+
+// TestLineSetSameNumbersIsANoOpForAChairNamedLikeAFlag: stream.ValidNick accepts a chair
+// called --cap or --window, so the args of a launch file hold that name right before
+// the real flag. The numbers are read as the channel front reads them, so a file that
+// has the numbers asked for is current: the run writes nothing, even where the working
+// directory cannot be written, and a run that does change them reads the result right.
+func TestLineSetSameNumbersIsANoOpForAChairNamedLikeAFlag(t *testing.T) {
+	for _, chair := range []string{"--cap", "--window"} {
+		t.Run("chair "+chair, func(t *testing.T) {
+			b := newLineBench(t)
+			lineUp(t, b, "demo", "--chair", chair)
+			co := b.gitWorkdir(t, "co")
+			b.mustAdd(t, "demo", "plan", "claude", co)
+			mcp := filepath.Join(co, ".mcp.json")
+			numbers := func(want launchSettings) {
+				t.Helper()
+				rec := b.record(t, "demo")
+				got := readLaunchSettings(lineFile{Path: mcp, SHA256: sessionByNick(t, rec, "plan").Files[0].SHA256})
+				if !got.numbers || got.capN != want.capN || got.window != want.window {
+					t.Errorf("the file says %+v, want cap %d, window %s", got, want.capN, want.window)
+				}
+			}
+			numbers(launchSettings{capN: 8, window: 10 * time.Minute})
+			before := b.lsnap(t, co)
+
+			res := mustLine(t, b, b.lset("demo", "--cap", "8", "--window", "10m")...)
+			if !strings.Contains(res.stdout, "nothing was changed") || strings.Contains(res.stdout, "Rewrote") {
+				t.Errorf("a same-numbers run wrote a file:\n%s", res.stdout)
+			}
+			b.wantLineUnchanged(t, before, co)
+			if os.Geteuid() != 0 {
+				if err := os.Chmod(co, 0o555); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Chmod(co, 0o755) })
+				res = b.run(t, b.lset("demo", "--cap", "8")...)
+				if res.code != 0 || !strings.Contains(res.stdout, "nothing was changed") {
+					t.Errorf("a same-numbers run in a directory that cannot be written: exit %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+				}
+				if err := os.Chmod(co, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			mustLine(t, b, b.lset("demo", "--cap", "30", "--window", "5m")...)
+			numbers(launchSettings{capN: 30, window: 5 * time.Minute})
+			b.wantRecordTrue(t)
+			before = b.lsnap(t, co)
+			res = mustLine(t, b, b.lset("demo", "--cap", "30", "--window", "5m")...)
+			if !strings.Contains(res.stdout, "nothing was changed") {
+				t.Errorf("stdout:\n%s", res.stdout)
+			}
+			b.wantLineUnchanged(t, before, co)
+			mustLine(t, b, b.ldrop("demo", "plan")...)
+		})
+	}
+}
+
+// halfRepaired is line demo of two Claude sessions whose files say cap 8 while the record
+// already holds cap 30, the numbers a run is about to ask for, as an earlier cut-short
+// run leaves it: both files are to be written, and the record's numbers do not change.
+func (b *lineBench) halfRepaired(t *testing.T) (mcp1, mcp2 string) {
+	t.Helper()
+	mcp1, mcp2 = b.twoClaudeSessions(t)
+	rec := b.record(t, "demo")
+	rec.Cap = 30
+	if _, err := writeLineRecord(b.recordDir(), rec); err != nil {
+		t.Fatal(err)
+	}
+	return mcp1, mcp2
+}
+
+// TestLineSetFailureAfterTheFirstFileNamesItsSessions: the record already holds the
+// numbers asked for, the first of two files is replaced, and the second cannot be
+// written. A rerun finds the first file current and says nothing of its session, whose
+// front still holds the old numbers, so the failure itself says to restart it, with
+// its line, and says nothing of the session whose file was not touched.
+func TestLineSetFailureAfterTheFirstFileNamesItsSessions(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a directory's mode does not stop root writing in it")
+	}
+	b := newLineBench(t)
+	mcp1, mcp2 := b.halfRepaired(t)
+	co1, co2 := filepath.Dir(mcp1), filepath.Dir(mcp2)
+	if err := os.Chmod(co2, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(co2, 0o755) })
+
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 {
+		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	for _, want := range []string{
+		"rewritten: " + mcp1 + ";", "not rewritten: " + mcp2 + ";",
+		"plan (Claude Code): restart it, resuming its conversation:",
+		"cd '" + co1 + "'",
+		"PARLEY_NICK=plan claude --dangerously-load-development-channels server:parley --resume <session-id>",
+	} {
+		if !strings.Contains(res.stderr, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, res.stderr)
+		}
+	}
+	if strings.Contains(res.stderr, "review (Claude Code)") {
+		t.Errorf("stderr tells the session whose file was not written to restart:\n%s", res.stderr)
+	}
+	b.wantMCP(t, mcp1, "demo", "30", "10m")
+
+	// The rerun leaves the first file out, which is why the failure had to say it.
+	if err := os.Chmod(co2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res = mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if !strings.Contains(res.stdout, "Left "+mcp1+" as it is (session plan)") || strings.Contains(res.stdout, "plan (Claude Code)") ||
+		!strings.Contains(res.stdout, "review (Claude Code): restart it, resuming its conversation:") {
+		t.Errorf("the rerun:\n%s", res.stdout)
+	}
+}
+
+// TestLineSetCancelledAfterTheFirstFileNamesItsSessions: the same, stopped by an
+// interrupt before the second file: the error names the first file's session with its
+// restart line.
+func TestLineSetCancelledAfterTheFirstFileNamesItsSessions(t *testing.T) {
+	b := newLineBench(t)
+	mcp1, mcp2 := b.halfRepaired(t)
+	plan, err := planLineSet(b.record(t, "demo"), b.base, binPath, 30, "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Live before the first file, cancelled before the second.
+	err = plan.apply(&cancelAfter{Context: context.Background(), left: 1}, b.recordDir())
+	if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("apply cancelled after its first file: %v", err)
+	}
+	for _, want := range []string{
+		"rewritten: " + mcp1 + ";", "not rewritten: " + mcp2 + ";",
+		"plan (Claude Code): restart it, resuming its conversation:",
+		"--resume <session-id>",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "review (Claude Code)") {
+		t.Errorf("the error tells the session whose file was not written to restart:\n%v", err)
+	}
+	b.wantMCP(t, mcp1, "demo", "30", "10m")
+	b.wantMCP(t, mcp2, "demo", "8", "10m")
+	b.wantRecordTrue(t)
 }
