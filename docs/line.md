@@ -674,7 +674,10 @@ Then it writes, in this order:
 
 1. Each Claude Code session's `.mcp.json` that does not already say the numbers asked
    for. A file that is the line's by its digest is read: its `--cap` and `--window`
-   are taken from those bytes, which are parley's own, and it is current, and left
+   are taken from those bytes, which are parley's own, as the front started from the
+   file reads them (the args are parsed with the flag set of `parley channel`, so a
+   chair named `--cap` is only that flag's value, and args the front would refuse have
+   no numbers), and it is current, and left
    as it is, when both are the numbers asked for, whatever numbers the record holds;
    one that says others, or whose numbers cannot be read, is written again with the new
    `--cap` and `--window` by the same code `line add` writes it with, so the two
@@ -704,7 +707,9 @@ recorded and before the numbers are, so Ctrl-C stops the run between two steps a
 never between a file and its record (a kill cannot be caught, and can land there: the
 first bullet above). If a step fails or you interrupt it after
 something was written, the command says which files it had written and which it had
-not, and what `line.json` holds; nothing is rolled back. Every state it can leave is
+not, and what `line.json` holds, and gives the restart line of every session whose file
+it had already changed, since a rerun finds such a file current and will not say so, and
+the front still holds the numbers it started with; nothing is rolled back. Every state it can leave is
 one a later run goes on from, with any numbers, the old ones included: each digest the
 record holds is its file's own bytes, and each file says its own numbers, so a run
 writes the files that do not say the numbers asked for, leaves those that do, and

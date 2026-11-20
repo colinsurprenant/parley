@@ -1082,8 +1082,10 @@ with.
   file it is is told that a restart
   loads no parley server, and to `line drop` and `line add` it, which writes the file
   with the line's numbers for every session of the working directory. A Claude
-  file that is the line's by its digest is read, from those bytes: its `--cap` and
-  `--window` are taken, and it is current, and left as it is, when both are the numbers
+  file that is the line's by its digest is read, from those bytes, as the front started
+  from it reads them (the args are parsed with the flag set of `parley channel`, so a
+  chair named `--cap` is only that flag's value, and args the front would refuse have no
+  numbers): its `--cap` and `--window` are taken, and it is current, and left as it is, when both are the numbers
   asked for, whatever the record holds (a file restored from an older copy, or left by a
   run cut short, is judged by what it says); otherwise, or when its numbers cannot be
   read, its `.mcp.json` is generated again by the function `line add` writes it
@@ -1108,7 +1110,9 @@ with.
   before each file is written, before a held file's digest is recorded and before the
   numbers are, so an interrupt stops the run between two steps. A failure or an interrupt
   after a file was written is reported with the files written and those not and what
-  `line.json` holds, and rolls nothing back; every state it leaves is one a later run
+  `line.json` holds, and with the restart line of every session whose file the run had
+  already changed (a rerun finds such a file current and will not say so), and rolls
+  nothing back; every state it leaves is one a later run
   goes on from with any numbers, the old ones too, since each digest the record holds
   is its file's own bytes and each file says its own numbers: it ends with a line that
   repeats the run, as it stands, and says that running it with the numbers you want goes
