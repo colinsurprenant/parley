@@ -432,8 +432,9 @@ func readLaunchSettings(f lineFile) launchSettings {
 	for i := 0; i+1 < len(srv.Args); i++ {
 		switch srv.Args[i] {
 		case "--cap":
-			n, err := strconv.Atoi(srv.Args[i+1])
-			set.capN, capSeen = n, err == nil
+			// As the channel front's flag.Int reads it, so that both see the same number.
+			n, err := strconv.ParseInt(srv.Args[i+1], 0, strconv.IntSize)
+			set.capN, capSeen = int(n), err == nil
 			i++
 		case "--window":
 			set.window, windowSeen = srv.Args[i+1], true
@@ -625,7 +626,7 @@ func (p *lineSetPlan) failed(err error, st *setProgress) error {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "rewritten: %s; not rewritten: %s; ", list(st.rewritten), list(st.pending))
-	if len(st.recorded) == 0 && st.unrecorded == "" {
+	if len(st.recorded) == 0 {
 		fmt.Fprintf(&b, "line.json was not changed and holds cap %d, window %s", st.cur.Cap, st.cur.Window)
 	} else {
 		fmt.Fprintf(&b, "line.json holds the new digest of %s, and cap %d, window %s, which are written last", list(st.recorded), st.cur.Cap, st.cur.Window)
@@ -640,7 +641,7 @@ func (p *lineSetPlan) failed(err error, st *setProgress) error {
 	case st.unrecorded != "":
 		fmt.Fprintf(&b, "; %s is not shown to be the line's now, and line set will refuse it, saying what unblocks it", st.unrecorded)
 	default:
-		fmt.Fprintf(&b, "; to go on, once the cause is cleared, run line set again with the numbers you want: every file the record lists is the line's by the digest it holds and says its own numbers, so any numbers go on from here (%s repeats this run)", repeat)
+		fmt.Fprintf(&b, "; to go on, once the cause is cleared, run line set again with the numbers you want: every file that is still the line's, by the digest the record holds, says its own numbers, so any numbers go on from here, and a file that was edited or replaced since is refused by name (%s repeats this run)", repeat)
 	}
 	return fmt.Errorf("%w; %s", err, b.String())
 }
@@ -656,14 +657,17 @@ func (p *lineSetPlan) report(recordPath string) string {
 	old, next := p.old, p.next
 	same := !p.numbersChange()
 	gone := map[int]*lineSetFile{}
-	rewrote := map[int]bool{}
+	// replaced are the sessions whose file this run wrote, or found holding what it
+	// writes: a run killed after it replaced the file says nothing of the bytes the
+	// file had, and a front may have started from them.
+	replaced := map[int]bool{}
 	for _, lf := range p.files {
 		for _, i := range lf.owners {
 			switch lf.act {
 			case setGone:
 				gone[i] = lf
-			case setRewrite:
-				rewrote[i] = true
+			case setRewrite, setHolds:
+				replaced[i] = true
 			}
 		}
 	}
@@ -712,10 +716,10 @@ func (p *lineSetPlan) report(recordPath string) string {
 
 	// With the numbers changed every session has something to do. Otherwise a front
 	// holds the numbers the line has, but for the Claude sessions whose file this run
-	// replaced, and those with no file at all.
+	// replaced or adopted, and those with no file at all.
 	var need []int
 	for i, s := range old.Sessions {
-		if !same || (s.Harness == harnessClaude && (rewrote[i] || gone[i] != nil)) {
+		if !same || (s.Harness == harnessClaude && (replaced[i] || gone[i] != nil)) {
 			need = append(need, i)
 		}
 	}
@@ -724,11 +728,6 @@ func (p *lineSetPlan) report(recordPath string) string {
 		b.WriteString("No session is on the line yet: line add passes the new numbers on.\n")
 		return b.String()
 	case len(need) == 0:
-		// A run that only brought the recorded digests up to date changed no number, and
-		// nothing running holds old ones.
-		if p.changes() {
-			b.WriteString("The numbers are the ones the line had, so no session needs a restart: only the digests the record holds were brought up to date.\n")
-		}
 		return b.String()
 	case same:
 		b.WriteString("\nA front process reads its cap and window once, when it starts.\nWhat is left is yours, for each session below, in its own terminal:\n")

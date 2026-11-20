@@ -283,6 +283,16 @@ func TestLaunchSettingsReadOnlyBytesThatHashToTheDigest(t *testing.T) {
 			t.Errorf("%s: settings %+v, want the command and no numbers", name, got)
 		}
 	}
+	// A cap is read as the channel front's flag.Int reads it, so both see one number.
+	for arg, want := range map[string]int{"0x1e": 30, "0o36": 30, "036": 30, "30": 30, "-1": -1} {
+		doc := `{"mcpServers":{"parley":{"command":"/opt/parley","args":["--cap","` + arg + `","--window","5m"]}}}`
+		if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := readLaunchSettings(lineFile{Path: path, SHA256: tableDigest([]byte(doc))}); !got.numbers || got.capN != want {
+			t.Errorf("--cap %s: settings %+v, want cap %d", arg, got, want)
+		}
+	}
 	bad := []byte(`{"mcpServers":`)
 	if err := os.WriteFile(path, bad, 0o644); err != nil {
 		t.Fatal(err)
@@ -1257,6 +1267,10 @@ func TestLineSetRechecksTheFileJustBeforeItWritesIt(t *testing.T) {
 		!strings.Contains(err.Error(), "rewritten: none; not rewritten: "+mcp+";") {
 		t.Fatalf("apply on a file edited since it was judged: %v", err)
 	}
+	// The file is not the line's now, and the failure does not say that every file is.
+	if strings.Contains(err.Error(), "every file the record lists is the line's") || !strings.Contains(err.Error(), "a file that was edited or replaced since is refused by name") {
+		t.Errorf("the failure's way on is not true of an edited file: %v", err)
+	}
 	if got := mustRead(t, mcp); string(got) != string(edited) {
 		t.Errorf("the edited file was written over:\n%s", got)
 	}
@@ -1386,7 +1400,8 @@ func TestLineSetRefusesAWorkingDirectoryThatBecameALink(t *testing.T) {
 
 // TestPlanLineSetSameNumbersWithAStaleDigestIsNotANoOp: numbers the record already
 // has, with a file that holds what would be written under another digest, is a
-// change (the digest is recorded); with the digest right, it is not.
+// change (the digest is recorded, and the file's sessions are told to restart); with
+// the digest right, it is not.
 func TestPlanLineSetSameNumbersWithAStaleDigestIsNotANoOp(t *testing.T) {
 	b := newLineBench(t)
 	lineUp(t, b, "demo")
@@ -1405,14 +1420,15 @@ func TestPlanLineSetSameNumbersWithAStaleDigestIsNotANoOp(t *testing.T) {
 	if err != nil || !plan.changes() {
 		t.Fatalf("the record's digest is stale: %v, changes %v", err, plan != nil && plan.changes())
 	}
-	// Such a run changes no number, so it tells nobody to restart, and does not call
-	// the numbers a pump holds old.
+	// Such a run changes no number, so it does not call the numbers a pump holds old
+	// or say that a primer went stale; the session whose file held other bytes before
+	// is told to restart.
 	out := plan.report(filepath.Join(b.base, "lines", "demo", "line.json"))
 	if !strings.Contains(out, "already holds what this run writes (session plan): its digest is recorded.") ||
-		!strings.Contains(out, "The numbers are the ones the line had, so no session needs a restart") {
+		!strings.Contains(out, "plan (Claude Code): restart it, resuming its conversation:") {
 		t.Errorf("the report of a run that only records a digest:\n%s", out)
 	}
-	for _, bad := range []string{"restart it", "stop its pump", "still states the old numbers", "Nothing that is running changes yet"} {
+	for _, bad := range []string{"no session needs a restart", "stop its pump", "still states the old numbers", "Nothing that is running changes yet"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("the report of a run that changed no number says %q:\n%s", bad, out)
 		}

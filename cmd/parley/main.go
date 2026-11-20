@@ -563,9 +563,12 @@ verbs:
            then be over Claude Code's cap is refused, exit 2. A failure or an
            interrupt partway says which files were written and which were not and
            what the record holds, rolls nothing back, and says to run set again
-           with the numbers you want: any numbers go on from where it stopped. A
-           run that has nothing to change goes the same way and says nothing was
-           changed only when no launch file is gone. It prints, for each session,
+           with the numbers you want: any numbers go on from where it stopped,
+           but for a file replaced whose record write then failed (a kill, or a
+           record that could not be written), which only the same numbers from
+           the same binary finish. A run that has nothing to change goes the
+           same way and says nothing was changed only when no launch file is
+           gone. It prints, for each session,
            what is left for the human,
            since each front reads its cap and window once, at launch: restart a
            Claude Code session with the launch line add prints, plus --resume

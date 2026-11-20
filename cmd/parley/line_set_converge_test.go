@@ -221,6 +221,13 @@ func TestLineSetAdoptsAFileHoldingWhatItWritesForTheSameNumbersOnly(t *testing.T
 		!strings.Contains(res.stderr, "cut short between replacing this file and recording its digest") || !strings.Contains(res.stderr, "with the same numbers and from the same binary") {
 		t.Fatalf("exit %d, want a refusal saying how the file was left\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
 	}
+	// Nothing of the file's bytes is in it: the file is not shown to be the line's, so
+	// its command, flags and numbers are not echoed.
+	for _, bad := range []string{string(data), "--cap", "--window", "--chair", "mcpServers", "PARLEY_NICK"} {
+		if strings.Contains(res.stderr, bad) || strings.Contains(res.stdout, bad) {
+			t.Errorf("the refusal holds %q, which came from the file:\n%s", bad, res.stderr)
+		}
+	}
 	b.wantLineUnchanged(t, before, co)
 
 	res = mustLine(t, b, b.lset("demo", "--cap", "30")...)
@@ -473,4 +480,129 @@ func TestLineSetRecordsEachFileAsItIsWritten(t *testing.T) {
 			t.Errorf("%s is still there: drop did not recognize it", f)
 		}
 	}
+}
+
+// TestLineSetRecordWriteFailingAfterARenameIsFinishedByTheSameNumbers: the record cannot
+// be written once the first file has been replaced (the record's directory is not
+// writable, as a full disk would also do). The report says the record was not changed
+// and does not hold the file's digest, and names the line that finishes it; other
+// numbers get the documented refusal, with nothing changed; the same numbers
+// recognize the file by its bytes, record its digest and finish, and tell its session to
+// restart.
+func TestLineSetRecordWriteFailingAfterARenameIsFinishedByTheSameNumbers(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a directory's mode does not stop root writing in it")
+	}
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	plan, err := planLineSet(b.record(t, "demo"), b.base, binPath, 30, "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(b.recordDir(), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(b.recordDir(), 0o700) })
+	err = plan.apply(context.Background(), b.recordDir())
+	if err := os.Chmod(b.recordDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err == nil {
+		t.Fatal("apply succeeded with a record that could not be written")
+	}
+	finish := b.setLine(binPath, 30, "10m")
+	for _, want := range []string{
+		"rewritten: " + mcp + ";", "not rewritten: none;",
+		"line.json was not changed and holds cap 8, window 10m; it does not hold the digest of " + mcp,
+		mcp + " holds the bytes this run writes: once the cause is cleared, finish with " + finish + ", the same numbers from the same binary",
+		"other numbers are refused for that file until then",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure lacks %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "holds the new digest of none") {
+		t.Errorf("the failure says the record holds the digest of none:\n%v", err)
+	}
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+	if rec := b.record(t, "demo"); rec.Cap != 8 || sessionByNick(t, rec, "plan").Files[0].SHA256 == fileDigestOf(t, mcp) {
+		t.Fatalf("the record changed: %+v", rec)
+	}
+	wantNoTempFiles(t, co, b.recordDir())
+
+	// Other numbers: refused, the way a file left by a kill is.
+	before := b.lsnap(t, co)
+	res := b.run(t, b.lset("demo", "--cap", "40")...)
+	if res.code != 1 || res.stdout != "" || !strings.Contains(res.stderr, "will not rewrite "+mcp+": ") ||
+		!strings.Contains(res.stderr, "cut short between replacing this file and recording its digest") {
+		t.Fatalf("exit %d, want the documented refusal\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	b.wantLineUnchanged(t, before, co)
+
+	// The same numbers adopt the file and finish.
+	res = b.runBinaryIn(t, "sh", "-c", finish)
+	if res.code != 0 {
+		t.Fatalf("the printed command exited %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	for _, want := range []string{
+		mcp + " already holds what this run writes (session plan): its digest is recorded.",
+		"plan (Claude Code): restart it, resuming its conversation:",
+	} {
+		if !strings.Contains(res.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+		}
+	}
+	if rec := b.record(t, "demo"); rec.Cap != 30 {
+		t.Errorf("record cap %d, want 30", rec.Cap)
+	}
+	b.wantRecordTrue(t)
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+}
+
+// TestLineSetSameNumbersThatAdoptsAHeldFileTellsItsSessionsToRestart: a run that names
+// the record's own numbers and finds a file holding the bytes it would write (the
+// earlier run was killed after replacing it, and a front may have started from what it
+// held before) records the digest and tells that file's sessions to restart, and no
+// other.
+func TestLineSetSameNumbersThatAdoptsAHeldFileTellsItsSessionsToRestart(t *testing.T) {
+	b := newLineBench(t)
+	mcp1, mcp2 := b.twoClaudeSessions(t)
+	rec := b.record(t, "demo")
+	// The record has the digest of a file that said cap 30, as an earlier cut-short run
+	// leaves it, while the file holds the bytes for the record's own numbers.
+	other := rec
+	other.Cap = 30
+	data, err := lineMCPJSON(binPath, other, b.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Sessions[0].Files[0].SHA256 = tableDigest(data)
+	if _, err := writeLineRecord(b.recordDir(), rec); err != nil {
+		t.Fatal(err)
+	}
+
+	res := mustLine(t, b, b.lset("demo", "--cap", "8")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	for _, want := range []string{
+		mcp1 + " already holds what this run writes (session plan): its digest is recorded.",
+		"Left " + mcp2 + " as it is (session review): it already has cap 8 and window 10m.",
+		"plan (Claude Code): restart it, resuming its conversation:",
+	} {
+		if !strings.Contains(res.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+		}
+	}
+	for _, bad := range []string{"review (Claude Code)", "no session needs a restart", "still states the old numbers"} {
+		if strings.Contains(res.stdout, bad) {
+			t.Errorf("stdout says %q:\n%s", bad, res.stdout)
+		}
+	}
+	if got := sessionByNick(t, b.record(t, "demo"), "plan").Files[0].SHA256; got != fileDigestOf(t, mcp1) {
+		t.Errorf("plan's digest %s, want the file's, %s", got, fileDigestOf(t, mcp1))
+	}
+	b.wantRecordTrue(t)
 }
