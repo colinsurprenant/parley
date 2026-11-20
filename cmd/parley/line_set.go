@@ -317,6 +317,12 @@ func (p *lineSetPlan) refuse(lf *lineSetFile, problem string) error {
 	if codex {
 		b.WriteString(" (a Codex session then starts a new thread)")
 	}
+	// `line drop --force` leaves the exclude line, and `line add` finds it with no
+	// session of the line that records it, so records none: no later drop takes it out.
+	if f.ExcludeFile != "" {
+		_, line := launchFileOf(owner.Harness, owner.Workdir)
+		fmt.Fprintf(&b, "; the exclude line %s in %s stays through that, and unless another session of the line records it, `line add` records none, so no later `line drop` takes it out: remove it from that file by hand once the line has ended", line, f.ExcludeFile)
+	}
 	b.WriteString("; nothing was changed")
 	return errors.New(b.String())
 }

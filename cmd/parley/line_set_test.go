@@ -1030,6 +1030,11 @@ func TestLineSetRefusalNamesWhatUnblocksIt(t *testing.T) {
 			if got := strings.Contains(res.stderr, "a Codex session then starts a new thread"); got != tc.codex {
 				t.Errorf("the new-thread remark is %v, want %v:\n%s", got, tc.codex, res.stderr)
 			}
+			excludeFile := filepath.Join(co, ".git", "info", "exclude")
+			excludeLine := "/" + tc.tamper
+			if want := "the exclude line " + excludeLine + " in " + excludeFile + " stays through that"; !strings.Contains(res.stderr, want) {
+				t.Errorf("stderr lacks %q:\n%s", want, res.stderr)
+			}
 
 			// The recipe, as printed.
 			for _, d := range drops {
@@ -1054,6 +1059,12 @@ func TestLineSetRefusalNamesWhatUnblocksIt(t *testing.T) {
 			}
 			if !tc.codex {
 				b.wantMCP(t, file, "demo", "30", "10m")
+			}
+			// What the refusal says about the exclude line holds: the line is still in
+			// the file once the line is ended.
+			mustLine(t, b, b.lend("demo")...)
+			if got := readExcludeForTest(t, co); !strings.Contains(got, excludeLine+"\n") {
+				t.Errorf("info/exclude = %q: the line %s went with the line, and the refusal says it stays", got, excludeLine)
 			}
 		})
 	}
