@@ -1046,19 +1046,22 @@ exit 2.
   flag; a negative cap; a window that is not above zero or not a duration; no such
   line; an extra argument. Naming the numbers the line already has changes nothing and
   says so, but only after the launch files are judged as below: one that disagrees
-  with the record is refused, not passed over. It takes the id's lock, so a second command for the id refuses at once,
+  with the record is refused, not passed over; a run that only brings a recorded
+  digest up to date says that no session needs a restart. It takes the id's lock, so a second command for the id refuses at once,
   exit 1, and it touches no server, runs no harness and posts nothing.
   Every launch file the record lists is judged before the first is written, by the
   proof `line drop` uses: a regular file whose bytes hash to the recorded digest, in a
   directory that is not a link, in the working directory as recorded. A file that is
   not that, a link at the path included, refuses the whole run, exit 1, naming the
-  file, with nothing changed, and saying what unblocks it: for a file that holds
-  what `line set` writes for other numbers (parsed, written again from what it says,
-  and compared byte for byte), the command that finishes that earlier run, as the
-  binary that wrote it; for any file, restoring it to the digest the record has, or
+  file, with nothing changed, and saying what unblocks it: that a `line set` cut short
+  is finished by the command it printed when it failed (nothing is read from a file
+  whose bytes do not hash to the recorded digest, so no value from one is printed or
+  acted on); for any file, restoring it to the digest the record has, or
   `line drop <id> <nick> --force` for each session that uses it (the file is left),
   moving what is at the path aside, and `line add` for each, which writes the file
-  with the record's numbers (a Codex session then starts a new thread). A Claude
+  with the record's numbers (a Codex session then starts a new thread; the exclude
+  line `drop --force` keeps stays, `add` records no owner for it, and it is removed by
+  hand once the line has ended). A Claude
   session whose instructions, built in this process as `channel --check` builds them,
   would be over Claude Code's cap with the new numbers is refused too, but as a
   configuration error, exit 2, naming the session, and telling to shorten `--cap`,

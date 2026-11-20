@@ -617,7 +617,8 @@ refuses at once when another command holds it. It touches no server and dials
 nothing, and it never posts: not in the channel, and not as you. Naming the numbers
 the line already has changes nothing, but the launch files are judged all the same,
 as below, and the command does not say that nothing was changed while one of them
-disagrees with the record.
+disagrees with the record. When all it does is bring a recorded digest up to date, it
+says that no number changed and no session needs a restart.
 
 It judges before it writes. Every launch file the record lists must still be the one
 `line add` wrote, by the proof `line drop` removes a file on: a regular file whose
@@ -635,10 +636,12 @@ naming the session, with nothing changed.
 What a refusal for a file says unblocks it, and the commands are printed as they
 stand:
 
-- A file that holds what `line set` writes for other numbers, which a run cut short
-  leaves (see below), is named as that, with the command that finishes that run;
-  run it, then run yours again. That is also what to do to go back to the numbers
-  the record has: the file has to be finished first, or restored.
+- If an earlier `line set` on this line was cut short, the command it printed when it
+  failed finishes it; run that, then run yours again. The refusal says so without
+  reading the file, whatever it holds: `line set` prints and decides nothing from the
+  bytes of a launch file that do not hash to the digest the record has, since a
+  command or a window in them could be anyone's. That goes for going back to the
+  numbers the record has, too: finish the interrupted run, or restore the file, first.
 - Any refused file can be restored to the bytes the record has a digest of, which the
   refusal gives, or its sessions can be taken off with `parley line drop <channel>
   <nick> --force` (stop each first; `--force` leaves the file where it is), what is
@@ -646,7 +649,11 @@ stand:
   write), and the sessions added again with `parley line add`, which writes the file
   with the record's numbers. A Codex session added again starts a new thread. This
   holds for a Codex `.codex/config.toml` too, which `line set` judges though it
-  never writes it.
+  never writes it. The line `line add` put in the repository's exclude file stays
+  through this: `line drop --force` keeps it, and `line add` finds it with no session
+  of the line recording it (unless another still does), so it records none and no
+  later `line drop` takes it out. Remove it from that file by hand once the line has
+  ended.
 
 Then it writes, in this order:
 
@@ -790,7 +797,11 @@ inputs a line has.
   overwrite another file, write through a link, or delete a file on any other
   ground, and a refusal names the file. `line set` rewrites a launch file on that
   same proof and no other, atomically (a temp file beside it, then a rename) and never
-  through a link, and judges every file before it writes the first. An OpenCode
+  through a link, and judges every file before it writes the first. `line set` prints
+  and decides nothing from the bytes of a launch file unless they hash to that
+  digest: a command, a window or a path in other bytes could be anyone's, so a refusal
+  echoes none of them. The one other thing it does with such bytes is compare them
+  with what the run would write, which never parses them. An OpenCode
   session has no launch file, and `line add` and `line set` write nothing in its
   working directory.
 - **Out of scope: a deliberate edit of that state**, and a session that decides to
