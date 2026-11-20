@@ -126,6 +126,7 @@ usage:
   parley line    new <id> --chair <nick> [--cap 20] [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex]
                  [--opencode-bin opencode]
   parley line    add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>] [--state-dir <dir>]
+  parley line    set <id> [--cap <n>] [--window 10m] [--state-dir <dir>]
   parley line    drop <id> <nick> [--force] [--state-dir <dir>]
   parley line    end <id> [--force] [--state-dir <dir>]
   parley version
@@ -436,7 +437,7 @@ verbs:
            directory and the build directory, never a branch or a Codex
            session: it prints the kept branches and the git branch -D line for
            each, and a codex delete line for each Codex peer
-  line     set up a line, put sessions on it, take them off and take it down.
+  line     set up a line, put sessions on it, change its breaker, take them off and take it down.
            A line is a few long-running sessions, each in a working directory of
            its own, and one human on one channel, under --skill line: no seal, a
            breaker of two rates that tells the human when it trips, no target and
@@ -541,6 +542,43 @@ verbs:
            the rule that makes it ask), on what the run did with permissions, on
            the service's password, on an interrupt holding deliveries, and what
            OpenCode version parley was last verified against.
+           set <id> changes the breaker of a line that is running: --cap <n>,
+           --window <duration>, or both, at least one, each held to what new holds
+           it to (a cap of 0 or more, a window above zero), exit 2 and nothing
+           changed otherwise. It takes the id's lock, touches no server and posts
+           nothing. Every launch file the record lists must still be a regular
+           file whose bytes hash to the recorded digest, in a directory that is
+           not a link, or it refuses, exit 1, naming the file and what unblocks
+           it, before it writes any, the numbers being the record's or not; a file
+           that is not there is left that way, and said. Each Claude session's
+           .mcp.json that does not already say the numbers asked for (read from
+           the bytes the digest proved, whatever the record holds) is written
+           again with the new --cap and --window, by the function add writes it
+           with, through a temp file and a rename and never through a link, and
+           the record is written at once with that file's new digest under every
+           session that shares it and the numbers it had (a Codex session's
+           config.toml carries neither number and is left as it is); the record's
+           cap and window are written last. Every record it will write is checked
+           before the first file is, and a Claude launch whose instructions would
+           then be over Claude Code's cap is refused, exit 2. A failure or an
+           interrupt partway says which files were written and which were not and
+           what the record holds, gives the restart line of every session whose
+           file it had already changed, rolls nothing back, and says to run set again
+           with the numbers you want: any numbers go on from where it stopped,
+           but for a file replaced whose record write then failed (a kill, or a
+           record that could not be written), which only the same numbers from
+           the same binary finish. A run that has nothing to change goes the
+           same way and says nothing was changed only when no launch file is
+           gone. It prints, for each session,
+           what is left for the human,
+           since each front reads its cap and window once, at launch: restart a
+           Claude Code session with the launch line add prints, plus --resume
+           <session-id>; for a Codex or an OpenCode session, the pump line, as
+           add prints it, with the new numbers. Before it writes, it names a
+           launch file whose parley command is not the binary running set, and
+           goes on. It says that each session's primer still states the old
+           numbers, and that a session started outside add is not in the record
+           and is not touched.
            drop <id> <nick> takes the
            id's lock and the session's nick lock without waiting and refuses,
            exit 1, while either is held. It removes the session's thread record
@@ -1177,23 +1215,44 @@ func cmdWait(args []string) error {
 	return nil
 }
 
+// channelFlags are the flags `parley channel` takes, and what they fill.
+type channelFlags struct {
+	spec, nick, stateDir *string
+	debounce             *time.Duration
+	skills               skillFlags
+	check                *bool
+}
+
+// newChannelFlags is the flag set of `parley channel`, the one definition of it:
+// cmdChannel parses its arguments with it, and `line set` parses the args of a
+// launch file's server with it, so that the cap and the window it reads from the
+// file are exactly the ones the front started from that file would read, a chair
+// named --cap or --window included.
+func newChannelFlags() (*flag.FlagSet, channelFlags) {
+	fs := flag.NewFlagSet("parley channel", flag.ContinueOnError)
+	f := channelFlags{
+		spec:     fs.String("stream", "", "stream to read, e.g. file:/path/to/chat.ndjson"),
+		nick:     fs.String("nick", "", "this participant's nick"),
+		debounce: fs.Duration("debounce", 250*time.Millisecond, "quiet window that joins a burst into one delivery"),
+		stateDir: fs.String("state-dir", "", "state directory holding <nick>/ (default $XDG_STATE_HOME/parley)"),
+		skills:   addSkillFlags(fs, true),
+		check:    fs.Bool("check", false, "serve nothing: validate the flags, build the instructions the session would send, print their length as \"instructions: <n> of 2048 UTF-16 units\", and exit 0 within Claude Code's cap or 2 over it; opens no stream and takes no lock"),
+	}
+	return fs, f
+}
+
 // cmdChannel runs the MCP channel server. It opens the stream, the state
 // directory, the lock and the cursor exactly as cmdWait does — a channel
 // session is one long-lived wait — and hands them to the channel package, which
 // owns the protocol. Nothing is printed on stdout here: it belongs to JSON-RPC.
 func cmdChannel(args []string) error {
-	fs := flag.NewFlagSet("parley channel", flag.ContinueOnError)
+	fs, f := newChannelFlags()
+	spec, nick, debounce, stateDir, skills, check := f.spec, f.nick, f.debounce, f.stateDir, f.skills, f.check
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: parley channel --stream <spec> --nick <nick> --chair <nick> --target <dir> --worktree <dir> [--debounce 250ms] [--state-dir <dir>] [--skill build|table --cap <n>] [--check]")
 		fmt.Fprintln(fs.Output(), "       parley channel --stream <spec> --nick <nick> --skill line --chair <nick> --cap <n> [--window 10m] [--debounce 250ms] [--state-dir <dir>] [--check]")
 		fs.PrintDefaults()
 	}
-	spec := fs.String("stream", "", "stream to read, e.g. file:/path/to/chat.ndjson")
-	nick := fs.String("nick", "", "this participant's nick")
-	debounce := fs.Duration("debounce", 250*time.Millisecond, "quiet window that joins a burst into one delivery")
-	stateDir := fs.String("state-dir", "", "state directory holding <nick>/ (default $XDG_STATE_HOME/parley)")
-	skills := addSkillFlags(fs, true)
-	check := fs.Bool("check", false, "serve nothing: validate the flags, build the instructions the session would send, print their length as \"instructions: <n> of 2048 UTF-16 units\", and exit 0 within Claude Code's cap or 2 over it; opens no stream and takes no lock")
 	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

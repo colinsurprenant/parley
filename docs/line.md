@@ -19,10 +19,11 @@ ledger, a commit, a PR; the line only points at them.
 
 `parley line new` makes a line and `parley line add` puts a session on it, the way
 `parley table new` sets a table up and `parley build new` a build; `parley line
-drop` takes a session off, and `parley line end` takes the line down. They write
-what the steps below would have you write by hand, check it first, undo it if a
-step fails, and print what is left for you. What they do not cover is in "By
-hand", after the steps.
+set` changes a running line's breaker, `parley line drop` takes a session off, and
+`parley line end` takes the line down. They write what the steps below would have
+you write by hand, check it first, undo it if a step fails (`line set` reports what
+it had done instead, see "Changing the breaker of a running line"), and print what
+is left for you. What they do not cover is in "By hand", after the steps.
 
 Placeholders are in angle brackets: `<channel>` is the line's channel,
 `#<channel>`, which is also its id, `<chair>` your nick, `<nick>` one session's,
@@ -100,7 +101,8 @@ expected to work.
    holds later.
    `--cap 0` turns both off, and then nothing stops two sessions from waking each
    other for as long as they have something to say; the window must still be above
-   zero.
+   zero. Both can be changed later, on a running line, with `parley line set`
+   ("Changing the breaker of a running line").
 
 4. **Make the line.** The channel names the line, and the line is a record of its
    facts, which every session added to it inherits:
@@ -439,8 +441,9 @@ The verbs cover a working directory with no launch file of its own. For one that
 `.mcp.json` of its own, or a Codex or OpenCode session you want to start yourself,
 you write what `line add` would have, and the pump takes the thread or session id
 in place of `auto`, since no record of it is made. Nothing in `<base>/lines/` knows about a
-session you set up this way, so `line drop` and `line end` leave it alone, and you
-take it down by hand too ("Taking it down", below).
+session you set up this way, so `line set`, `line drop` and `line end` leave it alone:
+you change its cap and window in its launch yourself, and take it down by hand too
+("Taking it down", below).
 
 - **A Claude Code session.** Put the `parley` server of step 5 in the working directory's
   `.mcp.json`, adding it to the file if there is one, and keep the file out of `git
@@ -597,9 +600,159 @@ before it has read the others', run a table instead: a line has no seal.
 - **An over-cap channel shows only in `/mcp`.** Run `--check` first.
 - **Cost.** Each post wakes every other session.
 
+## Changing the breaker of a running line
+
+A line that is busy can be given more room, or less, without ending it:
+
+```
+parley line set <channel> [--cap <cap>] [--window <window>] [--state-dir <base>]
+```
+
+At least one of `--cap` and `--window` is required, and the one left out keeps the
+value the record has. Both are held to what `line new` holds them to: a cap of 0 or
+more (`--cap 0` turns the breaker off), and a window that is a Go duration above
+zero. Anything else is refused, exit 2, with nothing changed, and so is a line that
+does not exist. The command takes the line's lock like every other line verb, and
+refuses at once when another command holds it. It touches no server and dials
+nothing, and it never posts: not in the channel, and not as you. Every run goes the
+same way, whatever numbers it names: the launch files are judged as below against
+the numbers asked for, and not against the ones the record holds, so a line that
+already has the numbers is not passed over while a file disagrees. Only when the
+record and every file already have them, and none is gone, does the command write
+nothing and say that nothing was changed; when it finds a file gone it writes nothing
+too, and says that, and what is gone. When no number changes, only the Claude Code
+sessions whose file the run wrote, or found already holding the bytes it would write,
+or that have none, are told anything.
+
+It judges before it writes. Every launch file the record lists must still be the one
+`line add` wrote, by the proof `line drop` removes a file on: a regular file whose
+bytes hash to the digest the record holds, in a real directory, in the working
+directory where it was recorded. If one is not (you edited it, replaced it, it
+became a link, its directory did, or the working directory was moved and a link put
+in its place), the command refuses, exit 1, names that file and changes nothing,
+though every other file is the line's and some would have been rewritten first. A
+file that is not there is left that way, and the output says so, with the way back
+for the Claude Code sessions that use it, whether or not a number changes. A Claude
+Code session's instructions, as `channel --check` measures them, must still fit
+Claude Code's cap with the new numbers (the cap's and the window's digits, the state
+directory and the binary's path all count); one that does not is refused, exit 2,
+naming the session, with nothing changed. A record that would come out larger than
+the line verbs read (64 KiB) is refused too, but as a failure, exit 1, again with
+nothing changed: every record the run will write is checked before the first file is,
+since a refusal after the files were replaced would leave their digests behind the
+record's.
+
+What a refusal for a file says unblocks it, and the commands are printed as they
+stand:
+
+- If an earlier `line set` on this line was cut short between replacing this file and
+  recording its digest (it was killed in that moment, or the record could not be
+  written, which a failed run says), running that same `line set` again, with the same
+  numbers and from the same binary, finishes it: the file holds exactly the bytes that
+  run writes, which is how it is recognized, and its digest is recorded. A run killed
+  outright printed no command; a run that failed printed that one. Run it, then run
+  yours again. The refusal says so without reading the file, whatever it holds: `line
+  set` prints and decides nothing from the bytes of a launch file that do not hash to
+  the digest the record has, since a command or a window in them could be anyone's.
+  That goes for other numbers, too, including the record's: finish the interrupted
+  run, or restore the file, first. Any other cut-short run leaves every file as the
+  record has it, and needs no such step (see below).
+- Any refused file can be restored to the bytes the record has a digest of, which the
+  refusal gives, or its sessions can be taken off with `parley line drop <channel>
+  <nick> --force` (stop each first; `--force` leaves the file where it is), what is
+  at the path moved aside (`line add` refuses a path that holds anything it did not
+  write), and the sessions added again with `parley line add`, which writes the file
+  with the record's numbers. A Codex session added again starts a new thread. This
+  holds for a Codex `.codex/config.toml` too, which `line set` judges though it
+  never writes it. The line `line add` put in the repository's exclude file stays
+  through this: `line drop --force` keeps it, and `line add` finds it with no session
+  of the line recording it (unless another still does), so it records none and no
+  later `line drop` takes it out. Remove it from that file by hand once the line has
+  ended.
+
+Then it writes, in this order:
+
+1. Each Claude Code session's `.mcp.json` that does not already say the numbers asked
+   for. A file that is the line's by its digest is read: its `--cap` and `--window`
+   are taken from those bytes, which are parley's own, as the front started from the
+   file reads them (the args are parsed with the flag set of `parley channel`, so a
+   chair named `--cap` is only that flag's value, and args the front would refuse have
+   no numbers), and it is current, and left
+   as it is, when both are the numbers asked for, whatever numbers the record holds;
+   one that says others, or whose numbers cannot be read, is written again with the new
+   `--cap` and `--window` by the same code `line add` writes it with, so the two
+   cannot drift apart, and not by editing the old text. The file goes into place
+   through a temp file in its own directory and a rename, so a reader never sees half
+   of it, and a link at the path is replaced and never followed. Its `command` is the
+   parley binary that runs `line set`, as `line add`'s is the one that runs `line add`;
+   when the file runs another binary now (a dev build, a moved binary), a line names
+   both paths before anything is written, and the run goes on; a current file that
+   runs another binary is named the same way, and left. A file that several sessions
+   of one working directory share is written once. A Codex session's
+   `.codex/config.toml` carries neither number, so it is checked and left as it is,
+   and an OpenCode session has no launch file.
+2. `line.json`, **after each file**: the file is proved again, by the digest of the
+   bytes just written, and the record is written at once with that file's new digest
+   under every session that shares it, and the numbers the record had. A file that
+   already holds the bytes the run would write (what a run killed between a file's
+   rename and this write leaves) is proved the same way, against the digest of those
+   bytes, and its digest recorded; a file that changed in between is not recorded, and
+   the run stops. So `line drop` shows every file is the line's at every point, and
+   each file says its own numbers.
+3. `line.json`, last, with the new cap and window, through a temp file and a rename;
+   not written when they are the ones it has.
+
+An interrupt is looked for before each file is written, before a held file's digest is
+recorded and before the numbers are, so Ctrl-C stops the run between two steps and
+never between a file and its record (a kill cannot be caught, and can land there: the
+first bullet above). If a step fails or you interrupt it after
+something was written, the command says which files it had written and which it had
+not, and what `line.json` holds, and gives the restart line of every session whose file
+it had already changed, since a rerun finds such a file current and will not say so, and
+the front still holds the numbers it started with; nothing is rolled back. Every state it can leave is
+one a later run goes on from, with any numbers, the old ones included: each digest the
+record holds is its file's own bytes, and each file says its own numbers, so a run
+writes the files that do not say the numbers asked for, leaves those that do, and
+writes the numbers last. It ends with a line that repeats the run, as it stands, which
+is not the only way to go on: run it with the numbers you want. The one exception is a
+file replaced whose record could not be written, which is the one gap there is: a kill
+between the rename and the record write leaves it, and so does a record write that
+fails after the rename (the record's directory not writable, a full disk), which the
+run says and names the file for. The same command, with the same numbers from the same
+binary, finishes it, as above, and other numbers are refused for that file until then.
+A `line add` run between a failed `line set` and its rerun can share a file the failed
+run had already rewritten, since the record holds its new digest, so the session added
+then has numbers ahead of the record's; the next `line set` brings every file and the
+record into line.
+
+Nothing that is running changes by itself. The breaker lives in each session's
+front process, which reads its cap and window once, when it starts, so the command
+prints what each recorded session needs, in its own terminal:
+
+- **Claude Code:** restart the session with the launch line `line add` printed (it
+  loads parley's channel with `--dangerously-load-development-channels
+  server:parley`), plus `--resume <session-id>`, which keeps its conversation. A
+  restart is what makes Claude Code read the new `.mcp.json`. If the session's
+  `.mcp.json` was not there, a restart loads no parley server, so the command says
+  so instead: stop the session, `parley line drop` it and `parley line add` it
+  again, which writes the file with the new numbers (the other sessions of the
+  working directory share it), and launch it as `line add` prints.
+- **Codex and OpenCode:** stop the session's pump and start the new pump line the
+  command prints, built the way `line add` builds it, with the new `--cap` and
+  `--window`. The Codex or OpenCode session itself keeps running.
+
+Until a session's front starts again it holds the old numbers, so a line can have
+two for a while. And each session's primer, which `line add` wrote with the numbers
+the line had then, still states the old ones, a Claude Code session's channel
+instructions too; say so in the channel if a session's behaviour depends on them. A
+session started outside `line add` ("By hand") is not in the record, so the command
+does not touch it.
+
 ## Taking it down
 
-- **One session**: `parley line drop <channel> <nick>`. It takes the line's lock and
+- **One session**: `parley line drop <channel> <nick>` (`parley line drop -- <channel>
+  <nick>` for a nick that begins with `-`, which a `--` keeps from being read as a
+  flag; the commands the verbs print are written that way). It takes the line's lock and
   the session's nick lock without waiting, and refuses, with exit 1, while the
   session or its pump holds that lock: stop them first. Then it removes what
   `line add` made for that session and can show is the line's:
@@ -682,12 +835,24 @@ inputs a line has.
   it anywhere, bounds what it reads from the server and checks its shapes, and
   does not treat it as hostile.
 - **Not parley's state: your working directories.** `line add` writes one launch file in a
-  working directory and a line in its exclude file, and `line drop` removes them again, but
+  working directory and a line in its exclude file, `line set` writes the launch file
+  again with new numbers, and `line drop` removes them, but
   a working directory is yours and a session works in it. A file there is the line's only
   while its bytes still hash to the digest `line.json` holds; the verbs never
   overwrite another file, write through a link, or delete a file on any other
-  ground, and a refusal names the file. An OpenCode session has no launch file, and
-  `line add` writes nothing in its working directory.
+  ground, and a refusal names the file. `line set` rewrites a launch file on that
+  same proof and no other, atomically (a temp file beside it, then a rename) and never
+  through a link, and judges every file, and every record it will write, before it
+  writes the first. `line set` prints and decides nothing from the bytes of a launch
+  file unless they hash to that digest: a command, a window or a path in other bytes
+  could be anyone's, so a refusal echoes none of them. Bytes that do hash to it are
+  parsed, for the command and for the cap and window, which is how it tells that a
+  file already says the numbers asked for. The one other thing it does with bytes that
+  do not is compare them with what the run would write, which never parses them, and
+  which recognizes a file a run left after it replaced it and before it recorded it;
+  the file is proved again just before its digest is recorded. An OpenCode
+  session has no launch file, and `line add` and `line set` write nothing in its
+  working directory.
 - **Out of scope: a deliberate edit of that state**, and a session that decides to
   do what a peer asked against its own permissions. What a session does with its
   harness's permissions is not parley's to police: parley is not a sandbox, and the

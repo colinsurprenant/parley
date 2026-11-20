@@ -116,7 +116,7 @@ func cmdLineAdd(args []string) error {
 	}
 	signal.Ignore(syscall.SIGPIPE)
 	if _, err := io.WriteString(os.Stdout, p.runbook(run)); err != nil {
-		return fmt.Errorf("session %s is added but its instructions could not be written (%v): parley line drop %s %s takes it off", p.nick, err, p.id, p.nick)
+		return fmt.Errorf("session %s is added but its instructions could not be written (%v): parley line drop -- %s %s takes it off", p.nick, err, p.id, p.nick)
 	}
 	return nil
 }
@@ -147,7 +147,6 @@ type linePlan struct {
 
 	rec      lineRecord
 	recBytes []byte
-	window   string
 	// group is the line's sessions that already use the launch file this session
 	// would have: the same harness in the same working directory.
 	group []lineSession
@@ -287,15 +286,8 @@ func planLineAdd(ctx context.Context, in lineAddInput) (*linePlan, error) {
 		pathField{"the temp directory ($TMPDIR), which the reply directory is made under,", p.tmp}); err != nil {
 		return nil, err
 	}
-	for _, x := range []struct{ name, path string }{{"the state directory", p.base}, {"this binary's path", p.self}} {
-		if hasControl(x.path) {
-			return nil, cfgErrf("%s %q holds a control character: it is printed into commands and into the text the session reads", x.name, x.path)
-		}
-		// A Claude session's .mcp.json carries both, and Claude Code expands ${...}
-		// in a .mcp.json's command and args.
-		if p.harness == harnessClaude && strings.Contains(x.path, "$") {
-			return nil, cfgErrf("%s %q holds a '$': Claude Code expands ${...} in a .mcp.json's command and args, so the path would not reach the channel as written", x.name, x.path)
-		}
+	if err := checkPrintedPaths(p.harness == harnessClaude, p.base, p.self); err != nil {
+		return nil, err
 	}
 	// The state directory holds every nick's IRC password, and the reply directory
 	// is a Codex or an OpenCode session's scratch: neither belongs in a working
@@ -307,6 +299,24 @@ func planLineAdd(ctx context.Context, in lineAddInput) (*linePlan, error) {
 		return nil, cfgErrf("the temp directory ($TMPDIR) %s is inside the working directory %s: the reply directory is made in it, so run with a TMPDIR outside it", p.tmp, p.workdir)
 	}
 	return p, nil
+}
+
+// checkPrintedPaths refuses a state directory or a binary path that cannot be
+// printed into a command and into the text a session reads as it is: one with a
+// control character, and, when a Claude session's .mcp.json (claude) will carry
+// them, one with a '$'. `line add` and `line set` both write that file.
+func checkPrintedPaths(claude bool, base, self string) error {
+	for _, x := range []struct{ name, path string }{{"the state directory", base}, {"this binary's path", self}} {
+		if hasControl(x.path) {
+			return cfgErrf("%s %q holds a control character: it is printed into commands and into the text the session reads", x.name, x.path)
+		}
+		// A Claude session's .mcp.json carries both, and Claude Code expands ${...}
+		// in a .mcp.json's command and args.
+		if claude && strings.Contains(x.path, "$") {
+			return cfgErrf("%s %q holds a '$': Claude Code expands ${...} in a .mcp.json's command and args, so the path would not reach the channel as written", x.name, x.path)
+		}
+	}
+	return nil
 }
 
 // bind reads the line's record, under the id's lock, and checks the session
@@ -323,9 +333,8 @@ func (p *linePlan) bind() error {
 		return cfgErrf("--nick %q is the chair's (%q): the chair is another voice than any session, and nicks are the same without regard to ASCII case", p.nick, rec.Chair)
 	}
 	if i, ok := rec.session(p.nick); ok {
-		return cfgErrf("--nick %q is already session %q of line %q, and nicks are the same without regard to ASCII case: parley line drop %s %s takes it off first", p.nick, rec.Sessions[i].Nick, p.id, p.id, rec.Sessions[i].Nick)
+		return cfgErrf("--nick %q is already session %q of line %q, and nicks are the same without regard to ASCII case: parley line drop -- %s %s takes it off first", p.nick, rec.Sessions[i].Nick, p.id, p.id, rec.Sessions[i].Nick)
 	}
-	p.window = rec.Window
 	p.group = rec.sharing(p.harness, p.workdir, -1)
 
 	if p.harness == harnessCodex {
@@ -471,27 +480,44 @@ const fileMax = 1 << 20
 // fileDigest is the digest of the exact bytes of the regular file at path, which
 // is not opened if it is a link. A file past fileMax is not one the line wrote.
 func fileDigest(path string) (string, error) {
-	f, err := state.OpenRegular(path)
+	b, err := readLaunchFile(path)
 	if err != nil {
 		return "", err
+	}
+	return tableDigest(b), nil
+}
+
+// readLaunchFile reads the exact bytes of the regular file at path, which is not
+// opened if it is a link. A file past fileMax is not one the line wrote.
+func readLaunchFile(path string) ([]byte, error) {
+	f, err := state.OpenRegular(path)
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, fileMax+1))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(b) > fileMax {
-		return "", fmt.Errorf("%s is larger than %d bytes", path, fileMax)
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, fileMax)
 	}
-	return tableDigest(b), nil
+	return b, nil
 }
 
 // mcpJSON is the working directory's .mcp.json: one server, parley, whose args are the
 // channel's launch flags with the session's nick left to the environment it is
 // started in.
 func (p *linePlan) mcpJSON() ([]byte, error) {
-	return mcpConfigJSON(p.self, []string{"channel", "--stream", p.rec.Stream, "--nick", "${PARLEY_NICK}", "--state-dir", p.base,
-		"--skill", "line", "--chair", p.rec.Chair, "--cap", strconv.Itoa(p.rec.Cap), "--window", p.window})
+	return lineMCPJSON(p.self, p.rec, p.base)
+}
+
+// lineMCPJSON is the .mcp.json of a Claude session of the line rec, which `line
+// add` writes and `line set` writes again with other numbers in rec: the one place
+// that decides what the file holds, so that the bytes of the two agree.
+func lineMCPJSON(self string, rec lineRecord, base string) ([]byte, error) {
+	return mcpConfigJSON(self, []string{"channel", "--stream", rec.Stream, "--nick", "${PARLEY_NICK}", "--state-dir", base,
+		"--skill", "line", "--chair", rec.Chair, "--cap", strconv.Itoa(rec.Cap), "--window", rec.Window})
 }
 
 // checkMachine runs doctor's static checks for the session's harness, the server
@@ -519,13 +545,19 @@ func (p *linePlan) measureClaude() error {
 	if p.harness != harnessClaude {
 		return nil
 	}
-	return measureClaude("session", "--state-dir, --stream or the path of the parley binary", channel.Config{
-		Spec:   p.rec.Stream,
+	return measureLineClaude(p.rec, p.nick, p.base, "--state-dir, --stream or the path of the parley binary")
+}
+
+// measureLineClaude is measureClaude for the Claude session nick of the line rec,
+// with rec's cap and window; remedy names what to shorten.
+func measureLineClaude(rec lineRecord, nick, base, remedy string) error {
+	return measureClaude("session", remedy, channel.Config{
+		Spec:   rec.Stream,
 		Skill:  primer.SkillLine,
-		Chair:  p.rec.Chair,
-		Cap:    p.rec.Cap,
-		Window: p.rec.windowDuration(),
-	}, p.nick, p.base, []stream.Option{stream.WithLine(p.rec.Chair, p.rec.Cap, p.rec.windowDuration())})
+		Chair:  rec.Chair,
+		Cap:    rec.Cap,
+		Window: rec.windowDuration(),
+	}, nick, base, []stream.Option{stream.WithLine(rec.Chair, rec.Cap, rec.windowDuration())})
 }
 
 // lineAddRun is one `line add` in progress.
@@ -954,10 +986,7 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 	}
 
 	if p.harness == harnessClaude {
-		launch := "PARLEY_NICK=" + p.nick + " claude --dangerously-load-development-channels server:parley"
-		if p.model != "" {
-			launch += " --model " + q(p.model)
-		}
+		launch := claudeLaunch(p.nick, p.model)
 		b.WriteString("What is left is yours, in this order:\n")
 		next("Launch the session from its working directory, and approve the project server parley when it asks.")
 		cmd("cd " + q(p.workdir))
@@ -975,14 +1004,13 @@ func (p *linePlan) runbook(r *lineAddRun) string {
 
 	fmt.Fprintf(&b, "Codex thread %s.\n\n", r.thread)
 	fmt.Fprintf(&b, "Network: %s\n", codexNetworkNotice)
-	pumpExtra := ""
+	codexBin := ""
 	if p.codexGiven {
-		pumpExtra = " --codex-bin " + q(p.codexBin)
+		codexBin = p.codexBin
 	}
 	b.WriteString("\nWhat is left is yours, in this order:\n")
 	next("In one terminal start its pump, before the session posts:")
-	cmd(fmt.Sprintf("%s codex --stream %s --nick %s --state-dir %s --thread auto --skill line --chair %s --cap %d --window %s%s",
-		q(p.self), q(p.rec.Stream), p.nick, q(p.base), p.rec.Chair, p.rec.Cap, p.window, pumpExtra))
+	cmd(codexPump(p.self, p.rec, p.nick, p.base, codexBin))
 	next("In another, resume its session, then type $parley-line:")
 	cmd(fmt.Sprintf("%s resume %s -C %s -a on-request", p.codexName(), q(r.thread), q(p.workdir)))
 	b.WriteString("\n   Check that /status shows workspace-write and network on")
@@ -1019,8 +1047,7 @@ func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
 	cmd("cd " + q(p.workdir))
 	cmd(fmt.Sprintf("%s -s %s", p.openCodeName(), q(r.thread)))
 	next("In another, start its pump:")
-	cmd(fmt.Sprintf("%s opencode --stream %s --nick %s --session auto --skill line --chair %s --cap %d --window %s --state-dir %s",
-		q(p.self), q(p.rec.Stream), p.nick, p.rec.Chair, p.rec.Cap, p.window, q(p.base)))
+	cmd(openCodePump(p.self, p.rec, p.nick, p.base))
 	next("Check that the session has loaded the parley-line skill. OpenCode loads a skill with its skill tool and has no /parley-line\n   command; if its answer to the primer below does not show it did, ask it to load the skill.")
 	fmt.Fprintf(&b, "Notes:\n")
 	fmt.Fprintf(&b, "  The reply file, %s, is outside the session's working directory. OpenCode allows external_directory by default,\n", q(r.replyFile))
@@ -1040,6 +1067,36 @@ func (p *linePlan) openCodeRunbook(r *lineAddRun) string {
 	}
 	b.WriteString(indent(answer, "        ") + "\n")
 	return b.String()
+}
+
+// claudeLaunch is the line that starts a Claude session, in its working
+// directory, on the project server parley: `line add` prints it, with --resume
+// <session-id> after it for a conversation that is under way, and `line set` does
+// when the session has to start again. model is the session's, when it has one.
+func claudeLaunch(nick, model string) string {
+	launch := "PARLEY_NICK=" + nick + " claude --dangerously-load-development-channels server:parley"
+	if model != "" {
+		launch += " --model " + q(model)
+	}
+	return launch
+}
+
+// codexPump is the pump line of a Codex session of the line rec: the one `line add`
+// prints and `line set` prints again with the numbers that are in rec. codexBin is
+// the codex the line was made with, or empty when plain codex is meant.
+func codexPump(self string, rec lineRecord, nick, base, codexBin string) string {
+	extra := ""
+	if codexBin != "" {
+		extra = " --codex-bin " + q(codexBin)
+	}
+	return fmt.Sprintf("%s codex --stream %s --nick %s --state-dir %s --thread auto --skill line --chair %s --cap %d --window %s%s",
+		q(self), q(rec.Stream), nick, q(base), rec.Chair, rec.Cap, rec.Window, extra)
+}
+
+// openCodePump is codexPump's counterpart for an OpenCode session.
+func openCodePump(self string, rec lineRecord, nick, base string) string {
+	return fmt.Sprintf("%s opencode --stream %s --nick %s --session auto --skill line --chair %s --cap %d --window %s --state-dir %s",
+		q(self), q(rec.Stream), nick, rec.Chair, rec.Cap, rec.Window, q(base))
 }
 
 // tracked reports whether git's index in dir holds rel. A directory outside any

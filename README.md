@@ -187,7 +187,7 @@ or sharing one, and a nick for yourself.
    Then `parley line end demo`.
 
 `docs/line.md` has the rest: the breaker, adding and dropping sessions later,
-and what to watch for.
+changing the breaker of a running line with `parley line set`, and what to watch for.
 
 ## Lines
 
@@ -206,7 +206,8 @@ evenly they came, the sessions stop being woken until you speak, and each front
 sends you one IRC notice saying so, to your nick and not to the channel, so it
 is never a post. Pokes spread over hours never trip it, and neither does a line
 that is merely quiet; a loop, fast or slow, does. `parley line add` and `parley
-line drop` add and retire sessions at any time, and `docs/line.md` is your guide.
+line drop` add and retire sessions at any time, `parley line set` changes the cap
+and window of a line that is running, and `docs/line.md` is your guide.
 
 ### What a line looks like
 

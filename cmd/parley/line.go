@@ -21,8 +21,8 @@ import (
 
 // A line is a few long-running sessions, each in a working directory of its own,
 // and one human on one channel, under --skill line. What `line new` keeps of it is
-// <state base>/lines/<id>/line.json, the record `line add`, `line drop` and `line
-// end` read and write; the rest is elsewhere: each session's launch file in its
+// <state base>/lines/<id>/line.json, the record `line add`, `line set`, `line drop`
+// and `line end` read and write; the rest is elsewhere: each session's launch file in its
 // working directory (.mcp.json or .codex/config.toml, and a line in the
 // repository's info/exclude when the directory is a repository's top; an OpenCode
 // session has none), a Codex session's thread record or
@@ -32,8 +32,8 @@ import (
 // same base, as "tables" and "builds" do, which is why no participant may be
 // called any of the three.
 //
-// What parley trusts, for the commands in line_new.go, line_add.go and
-// line_drop.go (written out in docs/line.md, "What parley trusts"):
+// What parley trusts, for the commands in line_new.go, line_add.go, line_set.go
+// and line_drop.go (written out in docs/line.md, "What parley trusts"):
 //
 //   - Trusted: parley's own state (line.json under <state base>/lines/<id>/,
 //     made 0700; the thread records, cursors and lock files under the nicks' own
@@ -41,8 +41,17 @@ import (
 //     A deliberate hand edit of that state is out of scope.
 //   - Not parley's state: the user's working directories. A launch file there is the
 //     line's only if its bytes still hash to the digest the record holds, and
-//     only that proof lets `line drop` delete it. Nothing in a working directory is
-//     overwritten, written through a link or removed on any other ground.
+//     only that proof lets `line drop` delete it or `line set` rewrite it, and
+//     `line set` does it atomically and never through a link. Nothing in a working
+//     directory is overwritten, written through a link or removed on any other ground.
+//     Nor does `line set` print or decide anything from the bytes of a launch file
+//     unless they hash to the recorded digest: a command, a window or a path in
+//     other bytes could be anyone's, and a refusal echoes none of them. Bytes that
+//     do hash to it are parsed, for the command and the numbers, which is how it
+//     knows a file already has the numbers asked for. The one other thing it does
+//     with bytes that do not is compare them with what the run would write, which
+//     never parses them, and which a file left by a run cut short after it replaced
+//     the file is recognized by; it proves them again before it records their digest.
 //   - Untrusted: Codex's output and the thread id it announces (checked to be a
 //     UUID), OpenCode's output and the session id it announces (checked to have
 //     the shape of one, and to be the one every event of the turn carries),
@@ -94,12 +103,12 @@ func checkNotALine(base, id, what string) error {
 	return nil
 }
 
-// cmdLine runs the line verbs: new sets a line up, add puts a session on it,
-// drop takes one off and end takes the line down.
+// cmdLine runs the line verbs: new sets a line up, add puts a session on it, set
+// changes its breaker, drop takes a session off and end takes the line down.
 func cmdLine(args []string) error {
 	if len(args) == 0 {
 		lineUsage(os.Stderr)
-		return cfgErrf("parley line needs a verb: new, add, drop or end")
+		return cfgErrf("parley line needs a verb: new, add, set, drop or end")
 	}
 	switch args[0] {
 	case "-h", "-help", "--help", "help":
@@ -109,22 +118,25 @@ func cmdLine(args []string) error {
 		return cmdLineNew(args[1:])
 	case "add":
 		return cmdLineAdd(args[1:])
+	case "set":
+		return cmdLineSet(args[1:])
 	case "drop":
 		return cmdLineDrop(args[1:])
 	case "end":
 		return cmdLineEnd(args[1:])
 	}
 	lineUsage(os.Stderr)
-	return cfgErrf("unknown line verb %q: the verbs are new, add, drop and end", args[0])
+	return cfgErrf("unknown line verb %q: the verbs are new, add, set, drop and end", args[0])
 }
 
 func lineUsage(w io.Writer) {
-	fmt.Fprint(w, lineUsageNew+"\n"+lineUsageAdd+"\n"+lineUsageDrop+"\n"+lineUsageEnd+"\n")
+	fmt.Fprint(w, lineUsageNew+"\n"+lineUsageAdd+"\n"+lineUsageSet+"\n"+lineUsageDrop+"\n"+lineUsageEnd+"\n")
 }
 
 const (
 	lineUsageNew  = "usage: parley line new <id> --chair <nick> [--cap 20] [--window 10m] [--server 127.0.0.1:6667] [--state-dir <dir>] [--codex-bin codex] [--opencode-bin opencode]"
 	lineUsageAdd  = "usage: parley line add <id> --nick <nick> --harness claude|codex|opencode [--model <model>] [--workdir <absolute dir>] [--state-dir <dir>]"
+	lineUsageSet  = "usage: parley line set <id> [--cap <n>] [--window 10m] [--state-dir <dir>]  (at least one of --cap and --window)"
 	lineUsageDrop = "usage: parley line drop <id> <nick> [--force] [--state-dir <dir>]"
 	lineUsageEnd  = "usage: parley line end <id> [--force] [--state-dir <dir>]"
 )
@@ -133,11 +145,20 @@ const (
 // anywhere among the flags, as `parley line drop demo plan --force` and `parley
 // line drop demo --force plan` both write it, and returns the positionals in
 // order. The flag package stops at the first one, so it is parsed again after
-// each. A help request is flag.ErrHelp, a bad flag any other error, as with
-// parseFlags.
+// each. A "--" ends the flags for good: what follows it is positional, a nick
+// that begins with '-' (stream.ValidNick allows one) included, and is not parsed
+// again, which is why every command a verb prints puts its options first, then
+// "--", then the positionals. A help request is flag.ErrHelp, a bad flag any
+// other error, as with parseFlags.
 func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for {
+		if end := flagsEnd(fs, args); end >= 0 {
+			if err := parseFlags(fs, args[:end]); err != nil {
+				return nil, err
+			}
+			return append(pos, args[end+1:]...), nil
+		}
 		if err := parseFlags(fs, args); err != nil {
 			return nil, err
 		}
@@ -147,6 +168,61 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]
 	}
+}
+
+// flagsEnd is the index in args of the "--" that ends its flags, or -1 when the
+// flags end at a positional argument or at the end of args. It reads args the way
+// the flag package does, up to its first positional: a flag that takes a value takes
+// the next argument whatever it begins with, so a "--" that is a flag's value is not
+// one that ends them. What it cannot place (an unknown flag, bad syntax) is left to
+// the parse, which reports it.
+func flagsEnd(fs *flag.FlagSet, args []string) int {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if len(a) < 2 || a[0] != '-' {
+			return -1
+		}
+		if a == "--" {
+			return i
+		}
+		name := strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-")
+		if name == "" || name[0] == '-' || name[0] == '=' {
+			return -1
+		}
+		if strings.Contains(name, "=") {
+			continue
+		}
+		f := fs.Lookup(name)
+		if f == nil {
+			return -1
+		}
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !b.IsBoolFlag() {
+			i++
+		}
+	}
+	return -1
+}
+
+// lineDropCommand is the `line drop` of session nick on line id, run by the binary
+// self, as it is printed: options first, then "--", then the positionals, so that a
+// nick that begins with '-' is not read as a flag. force adds --force.
+func lineDropCommand(self, id, nick, base string, force bool) string {
+	cmd := q(self) + " line drop"
+	if force {
+		cmd += " --force"
+	}
+	return fmt.Sprintf("%s --state-dir %s -- %s %s", cmd, q(base), id, nick)
+}
+
+// lineAddCommand is the `line add` that puts session s on line id again, run by the
+// binary self, as it is printed: every option, then "--", then the id. The nick is
+// the value of --nick, which the flag package takes whatever it begins with.
+func lineAddCommand(self, id string, s lineSession, base string) string {
+	cmd := fmt.Sprintf("%s line add --nick %s --harness %s --workdir %s", q(self), s.Nick, s.Harness, q(s.Workdir))
+	if s.Model != "" {
+		cmd += " --model " + q(s.Model)
+	}
+	return fmt.Sprintf("%s --state-dir %s -- %s", cmd, q(base), id)
 }
 
 // lineRecord is what `line new` keeps of a line so that the other verbs can act
@@ -340,6 +416,20 @@ func readLineRecord(base, id string) (lineRecord, []byte, error) {
 // temp file and a rename, and refuses one the reader would refuse for its size.
 // It returns the bytes it wrote.
 func writeLineRecord(dir string, rec lineRecord) ([]byte, error) {
+	data, err := encodeLineRecord(rec)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, lineRecordName), data, 0o600); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// encodeLineRecord is the bytes writeLineRecord stores for rec, or the refusal it
+// would give: a verb that has to write several records asks it of each of them
+// before it writes the first.
+func encodeLineRecord(rec lineRecord) ([]byte, error) {
 	if rec.Sessions == nil {
 		rec.Sessions = []lineSession{}
 	}
@@ -358,9 +448,6 @@ func writeLineRecord(dir string, rec lineRecord) ([]byte, error) {
 	}
 	if buf.Len() > lineRecordMax {
 		return nil, fmt.Errorf("the line record would be %d bytes, over the %d bytes the line verbs read, and they would then refuse to take the line down: shorten what it holds (the paths, the models)", buf.Len(), lineRecordMax)
-	}
-	if err := writeFileAtomic(filepath.Join(dir, lineRecordName), buf.Bytes(), 0o600); err != nil {
-		return nil, err
 	}
 	return buf.Bytes(), nil
 }

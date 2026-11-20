@@ -224,8 +224,8 @@ func TestLineNewSetsTheLineUp(t *testing.T) {
 		"/join #demo",
 		"/msg NickServ INFO colin",
 		"/msg NickServ REGISTER <password>",
-		fmt.Sprintf("'%s' line add demo --nick <nick> --harness <claude|codex|opencode> [--model <model>] [--workdir <absolute dir>] --state-dir '%s'", binPath, b.base),
-		fmt.Sprintf("When it is over: '%s' line end demo --state-dir '%s'", binPath, b.base),
+		fmt.Sprintf("'%s' line add --nick <nick> --harness <claude|codex|opencode> [--model <model>] [--workdir <absolute dir>] --state-dir '%s' -- demo", binPath, b.base),
+		fmt.Sprintf("When it is over: '%s' line end --state-dir '%s' -- demo", binPath, b.base),
 	})
 	if strings.Contains(res.stdout, "doctor:") {
 		t.Errorf("doctor's lines are on stdout:\n%s", res.stdout)
@@ -462,7 +462,7 @@ func TestLineVerbsHoldTheIDLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{b.lnew("demo"), b.ladd("demo", "plan", "claude", co), b.ldrop("demo", "plan"), b.lend("demo")} {
+	for _, args := range [][]string{b.lnew("demo"), b.ladd("demo", "plan", "claude", co), b.lset("demo", "--cap", "30"), b.ldrop("demo", "plan"), b.lend("demo")} {
 		res := b.run(t, args...)
 		if res.code != 1 || !strings.Contains(res.stderr, idInUse) || !strings.Contains(res.stderr, "line command") {
 			t.Errorf("%v with the id's lock held: exit %d\n%s", args[:2], res.code, res.stderr)
@@ -485,7 +485,7 @@ func TestLineVerbsHoldTheIDLock(t *testing.T) {
 func TestLineVerbsOnALineThatIsNotThereTakeNoLock(t *testing.T) {
 	b := newLineBench(t)
 	co := b.gitWorkdir(t, "co")
-	for _, args := range [][]string{b.ladd("nope", "plan", "claude", co), b.ldrop("nope", "plan"), b.lend("nope")} {
+	for _, args := range [][]string{b.ladd("nope", "plan", "claude", co), b.lset("nope", "--cap", "30"), b.ldrop("nope", "plan"), b.lend("nope")} {
 		res := b.run(t, args...)
 		if res.code != 2 || !strings.Contains(res.stderr, `no line "nope"`) {
 			t.Errorf("%v: exit %d, want 2 naming the line\n%s", args[:2], res.code, res.stderr)

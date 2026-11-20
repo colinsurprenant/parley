@@ -1,0 +1,895 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// cancelAfter is a context that is live for its first n questions (Err) and
+// cancelled from the next on, so that a test can stop a run between two chosen
+// steps without a race: `line set` asks the context before each write.
+type cancelAfter struct {
+	context.Context
+	left int
+}
+
+func (c *cancelAfter) Err() error {
+	if c.left > 0 {
+		c.left--
+		return nil
+	}
+	return context.Canceled
+}
+
+func (b *lineBench) recordDir() string { return filepath.Join(b.base, "lines", "demo") }
+
+// wantRecordTrue fails unless line.json is true of the files: every digest it holds
+// for a session is the digest of that session's file as it is (or the file is not
+// there), which is what `line drop` proves a file is the line's by.
+func (b *lineBench) wantRecordTrue(t *testing.T) {
+	t.Helper()
+	for _, s := range b.record(t, "demo").Sessions {
+		for _, f := range s.Files {
+			if _, err := os.Lstat(f.Path); err != nil {
+				continue
+			}
+			if got := fileDigestOf(t, f.Path); got != f.SHA256 {
+				t.Errorf("session %s: the record holds %s for %s, which holds %s", s.Nick, f.SHA256, f.Path, got)
+			}
+		}
+	}
+}
+
+// twoClaudeSessions is line demo with a Claude session in each of two working
+// directories, and the two launch files.
+func (b *lineBench) twoClaudeSessions(t *testing.T) (mcp1, mcp2 string) {
+	t.Helper()
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-review")
+	b.mustAdd(t, "demo", "plan", "claude", co1)
+	b.mustAdd(t, "demo", "review", "claude", co2)
+	return filepath.Join(co1, ".mcp.json"), filepath.Join(co2, ".mcp.json")
+}
+
+// TestLineSetRewritesAFileRestoredAfterItWentMissing: a file that went missing
+// during a run keeps the digest the record has for it, so that the original bytes put
+// back pass the proof. The numbers the record holds are then the ones asked for, and
+// the file still says the old ones: a rerun judges the file by what it says, and
+// writes it.
+func TestLineSetRewritesAFileRestoredAfterItWentMissing(t *testing.T) {
+	b := newLineBench(t)
+	mcp1, mcp2 := b.twoClaudeSessions(t)
+	orig := mustRead(t, mcp2)
+	if err := os.Remove(mcp2); err != nil {
+		t.Fatal(err)
+	}
+	res := mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if !strings.Contains(res.stdout, mcp2+" is not there (session review)") {
+		t.Fatalf("stdout:\n%s", res.stdout)
+	}
+	b.wantMCP(t, mcp1, "demo", "30", "10m")
+	if rec := b.record(t, "demo"); rec.Cap != 30 {
+		t.Fatalf("record cap %d, want 30", rec.Cap)
+	}
+
+	// The cap-8 file comes back: the very bytes the record still has a digest of.
+	if err := os.WriteFile(mcp2, orig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	b.wantMCP(t, mcp2, "demo", "30", "10m")
+	if strings.Contains(res.stdout, "nothing was changed") {
+		t.Errorf("a run that wrote a file says nothing was changed:\n%s", res.stdout)
+	}
+	for _, want := range []string{
+		"Rewrote " + mcp2 + " (session review).",
+		"Left " + mcp1 + " as it is (session plan): it already has cap 30 and window 10m.",
+		"review (Claude Code): restart it, resuming its conversation:",
+	} {
+		if !strings.Contains(res.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+		}
+	}
+	b.wantRecordTrue(t)
+	// And now it is a no-op.
+	res = mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if !strings.Contains(res.stdout, "nothing was changed") {
+		t.Errorf("stdout:\n%s", res.stdout)
+	}
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+	mustLine(t, b, b.ldrop("demo", "review")...)
+}
+
+// padRecord makes line.json exactly lineRecordMax bytes, the most the verbs read,
+// by lengthening a field no check looks at.
+func (b *lineBench) padRecord(t *testing.T) {
+	t.Helper()
+	rec := b.record(t, "demo")
+	data, err := writeLineRecord(b.recordDir(), rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Created += strings.Repeat("x", lineRecordMax-len(data))
+	if data, err = writeLineRecord(b.recordDir(), rec); err != nil || len(data) != lineRecordMax {
+		t.Fatalf("the padded record is %d bytes (%v), want %d", len(data), err, lineRecordMax)
+	}
+}
+
+// TestLineSetRefusesBeforeAnyWriteWhenTheRecordWouldGrowPastItsLimit: the size of
+// the records the run will write is checked while it is planned. A record that is at
+// the limit and that the new numbers would lengthen is a refusal with every file and
+// the record as they were, and not a failure after the files were replaced, which
+// would leave stale digests that every rerun fails on the same way; numbers that do
+// not lengthen it go through.
+func TestLineSetRefusesBeforeAnyWriteWhenTheRecordWouldGrowPastItsLimit(t *testing.T) {
+	b := newLineBench(t)
+	mcp1, mcp2 := b.twoClaudeSessions(t)
+	b.padRecord(t)
+	before := b.lsnap(t, filepath.Dir(mcp1), filepath.Dir(mcp2))
+
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 || res.stdout != "" || !strings.Contains(res.stderr, "the line record would be 65537 bytes, over the 65536 bytes") || !strings.Contains(res.stderr, "nothing was changed") {
+		t.Fatalf("exit %d, want a refusal for the size\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	b.wantLineUnchanged(t, before, filepath.Dir(mcp1), filepath.Dir(mcp2))
+	wantNoTempFiles(t, filepath.Dir(mcp1), filepath.Dir(mcp2), b.recordDir())
+
+	// A cap of the same length does not grow it, and goes through.
+	mustLine(t, b, b.lset("demo", "--cap", "9")...)
+	b.wantMCP(t, mcp1, "demo", "9", "10m")
+	b.wantMCP(t, mcp2, "demo", "9", "10m")
+	b.wantRecordTrue(t)
+}
+
+// TestLineSetReprovesAHeldFileBeforeRecordingItsDigest: a file found to hold the bytes
+// the run would write is taken as the line's, and its digest recorded, only if it
+// still is when the record is written; one changed in between is not recorded.
+func TestLineSetReprovesAHeldFileBeforeRecordingItsDigest(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	rec := b.record(t, "demo")
+	// What a `line set --cap 30` killed after it replaced the file leaves: the file
+	// holds what the run writes, and the record the digest of what it replaced.
+	want := rec
+	want.Cap = 30
+	data, err := lineMCPJSON(binPath, want, b.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mcp, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLineSet(rec, b.base, binPath, 30, "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// It is changed after it was judged, and before its digest is recorded.
+	edit(t, mcp, "\n")
+	edited := mustRead(t, mcp)
+	recBefore := string(mustRead(t, filepath.Join(b.recordDir(), "line.json")))
+
+	err = plan.apply(context.Background(), b.recordDir())
+	if err == nil {
+		t.Fatalf("apply recorded the digest of a file that is not what it was found to be")
+	}
+	if !strings.Contains(err.Error(), "will not record the digest of "+mcp+": ") {
+		t.Errorf("apply: %v", err)
+	}
+	if got := mustRead(t, mcp); string(got) != string(edited) {
+		t.Errorf("the edited file was written over:\n%s", got)
+	}
+	if got := string(mustRead(t, filepath.Join(b.recordDir(), "line.json"))); got != recBefore {
+		t.Errorf("the record changed:\n%s", got)
+	}
+	wantNoTempFiles(t, co, b.recordDir())
+}
+
+// TestLineSetAdoptsAFileHoldingWhatItWritesForTheSameNumbersOnly: the state a run
+// killed between a file's rename and its record leaves is gone on from by the same
+// numbers from the same binary, which recognize the file by its exact bytes and
+// record its digest; other numbers are refused for that file, and the refusal says
+// how it was left, and echoes none of the file.
+func TestLineSetAdoptsAFileHoldingWhatItWritesForTheSameNumbersOnly(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	rec := b.record(t, "demo")
+	want := rec
+	want.Cap = 30
+	data, err := lineMCPJSON(binPath, want, b.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mcp, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := b.lsnap(t, co)
+
+	res := b.run(t, b.lset("demo", "--cap", "40")...)
+	if res.code != 1 || res.stdout != "" || !strings.Contains(res.stderr, "will not rewrite "+mcp+": ") ||
+		!strings.Contains(res.stderr, "cut short between replacing this file and recording its digest") || !strings.Contains(res.stderr, "with the same numbers and from the same binary") {
+		t.Fatalf("exit %d, want a refusal saying how the file was left\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	// Nothing of the file's bytes is in it: the file is not shown to be the line's, so
+	// its command, flags and numbers are not echoed.
+	for _, bad := range []string{string(data), "--cap", "--window", "--chair", "mcpServers", "PARLEY_NICK"} {
+		if strings.Contains(res.stderr, bad) || strings.Contains(res.stdout, bad) {
+			t.Errorf("the refusal holds %q, which came from the file:\n%s", bad, res.stderr)
+		}
+	}
+	b.wantLineUnchanged(t, before, co)
+
+	res = mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if !strings.Contains(res.stdout, mcp+" already holds what this run writes (session plan): its digest is recorded.") {
+		t.Errorf("stdout:\n%s", res.stdout)
+	}
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+	b.wantRecordTrue(t)
+	if rec := b.record(t, "demo"); rec.Cap != 30 {
+		t.Errorf("record cap %d, want 30", rec.Cap)
+	}
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+}
+
+// TestLineSetSaysWhatIsGoneWhenTheNumbersAreTheSame: naming the numbers the line has
+// is not an early return that hides a launch file that is gone: it is named, with the
+// way back for the sessions that use it, and nothing is written.
+func TestLineSetSaysWhatIsGoneWhenTheNumbersAreTheSame(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co, "--model", "opus")
+	b.mustAdd(t, "demo", "review", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	if err := os.Remove(mcp); err != nil {
+		t.Fatal(err)
+	}
+	before := b.lsnap(t, co)
+
+	res := mustLine(t, b, b.lset("demo", "--cap", "8", "--window", "10m")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	if strings.Contains(res.stdout, "nothing was changed") {
+		t.Errorf("a run that finds a launch file gone says nothing was changed:\n%s", res.stdout)
+	}
+	if strings.Contains(res.stdout, "Updated") || strings.Contains(res.stdout, "--resume") {
+		t.Errorf("a run that writes nothing says it updated the record, or tells a session with no file to resume:\n%s", res.stdout)
+	}
+	wantInOrder(t, res.stdout, []string{
+		"Line demo already has cap 8 and window 10m; nothing was written.",
+		mcp + " is not there (sessions plan, review), so nothing was written for it.",
+	})
+	for _, nick := range []string{"plan", "review"} {
+		if want := nick + " (Claude Code): " + mcp + " is not there, so restarting it loads no parley server."; !strings.Contains(res.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+		}
+	}
+	drop := lineWith(t, res.stdout, "line drop", "-- demo plan")
+	add := lineWith(t, res.stdout, "line add --nick plan")
+	if want := "writes the file with the line's numbers"; !strings.Contains(res.stdout, want) {
+		t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+	}
+	if strings.Contains(res.stdout, "primer still states the old numbers") {
+		t.Errorf("no number changed, so no primer went stale:\n%s", res.stdout)
+	}
+	b.wantLineUnchanged(t, before, co)
+
+	// The way back runs as printed.
+	for _, line := range []string{drop, add} {
+		if r := b.runBinaryIn(t, "sh", "-c", line); r.code != 0 {
+			t.Fatalf("%s exited %d\n%s%s", line, r.code, r.stdout, r.stderr)
+		}
+	}
+	b.wantMCP(t, mcp, "demo", "8", "10m")
+}
+
+// TestLineSetNamesAnotherBinaryWhenTheNumbersAreTheSame: a file that runs another
+// parley binary and has the numbers asked for is left, and the note that says whose it
+// is is printed all the same, not hidden by an early return.
+func TestLineSetNamesAnotherBinaryWhenTheNumbersAreTheSame(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	dev := filepath.Join(b.root, "parley-dev")
+	if err := os.WriteFile(dev, mustRead(t, binPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if res := b.runBinaryIn(t, dev, b.ladd("demo", "plan", "claude", co)...); res.code != 0 {
+		t.Fatalf("line add by the other binary exited %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+	mcp := filepath.Join(co, ".mcp.json")
+	cmd, _ := readMCP(t, mcp)
+	if cmd == binPath {
+		t.Fatalf("the file runs %q, want the other binary", cmd)
+	}
+	before := b.lsnap(t, co)
+
+	res := mustLine(t, b, b.lset("demo", "--cap", "8")...)
+	note := "Note: the parley command in " + mcp + " is " + cmd + ", not " + binPath + ", the binary running line set; the file already has the numbers asked for, so this run leaves it as it is."
+	if !strings.Contains(res.stdout, note) || !strings.Contains(res.stdout, "nothing was changed") {
+		t.Errorf("stdout:\n%s", res.stdout)
+	}
+	b.wantLineUnchanged(t, before, co)
+}
+
+// TestLineSetChecksTheContextBeforeEveryWrite: a run stopped before its first file is
+// written has written nothing, a run with no file to write still does not commit the
+// numbers once it is cancelled, and an interrupt that comes while the last file is
+// replaced is seen before the numbers are written; each says what was done.
+func TestLineSetChecksTheContextBeforeEveryWrite(t *testing.T) {
+	t.Run("nothing to rewrite", func(t *testing.T) {
+		b := newLineBench(t)
+		lineUp(t, b, "demo")
+		co := b.gitWorkdir(t, "co")
+		b.mustAdd(t, "demo", "plan", "claude", co)
+		if err := os.Remove(filepath.Join(co, ".mcp.json")); err != nil {
+			t.Fatal(err)
+		}
+		before := b.lsnap(t, co)
+		plan, err := planLineSet(b.record(t, "demo"), b.base, binPath, 30, "10m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err = plan.apply(ctx, b.recordDir())
+		if err == nil || !strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), "line.json was not changed and holds cap 8, window 10m") {
+			t.Fatalf("apply under a cancelled context, with no file to write: %v", err)
+		}
+		b.wantLineUnchanged(t, before, co)
+	})
+
+	t.Run("while the last file is replaced", func(t *testing.T) {
+		b := newLineBench(t)
+		lineUp(t, b, "demo")
+		co := b.gitWorkdir(t, "co")
+		b.mustAdd(t, "demo", "plan", "claude", co)
+		mcp := filepath.Join(co, ".mcp.json")
+		plan, err := planLineSet(b.record(t, "demo"), b.base, binPath, 30, "10m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Live when the file is about to be written; cancelled by the time the numbers are.
+		err = plan.apply(&cancelAfter{Context: context.Background(), left: 1}, b.recordDir())
+		if err == nil || !strings.Contains(err.Error(), "interrupted") {
+			t.Fatalf("apply cancelled during its last file: %v", err)
+		}
+		for _, want := range []string{"rewritten: " + mcp + ";", "not rewritten: none;", "line.json holds the new digest of " + mcp + ", and cap 8, window 10m, which are written last"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the report lacks %q:\n%v", want, err)
+			}
+		}
+		// The record is true: the file's digest, the old numbers.
+		b.wantMCP(t, mcp, "demo", "30", "10m")
+		if rec := b.record(t, "demo"); rec.Cap != 8 {
+			t.Errorf("the numbers were written, cap %d", rec.Cap)
+		}
+		b.wantRecordTrue(t)
+		mustLine(t, b, b.ldrop("demo", "plan")...)
+	})
+}
+
+// TestLineSetIsConsistentWhereverItIsInterrupted: a run over two files asks its context
+// three times, before each file and before the numbers. Stopped at any of them, the
+// record is true of the files, and a run with other numbers goes on from there and ends
+// with every file and the record agreeing.
+func TestLineSetIsConsistentWhereverItIsInterrupted(t *testing.T) {
+	const questions = 3
+	for cut := 0; cut <= questions; cut++ {
+		t.Run(fmt.Sprintf("cancelled after %d questions", cut), func(t *testing.T) {
+			b := newLineBench(t)
+			mcp1, mcp2 := b.twoClaudeSessions(t)
+			plan, err := planLineSet(b.record(t, "demo"), b.base, binPath, 30, "10m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = plan.apply(&cancelAfter{Context: context.Background(), left: cut}, b.recordDir())
+			b.wantRecordTrue(t)
+			rec := b.record(t, "demo")
+			if cut == questions {
+				// Not cut: every file and the record have the numbers.
+				if err != nil {
+					t.Fatalf("apply: %v", err)
+				}
+				b.wantMCP(t, mcp1, "demo", "30", "10m")
+				b.wantMCP(t, mcp2, "demo", "30", "10m")
+				if rec.Cap != 30 {
+					t.Errorf("record cap %d, want 30", rec.Cap)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "interrupted") {
+				t.Fatalf("apply cancelled after %d questions: %v", cut, err)
+			}
+			if rec.Cap != 8 {
+				t.Errorf("record cap %d, want the old numbers until the last step", rec.Cap)
+			}
+			// Other numbers go on from wherever it was cut.
+			mustLine(t, b, b.lset("demo", "--cap", "40", "--window", "5m")...)
+			b.wantMCP(t, mcp1, "demo", "40", "5m")
+			b.wantMCP(t, mcp2, "demo", "40", "5m")
+			if rec := b.record(t, "demo"); rec.Cap != 40 || rec.Window != "5m" {
+				t.Errorf("record cap %d window %s, want 40 and 5m", rec.Cap, rec.Window)
+			}
+			b.wantRecordTrue(t)
+			mustLine(t, b, b.ldrop("demo", "plan")...)
+			mustLine(t, b, b.ldrop("demo", "review")...)
+		})
+	}
+}
+
+// TestLineSetEveryRunConverges: a run is cut after the first of two files (the second
+// cannot be written), and a run with other numbers completes from there, with every
+// file and the record in agreement; so does a run with the numbers the cut one had, and
+// one with the record's own.
+func TestLineSetEveryRunConverges(t *testing.T) {
+	b := newLineBench(t)
+	mcp1, mcp2, _ := b.partWay(t, "")
+	b.wantMCP(t, mcp1, "demo", "30", "10m")
+	b.wantMCP(t, mcp2, "demo", "8", "10m")
+
+	for _, step := range []struct {
+		capN   int
+		window string
+	}{{40, "5m"}, {30, "10m"}, {8, "10m"}} {
+		res := mustLine(t, b, b.lset("demo", "--cap", strconv.Itoa(step.capN), "--window", step.window)...)
+		if strings.Contains(res.stdout, "nothing was changed") {
+			t.Errorf("--cap %d: a run that wrote files says nothing was changed:\n%s", step.capN, res.stdout)
+		}
+		cap := strconv.Itoa(step.capN)
+		b.wantMCP(t, mcp1, "demo", cap, step.window)
+		b.wantMCP(t, mcp2, "demo", cap, step.window)
+		if rec := b.record(t, "demo"); rec.Cap != step.capN || rec.Window != step.window {
+			t.Errorf("--cap %d --window %s: record cap %d window %s", step.capN, step.window, rec.Cap, rec.Window)
+		}
+		b.wantRecordTrue(t)
+		wantNoTempFiles(t, filepath.Dir(mcp1), filepath.Dir(mcp2), b.recordDir())
+	}
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+	mustLine(t, b, b.ldrop("demo", "review")...)
+}
+
+// TestLineSetRecordsEachFileAsItIsWritten: after the first of two files the record
+// holds that file's new digest and the old numbers, and `line drop` recognizes every
+// file: the first by its new digest, the second by the one it always had.
+func TestLineSetRecordsEachFileAsItIsWritten(t *testing.T) {
+	b := newLineBench(t)
+	mcp1, mcp2, _ := b.partWay(t, "")
+	rec := b.record(t, "demo")
+	if rec.Cap != 8 || rec.Window != "10m" {
+		t.Errorf("record cap %d window %s, want the old numbers, 8 and 10m", rec.Cap, rec.Window)
+	}
+	b.wantRecordTrue(t)
+	if got := sessionByNick(t, rec, "plan").Files[0].SHA256; got != fileDigestOf(t, mcp1) {
+		t.Errorf("plan's digest %s, want the first file's, %s", got, fileDigestOf(t, mcp1))
+	}
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+	mustLine(t, b, b.ldrop("demo", "review")...)
+	for _, f := range []string{mcp1, mcp2} {
+		if _, err := os.Lstat(f); err == nil {
+			t.Errorf("%s is still there: drop did not recognize it", f)
+		}
+	}
+}
+
+// TestLineSetRecordWriteFailingAfterARenameIsFinishedByTheSameNumbers: the record cannot
+// be written once the first file has been replaced (the record's directory is not
+// writable, as a full disk would also do). The report says the record was not changed
+// and does not hold the file's digest, and names the line that finishes it; other
+// numbers get the documented refusal, with nothing changed; the same numbers
+// recognize the file by its bytes, record its digest and finish, and tell its session to
+// restart.
+func TestLineSetRecordWriteFailingAfterARenameIsFinishedByTheSameNumbers(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a directory's mode does not stop root writing in it")
+	}
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "plan", "claude", co)
+	mcp := filepath.Join(co, ".mcp.json")
+	plan, err := planLineSet(b.record(t, "demo"), b.base, binPath, 30, "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(b.recordDir(), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(b.recordDir(), 0o700) })
+	err = plan.apply(context.Background(), b.recordDir())
+	if err := os.Chmod(b.recordDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err == nil {
+		t.Fatal("apply succeeded with a record that could not be written")
+	}
+	finish := b.setLine(binPath, 30, "10m")
+	for _, want := range []string{
+		"rewritten: " + mcp + ";", "not rewritten: none;",
+		"line.json was not changed and holds cap 8, window 10m; it does not hold the digest of " + mcp,
+		mcp + " holds the bytes this run writes: once the cause is cleared, finish with " + finish + ", the same numbers from the same binary",
+		"other numbers are refused for that file until then",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure lacks %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "holds the new digest of none") {
+		t.Errorf("the failure says the record holds the digest of none:\n%v", err)
+	}
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+	if rec := b.record(t, "demo"); rec.Cap != 8 || sessionByNick(t, rec, "plan").Files[0].SHA256 == fileDigestOf(t, mcp) {
+		t.Fatalf("the record changed: %+v", rec)
+	}
+	wantNoTempFiles(t, co, b.recordDir())
+
+	// Other numbers: refused, the way a file left by a kill is.
+	before := b.lsnap(t, co)
+	res := b.run(t, b.lset("demo", "--cap", "40")...)
+	if res.code != 1 || res.stdout != "" || !strings.Contains(res.stderr, "will not rewrite "+mcp+": ") ||
+		!strings.Contains(res.stderr, "cut short between replacing this file and recording its digest") {
+		t.Fatalf("exit %d, want the documented refusal\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	b.wantLineUnchanged(t, before, co)
+
+	// The same numbers adopt the file and finish.
+	res = b.runBinaryIn(t, "sh", "-c", finish)
+	if res.code != 0 {
+		t.Fatalf("the printed command exited %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	for _, want := range []string{
+		mcp + " already holds what this run writes (session plan): its digest is recorded.",
+		"plan (Claude Code): restart it, resuming its conversation:",
+	} {
+		if !strings.Contains(res.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+		}
+	}
+	if rec := b.record(t, "demo"); rec.Cap != 30 {
+		t.Errorf("record cap %d, want 30", rec.Cap)
+	}
+	b.wantRecordTrue(t)
+	mustLine(t, b, b.ldrop("demo", "plan")...)
+}
+
+// TestLineSetSameNumbersThatAdoptsAHeldFileTellsItsSessionsToRestart: a run that names
+// the record's own numbers and finds a file holding the bytes it would write (the
+// earlier run was killed after replacing it, and a front may have started from what it
+// held before) records the digest and tells that file's sessions to restart, and no
+// other.
+func TestLineSetSameNumbersThatAdoptsAHeldFileTellsItsSessionsToRestart(t *testing.T) {
+	b := newLineBench(t)
+	mcp1, mcp2 := b.twoClaudeSessions(t)
+	rec := b.record(t, "demo")
+	// The record has the digest of a file that said cap 30, as an earlier cut-short run
+	// leaves it, while the file holds the bytes for the record's own numbers.
+	other := rec
+	other.Cap = 30
+	data, err := lineMCPJSON(binPath, other, b.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Sessions[0].Files[0].SHA256 = tableDigest(data)
+	if _, err := writeLineRecord(b.recordDir(), rec); err != nil {
+		t.Fatal(err)
+	}
+
+	res := mustLine(t, b, b.lset("demo", "--cap", "8")...)
+	t.Logf("stdout:\n%s", res.stdout)
+	for _, want := range []string{
+		mcp1 + " already holds what this run writes (session plan): its digest is recorded.",
+		"Left " + mcp2 + " as it is (session review): it already has cap 8 and window 10m.",
+		"plan (Claude Code): restart it, resuming its conversation:",
+	} {
+		if !strings.Contains(res.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
+		}
+	}
+	for _, bad := range []string{"review (Claude Code)", "no session needs a restart", "still states the old numbers"} {
+		if strings.Contains(res.stdout, bad) {
+			t.Errorf("stdout says %q:\n%s", bad, res.stdout)
+		}
+	}
+	if got := sessionByNick(t, b.record(t, "demo"), "plan").Files[0].SHA256; got != fileDigestOf(t, mcp1) {
+		t.Errorf("plan's digest %s, want the file's, %s", got, fileDigestOf(t, mcp1))
+	}
+	b.wantRecordTrue(t)
+}
+
+// failAfter is a writer that takes n writes and fails every one after them, as a
+// stdout does once its reader has closed the pipe.
+type failAfter struct {
+	n   int
+	err error
+	got strings.Builder
+}
+
+func (w *failAfter) Write(p []byte) (int, error) {
+	if w.n <= 0 {
+		return 0, w.err
+	}
+	w.n--
+	w.got.Write(p)
+	return len(p), nil
+}
+
+// TestLineSetReportThatCannotBeWrittenIsCarriedByTheError: the files and the record are
+// committed, and standard output fails when the report is written (the note before it
+// went through). A rerun would be a no-op and print nothing, so the error carries the
+// whole report, every session's restart line and pump line, and says so.
+func TestLineSetReportThatCannotBeWrittenIsCarriedByTheError(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-build")
+	// The Claude file runs another binary, so that the run prints a note before it writes.
+	dev := filepath.Join(b.root, "parley-dev")
+	if err := os.WriteFile(dev, mustRead(t, binPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if res := b.runBinaryIn(t, dev, b.ladd("demo", "plan", "claude", co1)...); res.code != 0 {
+		t.Fatalf("line add by the other binary exited %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+	b.mustAdd(t, "demo", "build", "codex", co2)
+	mcp := filepath.Join(co1, ".mcp.json")
+	pipe := errors.New("write |1: broken pipe")
+	out := &failAfter{n: 1, err: pipe}
+
+	err := runLineSet(context.Background(), out, b.record(t, "demo"), b.base, binPath, 30, "10m")
+	if err == nil {
+		t.Fatal("runLineSet succeeded though its report could not be written")
+	}
+	if !strings.HasPrefix(out.got.String(), "Note: the parley command in "+mcp) || strings.Contains(out.got.String(), "Line demo now has") {
+		t.Fatalf("the writer took %q, want the note only", out.got.String())
+	}
+	pump := fmt.Sprintf("'%s' codex --stream '%s' --nick build --state-dir '%s' --thread auto --skill line --chair colin --cap 30 --window 10m", binPath, b.stream("demo"), b.base)
+	for _, want := range []string{
+		"line demo is changed (cap 30, window 10m) but its report could not be written to standard output (" + pipe.Error() + ")",
+		"in full, so the change can be completed without changing the numbers again",
+		"Line demo now has cap 30 (was 8) and window 10m (unchanged).",
+		"Rewrote " + mcp + " (session plan).",
+		"plan (Claude Code): restart it, resuming its conversation:",
+		"PARLEY_NICK=plan claude --dangerously-load-development-channels server:parley --resume <session-id>",
+		"build (Codex): stop its pump, which holds the old numbers, and start this one in its place; the Codex session itself keeps running:",
+		pump,
+		"Each session's primer still states the old numbers",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %q:\n%v", want, err)
+		}
+	}
+	// It is committed, and a rerun says nothing is left to change: the error was the one place.
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+	b.wantRecordTrue(t)
+	if rec := b.record(t, "demo"); rec.Cap != 30 {
+		t.Errorf("record cap %d, want 30", rec.Cap)
+	}
+	res := mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if !strings.Contains(res.stdout, "nothing was changed") || strings.Contains(res.stdout, "restart it") {
+		t.Errorf("a rerun:\n%s", res.stdout)
+	}
+
+	// A run that changed nothing carries no report: running it again prints it.
+	out = &failAfter{n: 0, err: pipe}
+	err = runLineSet(context.Background(), out, b.record(t, "demo"), b.base, binPath, 30, "10m")
+	if err == nil || !strings.Contains(err.Error(), "nothing was changed") || strings.Contains(err.Error(), "restart it") {
+		t.Errorf("a no-op whose report could not be written: %v", err)
+	}
+}
+
+// TestLineSetPrintedRecipesRunForANickThatBeginsWithADash: stream.ValidNick allows a
+// nick like -plan, and the commands line set prints put their options first, then "--",
+// then the id and the nick, so that they run as they stand through sh -c: the recipe for
+// a launch file that is not the line's, and the way back for one that is not there.
+func TestLineSetPrintedRecipesRunForANickThatBeginsWithADash(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "-plan", "claude", co, "--model", "m1")
+	mcp := filepath.Join(co, ".mcp.json")
+	edit(t, mcp, "# mine\n")
+
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 {
+		t.Fatalf("exit %d, want 1\n%s%s", res.code, res.stdout, res.stderr)
+	}
+	drop := fmt.Sprintf("%s line drop --force --state-dir %s -- demo -plan", q(binPath), q(b.base))
+	add := fmt.Sprintf("%s line add --nick -plan --harness claude --workdir %s --model 'm1' --state-dir %s -- demo", q(binPath), q(co), q(b.base))
+	for _, want := range []string{drop, add} {
+		if !strings.Contains(res.stderr, want) {
+			t.Fatalf("the refusal lacks %q:\n%s", want, res.stderr)
+		}
+	}
+	if r := b.runBinaryIn(t, "sh", "-c", drop); r.code != 0 {
+		t.Fatalf("%s exited %d\n%s%s", drop, r.code, r.stdout, r.stderr)
+	}
+	if err := os.Rename(mcp, mcp+".mine"); err != nil {
+		t.Fatal(err)
+	}
+	if r := b.runBinaryIn(t, "sh", "-c", add); r.code != 0 {
+		t.Fatalf("%s exited %d\n%s%s", add, r.code, r.stdout, r.stderr)
+	}
+	mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+
+	// The way back for a file that is not there.
+	if err := os.Remove(mcp); err != nil {
+		t.Fatal(err)
+	}
+	res = mustLine(t, b, b.lset("demo", "--cap", "40")...)
+	wayDrop := lineWith(t, res.stdout, "line drop", "-- demo -plan")
+	wayAdd := lineWith(t, res.stdout, "line add --nick -plan")
+	if want := fmt.Sprintf("%s line drop --state-dir %s -- demo -plan", q(binPath), q(b.base)); wayDrop != want {
+		t.Errorf("the drop line is\n%s\nwant\n%s", wayDrop, want)
+	}
+	for _, line := range []string{wayDrop, wayAdd} {
+		if r := b.runBinaryIn(t, "sh", "-c", line); r.code != 0 {
+			t.Fatalf("%s exited %d\n%s%s", line, r.code, r.stdout, r.stderr)
+		}
+	}
+	b.wantMCP(t, mcp, "demo", "40", "10m")
+	b.wantRecordTrue(t)
+	mustLine(t, b, "line", "drop", "--state-dir", b.base, "--", "demo", "-plan")
+}
+
+// TestLineSetSameNumbersIsANoOpForAChairNamedLikeAFlag: stream.ValidNick accepts a chair
+// called --cap or --window, so the args of a launch file hold that name right before
+// the real flag. The numbers are read as the channel front reads them, so a file that
+// has the numbers asked for is current: the run writes nothing, even where the working
+// directory cannot be written, and a run that does change them reads the result right.
+func TestLineSetSameNumbersIsANoOpForAChairNamedLikeAFlag(t *testing.T) {
+	for _, chair := range []string{"--cap", "--window"} {
+		t.Run("chair "+chair, func(t *testing.T) {
+			b := newLineBench(t)
+			lineUp(t, b, "demo", "--chair", chair)
+			co := b.gitWorkdir(t, "co")
+			b.mustAdd(t, "demo", "plan", "claude", co)
+			mcp := filepath.Join(co, ".mcp.json")
+			numbers := func(want launchSettings) {
+				t.Helper()
+				rec := b.record(t, "demo")
+				got := readLaunchSettings(lineFile{Path: mcp, SHA256: sessionByNick(t, rec, "plan").Files[0].SHA256})
+				if !got.numbers || got.capN != want.capN || got.window != want.window {
+					t.Errorf("the file says %+v, want cap %d, window %s", got, want.capN, want.window)
+				}
+			}
+			numbers(launchSettings{capN: 8, window: 10 * time.Minute})
+			before := b.lsnap(t, co)
+
+			res := mustLine(t, b, b.lset("demo", "--cap", "8", "--window", "10m")...)
+			if !strings.Contains(res.stdout, "nothing was changed") || strings.Contains(res.stdout, "Rewrote") {
+				t.Errorf("a same-numbers run wrote a file:\n%s", res.stdout)
+			}
+			b.wantLineUnchanged(t, before, co)
+			if os.Geteuid() != 0 {
+				if err := os.Chmod(co, 0o555); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Chmod(co, 0o755) })
+				res = b.run(t, b.lset("demo", "--cap", "8")...)
+				if res.code != 0 || !strings.Contains(res.stdout, "nothing was changed") {
+					t.Errorf("a same-numbers run in a directory that cannot be written: exit %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+				}
+				if err := os.Chmod(co, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			mustLine(t, b, b.lset("demo", "--cap", "30", "--window", "5m")...)
+			numbers(launchSettings{capN: 30, window: 5 * time.Minute})
+			b.wantRecordTrue(t)
+			before = b.lsnap(t, co)
+			res = mustLine(t, b, b.lset("demo", "--cap", "30", "--window", "5m")...)
+			if !strings.Contains(res.stdout, "nothing was changed") {
+				t.Errorf("stdout:\n%s", res.stdout)
+			}
+			b.wantLineUnchanged(t, before, co)
+			mustLine(t, b, b.ldrop("demo", "plan")...)
+		})
+	}
+}
+
+// halfRepaired is line demo of two Claude sessions whose files say cap 8 while the record
+// already holds cap 30, the numbers a run is about to ask for, as an earlier cut-short
+// run leaves it: both files are to be written, and the record's numbers do not change.
+func (b *lineBench) halfRepaired(t *testing.T) (mcp1, mcp2 string) {
+	t.Helper()
+	mcp1, mcp2 = b.twoClaudeSessions(t)
+	rec := b.record(t, "demo")
+	rec.Cap = 30
+	if _, err := writeLineRecord(b.recordDir(), rec); err != nil {
+		t.Fatal(err)
+	}
+	return mcp1, mcp2
+}
+
+// TestLineSetFailureAfterTheFirstFileNamesItsSessions: the record already holds the
+// numbers asked for, the first of two files is replaced, and the second cannot be
+// written. A rerun finds the first file current and says nothing of its session, whose
+// front still holds the old numbers, so the failure itself says to restart it, with
+// its line, and says nothing of the session whose file was not touched.
+func TestLineSetFailureAfterTheFirstFileNamesItsSessions(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a directory's mode does not stop root writing in it")
+	}
+	b := newLineBench(t)
+	mcp1, mcp2 := b.halfRepaired(t)
+	co1, co2 := filepath.Dir(mcp1), filepath.Dir(mcp2)
+	if err := os.Chmod(co2, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(co2, 0o755) })
+
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 {
+		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	for _, want := range []string{
+		"rewritten: " + mcp1 + ";", "not rewritten: " + mcp2 + ";",
+		"plan (Claude Code): restart it, resuming its conversation:",
+		"cd '" + co1 + "'",
+		"PARLEY_NICK=plan claude --dangerously-load-development-channels server:parley --resume <session-id>",
+	} {
+		if !strings.Contains(res.stderr, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, res.stderr)
+		}
+	}
+	if strings.Contains(res.stderr, "review (Claude Code)") {
+		t.Errorf("stderr tells the session whose file was not written to restart:\n%s", res.stderr)
+	}
+	b.wantMCP(t, mcp1, "demo", "30", "10m")
+
+	// The rerun leaves the first file out, which is why the failure had to say it.
+	if err := os.Chmod(co2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res = mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if !strings.Contains(res.stdout, "Left "+mcp1+" as it is (session plan)") || strings.Contains(res.stdout, "plan (Claude Code)") ||
+		!strings.Contains(res.stdout, "review (Claude Code): restart it, resuming its conversation:") {
+		t.Errorf("the rerun:\n%s", res.stdout)
+	}
+}
+
+// TestLineSetCancelledAfterTheFirstFileNamesItsSessions: the same, stopped by an
+// interrupt before the second file: the error names the first file's session with its
+// restart line.
+func TestLineSetCancelledAfterTheFirstFileNamesItsSessions(t *testing.T) {
+	b := newLineBench(t)
+	mcp1, mcp2 := b.halfRepaired(t)
+	plan, err := planLineSet(b.record(t, "demo"), b.base, binPath, 30, "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Live before the first file, cancelled before the second.
+	err = plan.apply(&cancelAfter{Context: context.Background(), left: 1}, b.recordDir())
+	if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("apply cancelled after its first file: %v", err)
+	}
+	for _, want := range []string{
+		"rewritten: " + mcp1 + ";", "not rewritten: " + mcp2 + ";",
+		"plan (Claude Code): restart it, resuming its conversation:",
+		"--resume <session-id>",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "review (Claude Code)") {
+		t.Errorf("the error tells the session whose file was not written to restart:\n%v", err)
+	}
+	b.wantMCP(t, mcp1, "demo", "30", "10m")
+	b.wantMCP(t, mcp2, "demo", "8", "10m")
+	b.wantRecordTrue(t)
+}
