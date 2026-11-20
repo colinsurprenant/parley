@@ -657,7 +657,7 @@ func TestLineSetFailurePartWayIsReportedAndRunningAgainFinishes(t *testing.T) {
 	}
 	t.Logf("stdout:\n%s", res.stdout)
 	for _, want := range []string{
-		mcp1 + " already held the new numbers (session plan), as a run cut short leaves it: its digest is recorded.",
+		mcp1 + " already holds what this run writes (session plan): its digest is recorded.",
 		"Rewrote " + mcp2 + " (session review).",
 	} {
 		if !strings.Contains(res.stdout, want) {
@@ -1285,5 +1285,30 @@ func TestPlanLineSetSameNumbersWithAStaleDigestIsNotANoOp(t *testing.T) {
 	plan, err = planLineSet(rec, b.base, binPath, rec.Cap, rec.Window)
 	if err != nil || !plan.staleDigests() {
 		t.Fatalf("the record's digest is stale: %v, stale %v", err, plan != nil && plan.staleDigests())
+	}
+	// Such a run changes no number, so it tells nobody to restart, and does not call
+	// the numbers a pump holds old.
+	out := plan.report(filepath.Join(b.base, "lines", "demo", "line.json"))
+	if !strings.Contains(out, "already holds what this run writes (session plan): its digest is recorded.") ||
+		!strings.Contains(out, "The numbers are the ones the line had, so no session needs a restart") {
+		t.Errorf("the report of a run that only records a digest:\n%s", out)
+	}
+	for _, bad := range []string{"restart it", "stop its pump", "still states the old numbers", "Nothing that is running changes yet"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("the report of a run that changed no number says %q:\n%s", bad, out)
+		}
+	}
+	// With other numbers, on a record whose digest is right, it is a change that has to
+	// reach the sessions.
+	fresh, _, err := readLineRecord(b.base, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = planLineSet(fresh, b.base, binPath, fresh.Cap+1, fresh.Window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := plan.report("line.json"); !strings.Contains(out, "plan (Claude Code): restart it") || strings.Contains(out, "no session needs a restart") {
+		t.Errorf("the report of a run that changed the cap:\n%s", out)
 	}
 }

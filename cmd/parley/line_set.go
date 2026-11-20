@@ -463,7 +463,7 @@ func (p *lineSetPlan) report(recordPath string) string {
 		case setRewrite:
 			fmt.Fprintf(&b, "Rewrote %s (%s).\n", lf.path, users)
 		case setHolds:
-			fmt.Fprintf(&b, "%s already held the new numbers (%s), as a run cut short leaves it: its digest is recorded.\n", lf.path, users)
+			fmt.Fprintf(&b, "%s already holds what this run writes (%s): its digest is recorded.\n", lf.path, users)
 		case setUntouched:
 			fmt.Fprintf(&b, "Left %s as it is (%s): it carries neither number.\n", lf.path, users)
 		case setGone:
@@ -472,6 +472,12 @@ func (p *lineSetPlan) report(recordPath string) string {
 	}
 	fmt.Fprintf(&b, "Updated %s.\n", recordPath)
 
+	// A run that only brought the recorded digests up to date changed no number, and
+	// nothing running holds old ones.
+	if old.Cap == next.Cap && old.Window == next.Window {
+		b.WriteString("The numbers are the ones the line had, so no session needs a restart: only the digests the record holds were brought up to date.\n")
+		return b.String()
+	}
 	if len(old.Sessions) == 0 {
 		b.WriteString("No session is on the line yet: line add passes the new numbers on.\n")
 		return b.String()
