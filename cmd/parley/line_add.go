@@ -116,7 +116,7 @@ func cmdLineAdd(args []string) error {
 	}
 	signal.Ignore(syscall.SIGPIPE)
 	if _, err := io.WriteString(os.Stdout, p.runbook(run)); err != nil {
-		return fmt.Errorf("session %s is added but its instructions could not be written (%v): parley line drop %s %s takes it off", p.nick, err, p.id, p.nick)
+		return fmt.Errorf("session %s is added but its instructions could not be written (%v): parley line drop -- %s %s takes it off", p.nick, err, p.id, p.nick)
 	}
 	return nil
 }
@@ -333,7 +333,7 @@ func (p *linePlan) bind() error {
 		return cfgErrf("--nick %q is the chair's (%q): the chair is another voice than any session, and nicks are the same without regard to ASCII case", p.nick, rec.Chair)
 	}
 	if i, ok := rec.session(p.nick); ok {
-		return cfgErrf("--nick %q is already session %q of line %q, and nicks are the same without regard to ASCII case: parley line drop %s %s takes it off first", p.nick, rec.Sessions[i].Nick, p.id, p.id, rec.Sessions[i].Nick)
+		return cfgErrf("--nick %q is already session %q of line %q, and nicks are the same without regard to ASCII case: parley line drop -- %s %s takes it off first", p.nick, rec.Sessions[i].Nick, p.id, p.id, rec.Sessions[i].Nick)
 	}
 	p.group = rec.sharing(p.harness, p.workdir, -1)
 

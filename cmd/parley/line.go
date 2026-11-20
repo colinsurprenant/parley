@@ -145,11 +145,20 @@ const (
 // anywhere among the flags, as `parley line drop demo plan --force` and `parley
 // line drop demo --force plan` both write it, and returns the positionals in
 // order. The flag package stops at the first one, so it is parsed again after
-// each. A help request is flag.ErrHelp, a bad flag any other error, as with
-// parseFlags.
+// each. A "--" ends the flags for good: what follows it is positional, a nick
+// that begins with '-' (stream.ValidNick allows one) included, and is not parsed
+// again, which is why every command a verb prints puts its options first, then
+// "--", then the positionals. A help request is flag.ErrHelp, a bad flag any
+// other error, as with parseFlags.
 func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for {
+		if end := flagsEnd(fs, args); end >= 0 {
+			if err := parseFlags(fs, args[:end]); err != nil {
+				return nil, err
+			}
+			return append(pos, args[end+1:]...), nil
+		}
 		if err := parseFlags(fs, args); err != nil {
 			return nil, err
 		}
@@ -159,6 +168,61 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]
 	}
+}
+
+// flagsEnd is the index in args of the "--" that ends its flags, or -1 when the
+// flags end at a positional argument or at the end of args. It reads args the way
+// the flag package does, up to its first positional: a flag that takes a value takes
+// the next argument whatever it begins with, so a "--" that is a flag's value is not
+// one that ends them. What it cannot place (an unknown flag, bad syntax) is left to
+// the parse, which reports it.
+func flagsEnd(fs *flag.FlagSet, args []string) int {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if len(a) < 2 || a[0] != '-' {
+			return -1
+		}
+		if a == "--" {
+			return i
+		}
+		name := strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-")
+		if name == "" || name[0] == '-' || name[0] == '=' {
+			return -1
+		}
+		if strings.Contains(name, "=") {
+			continue
+		}
+		f := fs.Lookup(name)
+		if f == nil {
+			return -1
+		}
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !b.IsBoolFlag() {
+			i++
+		}
+	}
+	return -1
+}
+
+// lineDropCommand is the `line drop` of session nick on line id, run by the binary
+// self, as it is printed: options first, then "--", then the positionals, so that a
+// nick that begins with '-' is not read as a flag. force adds --force.
+func lineDropCommand(self, id, nick, base string, force bool) string {
+	cmd := q(self) + " line drop"
+	if force {
+		cmd += " --force"
+	}
+	return fmt.Sprintf("%s --state-dir %s -- %s %s", cmd, q(base), id, nick)
+}
+
+// lineAddCommand is the `line add` that puts session s on line id again, run by the
+// binary self, as it is printed: every option, then "--", then the id. The nick is
+// the value of --nick, which the flag package takes whatever it begins with.
+func lineAddCommand(self, id string, s lineSession, base string) string {
+	cmd := fmt.Sprintf("%s line add --nick %s --harness %s --workdir %s", q(self), s.Nick, s.Harness, q(s.Workdir))
+	if s.Model != "" {
+		cmd += " --model " + q(s.Model)
+	}
+	return fmt.Sprintf("%s --state-dir %s -- %s", cmd, q(base), id)
 }
 
 // lineRecord is what `line new` keeps of a line so that the other verbs can act

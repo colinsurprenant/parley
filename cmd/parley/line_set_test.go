@@ -850,9 +850,9 @@ func TestPlanLineSetRefusesAClaudeLaunchItWouldPushOverTheCap(t *testing.T) {
 }
 
 // setLine is the line a failed run prints to finish it: the numbers it had, as the
-// binary that ran it, every value quoted.
+// binary that ran it, every value quoted, the options first and then "--" and the id.
 func (b *lineBench) setLine(bin string, capN int, window string) string {
-	return fmt.Sprintf("%s line set %s --cap %d --window %s --state-dir %s", q(bin), q("demo"), capN, q(window), q(b.base))
+	return fmt.Sprintf("%s line set --cap %d --window %s --state-dir %s -- %s", q(bin), capN, q(window), q(b.base), q("demo"))
 }
 
 // partWay makes line demo of two Claude sessions in two working directories whose
@@ -1069,8 +1069,8 @@ func TestLineSetRefusalNamesWhatUnblocksIt(t *testing.T) {
 			wants := []string{"restore the file to the bytes the record has a digest of (" + recorded + ")", "move what is at " + file + " aside"}
 			var drops, adds []string
 			for _, s := range tc.sessions {
-				drops = append(drops, fmt.Sprintf("%s line drop demo %s --force --state-dir %s", q(binPath), s.nick, q(b.base)))
-				adds = append(adds, fmt.Sprintf("%s line add demo --nick %s --harness %s --workdir %s --model 'm1' --state-dir %s", q(binPath), s.nick, s.harness, q(co), q(b.base)))
+				drops = append(drops, fmt.Sprintf("%s line drop --force --state-dir %s -- demo %s", q(binPath), q(b.base), s.nick))
+				adds = append(adds, fmt.Sprintf("%s line add --nick %s --harness %s --workdir %s --model 'm1' --state-dir %s -- demo", q(binPath), s.nick, s.harness, q(co), q(b.base)))
 			}
 			wants = append(wants, drops...)
 			wants = append(wants, adds...)
@@ -1170,9 +1170,9 @@ func TestLineSetTellsAClaudeSessionWithNoLaunchFileHowToGetItBack(t *testing.T) 
 			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
 		}
 	}
-	drop := lineWith(t, res.stdout, "line drop demo plan")
-	add := lineWith(t, res.stdout, "line add demo --nick plan")
-	if want := fmt.Sprintf("%s line add demo --nick plan --harness claude --workdir %s --model 'opus' --state-dir %s", q(binPath), q(co), q(b.base)); add != want {
+	drop := lineWith(t, res.stdout, "line drop", "-- demo plan")
+	add := lineWith(t, res.stdout, "line add --nick plan")
+	if want := fmt.Sprintf("%s line add --nick plan --harness claude --workdir %s --model 'opus' --state-dir %s -- demo", q(binPath), q(co), q(b.base)); add != want {
 		t.Errorf("the add line is\n%s\nwant\n%s", add, want)
 	}
 	for _, line := range []string{drop, add} {

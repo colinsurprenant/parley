@@ -276,8 +276,8 @@ func lineRunbook(rec lineRecord, serverDown bool, self string) string {
 	}
 
 	next("Add each session, one `parley line add` per session, then launch it as that command prints:")
-	cmd(fmt.Sprintf("%s line add %s --nick <nick> --harness <claude|codex|opencode> [--model <model>] [--workdir <absolute dir>] --state-dir %s", q(self), rec.ID, q(rec.StateDir)))
+	cmd(fmt.Sprintf("%s line add --nick <nick> --harness <claude|codex|opencode> [--model <model>] [--workdir <absolute dir>] --state-dir %s -- %s", q(self), q(rec.StateDir), rec.ID))
 
-	fmt.Fprintf(&b, "\nWhen it is over: %s line end %s --state-dir %s\n", q(self), rec.ID, q(rec.StateDir))
+	fmt.Fprintf(&b, "\nWhen it is over: %s line end --state-dir %s -- %s\n", q(self), q(rec.StateDir), rec.ID)
 	return b.String()
 }

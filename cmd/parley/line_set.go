@@ -101,28 +101,38 @@ func cmdLineSet(args []string) error {
 		newWindow = lineWindowFlag(*window)
 	}
 
-	// There is no early return for numbers the line already has: the files are
-	// judged against the numbers asked for, whatever the record says, and a run with
-	// nothing to write goes through the same plan and the same report, so that what
-	// is gone, and the way back for it, is said.
-	self := selfPath()
+	signal.Ignore(syscall.SIGPIPE)
+	return runLineSet(ctx, os.Stdout, rec, base, selfPath(), newCap, newWindow)
+}
+
+// runLineSet judges, writes and reports a `line set` of rec to these numbers, the
+// report going to out. There is no early return for numbers the line already has:
+// the files are judged against the numbers asked for, whatever the record says, and
+// a run with nothing to write goes through the same plan and the same report, so that
+// what is gone, and the way back for it, is said. When the change is committed and
+// out cannot take the report (a reader that closed the pipe), the error carries the
+// whole report, every session's restart or pump line, since a rerun is then a no-op
+// and prints none.
+func runLineSet(ctx context.Context, out io.Writer, rec lineRecord, base, self string, newCap int, newWindow string) error {
 	plan, err := planLineSet(rec, base, self, newCap, newWindow)
 	if err != nil {
 		return err
 	}
-	signal.Ignore(syscall.SIGPIPE)
-	dir := lineDirOf(base, id)
-	if _, err := io.WriteString(os.Stdout, plan.notes()); err != nil {
-		return fmt.Errorf("could not write to standard output (%v); nothing was changed", err)
+	dir := lineDirOf(base, rec.ID)
+	if notes := plan.notes(); notes != "" {
+		if _, err := io.WriteString(out, notes); err != nil {
+			return fmt.Errorf("could not write to standard output (%v); nothing was changed", err)
+		}
 	}
 	if err := plan.apply(ctx, dir); err != nil {
 		return err
 	}
-	if _, err := io.WriteString(os.Stdout, plan.report(filepath.Join(dir, lineRecordName))); err != nil {
+	report := plan.report(filepath.Join(dir, lineRecordName))
+	if _, err := io.WriteString(out, report); err != nil {
 		if !plan.changes() {
 			return fmt.Errorf("could not write to standard output (%v); nothing was changed", err)
 		}
-		return fmt.Errorf("line %s is changed (cap %d, window %s) but what is left for you could not be written: %v", id, newCap, newWindow, err)
+		return fmt.Errorf("line %s is changed (cap %d, window %s) but its report could not be written to standard output (%v); what is left for you follows, in full, so the change can be completed without changing the numbers again:\n\n%s", rec.ID, newCap, newWindow, err, report)
 	}
 	return nil
 }
@@ -346,10 +356,11 @@ func (p *lineSetPlan) changes() bool {
 }
 
 // setCommand is the line that runs this verb for the line with these numbers, as
-// the binary self: runnable as it stands, every value in it quoted. Every value is
-// this run's own or the record's, never read from a launch file.
+// the binary self: runnable as it stands, every value in it quoted, the options first
+// and then "--" and the id. Every value is this run's own or the record's, never read
+// from a launch file.
 func (p *lineSetPlan) setCommand(self string, capN int, window string) string {
-	return fmt.Sprintf("%s line set %s --cap %d --window %s --state-dir %s", q(self), q(p.old.ID), capN, q(window), q(p.base))
+	return fmt.Sprintf("%s line set --cap %d --window %s --state-dir %s -- %s", q(self), capN, q(window), q(p.base), q(p.old.ID))
 }
 
 // refuse is the refusal for a launch file that is not shown to be the line's:
@@ -375,12 +386,8 @@ func (p *lineSetPlan) refuse(lf *lineSetFile, problem string) error {
 	for _, i := range lf.owners {
 		s := p.old.Sessions[i]
 		codex = codex || s.Harness == harnessCodex
-		drops = append(drops, fmt.Sprintf("%s line drop %s %s --force --state-dir %s", q(p.self), p.old.ID, s.Nick, q(p.base)))
-		add := fmt.Sprintf("%s line add %s --nick %s --harness %s --workdir %s", q(p.self), p.old.ID, s.Nick, s.Harness, q(s.Workdir))
-		if s.Model != "" {
-			add += " --model " + q(s.Model)
-		}
-		adds = append(adds, add+" --state-dir "+q(p.base))
+		drops = append(drops, lineDropCommand(p.self, p.old.ID, s.Nick, p.base, true))
+		adds = append(adds, lineAddCommand(p.self, p.old.ID, s, p.base))
 	}
 	fmt.Fprintf(&b, "; to go on, restore the file to the bytes the record has a digest of (%s), or take its sessions off the line (stop each first), move what is at %s aside, and add them again: %s; then %s",
 		f.SHA256, lf.path, strings.Join(drops, "; "), strings.Join(adds, "; "))
@@ -742,16 +749,12 @@ func (p *lineSetPlan) report(recordPath string) string {
 				// A restart would load no parley server at all. A session taken off and
 				// added again is given the file, written with the record's numbers, and
 				// every session of the working directory shares it.
-				add := fmt.Sprintf("%s line add %s --nick %s --harness claude --workdir %s", q(p.self), old.ID, s.Nick, q(s.Workdir))
-				if s.Model != "" {
-					add += " --model " + q(s.Model)
-				}
 				which := "the new numbers"
 				if same {
 					which = "the line's numbers"
 				}
 				fmt.Fprintf(&b, "\n%s (Claude Code): %s is not there, so restarting it loads no parley server. Stop it, take it off the line and add it again, which writes the file with %s (the other sessions of the working directory share it), then launch it as line add prints:\n\n", s.Nick, lf.path, which)
-				fmt.Fprintf(&b, "    %s line drop %s %s --state-dir %s\n    %s --state-dir %s\n", q(p.self), old.ID, s.Nick, q(p.base), add, q(p.base))
+				fmt.Fprintf(&b, "    %s\n    %s\n", lineDropCommand(p.self, old.ID, s.Nick, p.base, false), lineAddCommand(p.self, old.ID, s, p.base))
 				continue
 			}
 			fmt.Fprintf(&b, "\n%s (Claude Code): restart it, resuming its conversation:\n\n", s.Nick)

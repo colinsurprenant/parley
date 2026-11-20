@@ -427,6 +427,48 @@ func TestParseInterleavedTakesPositionalsAnywhere(t *testing.T) {
 	}
 }
 
+// TestParseInterleavedHonoursDoubleDash: a "--" ends the flags, and what follows it is
+// positional even when it begins with '-': a nick like -plan, which ValidNick allows.
+// A "--" that is the value of a flag ends nothing; without one, -plan is a flag.
+func TestParseInterleavedHonoursDoubleDash(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		pos      string
+		force    bool
+		stateDir string
+	}{
+		{"nothing but positionals", []string{"--", "demo", "-plan"}, "demo,-plan", false, ""},
+		{"options first", []string{"--force", "--state-dir", "x", "--", "demo", "-plan"}, "demo,-plan", true, "x"},
+		{"a positional before it", []string{"demo", "--force", "--", "-plan"}, "demo,-plan", true, ""},
+		{"a flag after it is positional", []string{"demo", "--", "--force", "-plan"}, "demo,--force,-plan", false, ""},
+		{"a second one is positional", []string{"--", "--", "demo"}, "--,demo", false, ""},
+		{"it is a flag's value", []string{"--state-dir", "--", "demo"}, "demo", false, "--"},
+		{"a flag's value that looks like it is not the end", []string{"--state-dir=--", "--", "-plan"}, "-plan", false, "--"},
+		{"none", []string{"demo", "plan"}, "demo,plan", false, ""},
+	} {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		force := fs.Bool("force", false, "")
+		dir := fs.String("state-dir", "", "")
+		pos, err := parseInterleaved(fs, tc.args)
+		if err != nil || strings.Join(pos, ",") != tc.pos || *force != tc.force || *dir != tc.stateDir {
+			t.Errorf("%s: %v: positionals %v, force %v, state-dir %q, %v; want %s, %v, %q", tc.name, tc.args, pos, *force, *dir, err, tc.pos, tc.force, tc.stateDir)
+		}
+	}
+	// A flag's value is taken whatever it begins with, which is why --nick -plan, in a
+	// printed line or a pump line, needs no "--".
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	nick := fs.String("nick", "", "")
+	if pos, err := parseInterleaved(fs, []string{"--nick", "-plan", "--", "demo"}); err != nil || *nick != "-plan" || strings.Join(pos, ",") != "demo" {
+		t.Errorf("--nick -plan: nick %q, positionals %v, %v", *nick, pos, err)
+	}
+	fs = flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.Bool("force", false, "")
+	if _, err := parseInterleaved(fs, []string{"demo", "-plan"}); err == nil || !strings.Contains(err.Error(), "flag provided but not defined: -plan") {
+		t.Errorf("-plan with no \"--\" before it: %v, want it taken for an unknown flag", err)
+	}
+}
+
 // TestUsageDocumentsTheLineVerbs: the top usage lists the five verbs and says
 // what each does, and each verb answers -h on stdout with exit 0.
 func TestUsageDocumentsTheLineVerbs(t *testing.T) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -274,8 +275,8 @@ func TestLineSetSaysWhatIsGoneWhenTheNumbersAreTheSame(t *testing.T) {
 			t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
 		}
 	}
-	drop := lineWith(t, res.stdout, "line drop demo plan")
-	add := lineWith(t, res.stdout, "line add demo --nick plan")
+	drop := lineWith(t, res.stdout, "line drop", "-- demo plan")
+	add := lineWith(t, res.stdout, "line add --nick plan")
 	if want := "writes the file with the line's numbers"; !strings.Contains(res.stdout, want) {
 		t.Errorf("stdout lacks %q:\n%s", want, res.stdout)
 	}
@@ -605,4 +606,139 @@ func TestLineSetSameNumbersThatAdoptsAHeldFileTellsItsSessionsToRestart(t *testi
 		t.Errorf("plan's digest %s, want the file's, %s", got, fileDigestOf(t, mcp1))
 	}
 	b.wantRecordTrue(t)
+}
+
+// failAfter is a writer that takes n writes and fails every one after them, as a
+// stdout does once its reader has closed the pipe.
+type failAfter struct {
+	n   int
+	err error
+	got strings.Builder
+}
+
+func (w *failAfter) Write(p []byte) (int, error) {
+	if w.n <= 0 {
+		return 0, w.err
+	}
+	w.n--
+	w.got.Write(p)
+	return len(p), nil
+}
+
+// TestLineSetReportThatCannotBeWrittenIsCarriedByTheError: the files and the record are
+// committed, and standard output fails when the report is written (the note before it
+// went through). A rerun would be a no-op and print nothing, so the error carries the
+// whole report, every session's restart line and pump line, and says so.
+func TestLineSetReportThatCannotBeWrittenIsCarriedByTheError(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co1, co2 := b.gitWorkdir(t, "co-plan"), b.gitWorkdir(t, "co-build")
+	// The Claude file runs another binary, so that the run prints a note before it writes.
+	dev := filepath.Join(b.root, "parley-dev")
+	if err := os.WriteFile(dev, mustRead(t, binPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if res := b.runBinaryIn(t, dev, b.ladd("demo", "plan", "claude", co1)...); res.code != 0 {
+		t.Fatalf("line add by the other binary exited %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+	b.mustAdd(t, "demo", "build", "codex", co2)
+	mcp := filepath.Join(co1, ".mcp.json")
+	pipe := errors.New("write |1: broken pipe")
+	out := &failAfter{n: 1, err: pipe}
+
+	err := runLineSet(context.Background(), out, b.record(t, "demo"), b.base, binPath, 30, "10m")
+	if err == nil {
+		t.Fatal("runLineSet succeeded though its report could not be written")
+	}
+	if !strings.HasPrefix(out.got.String(), "Note: the parley command in "+mcp) || strings.Contains(out.got.String(), "Line demo now has") {
+		t.Fatalf("the writer took %q, want the note only", out.got.String())
+	}
+	pump := fmt.Sprintf("'%s' codex --stream '%s' --nick build --state-dir '%s' --thread auto --skill line --chair colin --cap 30 --window 10m", binPath, b.stream("demo"), b.base)
+	for _, want := range []string{
+		"line demo is changed (cap 30, window 10m) but its report could not be written to standard output (" + pipe.Error() + ")",
+		"in full, so the change can be completed without changing the numbers again",
+		"Line demo now has cap 30 (was 8) and window 10m (unchanged).",
+		"Rewrote " + mcp + " (session plan).",
+		"plan (Claude Code): restart it, resuming its conversation:",
+		"PARLEY_NICK=plan claude --dangerously-load-development-channels server:parley --resume <session-id>",
+		"build (Codex): stop its pump, which holds the old numbers, and start this one in its place; the Codex session itself keeps running:",
+		pump,
+		"Each session's primer still states the old numbers",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %q:\n%v", want, err)
+		}
+	}
+	// It is committed, and a rerun says nothing is left to change: the error was the one place.
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+	b.wantRecordTrue(t)
+	if rec := b.record(t, "demo"); rec.Cap != 30 {
+		t.Errorf("record cap %d, want 30", rec.Cap)
+	}
+	res := mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	if !strings.Contains(res.stdout, "nothing was changed") || strings.Contains(res.stdout, "restart it") {
+		t.Errorf("a rerun:\n%s", res.stdout)
+	}
+
+	// A run that changed nothing carries no report: running it again prints it.
+	out = &failAfter{n: 0, err: pipe}
+	err = runLineSet(context.Background(), out, b.record(t, "demo"), b.base, binPath, 30, "10m")
+	if err == nil || !strings.Contains(err.Error(), "nothing was changed") || strings.Contains(err.Error(), "restart it") {
+		t.Errorf("a no-op whose report could not be written: %v", err)
+	}
+}
+
+// TestLineSetPrintedRecipesRunForANickThatBeginsWithADash: stream.ValidNick allows a
+// nick like -plan, and the commands line set prints put their options first, then "--",
+// then the id and the nick, so that they run as they stand through sh -c: the recipe for
+// a launch file that is not the line's, and the way back for one that is not there.
+func TestLineSetPrintedRecipesRunForANickThatBeginsWithADash(t *testing.T) {
+	b := newLineBench(t)
+	lineUp(t, b, "demo")
+	co := b.gitWorkdir(t, "co")
+	b.mustAdd(t, "demo", "-plan", "claude", co, "--model", "m1")
+	mcp := filepath.Join(co, ".mcp.json")
+	edit(t, mcp, "# mine\n")
+
+	res := b.run(t, b.lset("demo", "--cap", "30")...)
+	if res.code != 1 {
+		t.Fatalf("exit %d, want 1\n%s%s", res.code, res.stdout, res.stderr)
+	}
+	drop := fmt.Sprintf("%s line drop --force --state-dir %s -- demo -plan", q(binPath), q(b.base))
+	add := fmt.Sprintf("%s line add --nick -plan --harness claude --workdir %s --model 'm1' --state-dir %s -- demo", q(binPath), q(co), q(b.base))
+	for _, want := range []string{drop, add} {
+		if !strings.Contains(res.stderr, want) {
+			t.Fatalf("the refusal lacks %q:\n%s", want, res.stderr)
+		}
+	}
+	if r := b.runBinaryIn(t, "sh", "-c", drop); r.code != 0 {
+		t.Fatalf("%s exited %d\n%s%s", drop, r.code, r.stdout, r.stderr)
+	}
+	if err := os.Rename(mcp, mcp+".mine"); err != nil {
+		t.Fatal(err)
+	}
+	if r := b.runBinaryIn(t, "sh", "-c", add); r.code != 0 {
+		t.Fatalf("%s exited %d\n%s%s", add, r.code, r.stdout, r.stderr)
+	}
+	mustLine(t, b, b.lset("demo", "--cap", "30")...)
+	b.wantMCP(t, mcp, "demo", "30", "10m")
+
+	// The way back for a file that is not there.
+	if err := os.Remove(mcp); err != nil {
+		t.Fatal(err)
+	}
+	res = mustLine(t, b, b.lset("demo", "--cap", "40")...)
+	wayDrop := lineWith(t, res.stdout, "line drop", "-- demo -plan")
+	wayAdd := lineWith(t, res.stdout, "line add --nick -plan")
+	if want := fmt.Sprintf("%s line drop --state-dir %s -- demo -plan", q(binPath), q(b.base)); wayDrop != want {
+		t.Errorf("the drop line is\n%s\nwant\n%s", wayDrop, want)
+	}
+	for _, line := range []string{wayDrop, wayAdd} {
+		if r := b.runBinaryIn(t, "sh", "-c", line); r.code != 0 {
+			t.Fatalf("%s exited %d\n%s%s", line, r.code, r.stdout, r.stderr)
+		}
+	}
+	b.wantMCP(t, mcp, "demo", "40", "10m")
+	b.wantRecordTrue(t)
+	mustLine(t, b, "line", "drop", "--state-dir", b.base, "--", "demo", "-plan")
 }
