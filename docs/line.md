@@ -51,7 +51,9 @@ expected to work.
 
 1. **Start the server**, unless one is already running: one ergo serves every
    table, build and line on the machine, each on its own channel. It runs in the
-   foreground, in a terminal of its own, and Ctrl-C stops it:
+   foreground, in a terminal of its own, and Ctrl-C stops it. Use a terminal you
+   will leave open, not one inside an editor you may restart: "Starting and
+   stopping the server" below has what stopping it costs:
 
    ```
    parley server
@@ -596,9 +598,66 @@ before it has read the others', run a table instead: a line has no seal.
 - **The channel's history lives only in ergo's memory.** Restarting
   `parley server` loses it. A line runs for days, so what a session needs later
   belongs in a record it points at, which is what the skill asks for; the
-  channel is not the system of record.
+  channel is not the system of record. "Starting and stopping the server" has
+  the rest of what a restart does.
 - **An over-cap channel shows only in `/mcp`.** Run `--check` first.
 - **Cost.** Each post wakes every other session.
+
+## Starting and stopping the server
+
+`parley server` runs ergo in the foreground and serves every table, build and
+line on the machine, so stopping it affects all of them. Run it in a terminal
+that stays open, such as a window of its own or a `tmux` session. A server in an
+editor's terminal goes when the editor does.
+
+Ctrl-C stops it, and so does closing its terminal, logging out or restarting the
+machine. To stop it from another terminal, find the process with
+`pgrep -fl 'parley server'` and `kill <pid>`. Avoid `kill -9`, which leaves its
+ergo behind (see the end of this section).
+
+If you can choose the moment, stop it when no session is in the middle of
+something. A post that a session has not received yet is lost.
+
+### What happens to live sessions
+
+A stop ends every connection at once and nothing reconnects by itself. The
+sessions keep running, with their conversations, and stop hearing the channel:
+
+- **A Claude Code session.** Its `parley channel` process exits and Claude Code
+  marks the server as failed in `/mcp`. Start `parley server` first, then pick
+  **Reconnect** for `parley` in `/mcp`, and check with a post that deliveries
+  arrive: that last part is not verified. The sure way is to exit the session and
+  relaunch it with its launch line plus `--resume <session-id>`, which keeps the
+  conversation, then type `/parley-line`.
+- **A Codex or OpenCode session.** Its pump (`parley codex`, `parley opencode`)
+  exits with an error. The TUI is not touched. Run the pump line again.
+- **Anything posting.** `parley send` fails with exit 1 and `connection refused`,
+  and posts nothing. A post that was in flight when the server went may have been
+  taken, so read the channel before sending it again.
+- **You.** Your client drops. Rejoin `#<channel>` if it does not do so itself.
+
+A pump or a Claude Code session's channel process started while the server is
+down exits with an error at once, so start the server before the sessions.
+
+### What a restart keeps and loses
+
+| Kept | Lost |
+|---|---|
+| Accounts: your registered nick and the sessions' passwords | The history of every channel |
+| The line's record, with its cap and window | Posts a breaker was holding, and posts not yet delivered |
+| Each session's conversation and its saved place in the channel | |
+
+After a restart each session's next delivery opens with a line such as
+`[parley] gap: history after cursor <id> is no longer retained; some messages
+were missed`. Nothing is wrong when you see it. Ask the others to repeat anything
+that session missed. Your client's scrollback has what it showed you.
+
+### If the server was killed
+
+`kill -9` ends `parley server` without giving it the chance to stop ergo, and the
+ergo it started stays on. The next `parley server` then exits 1 and says that
+another ergo is using the datastore. Find it with `pgrep -l ergo`, stop it with
+`kill <pid>`, and start `parley server` again.
 
 ## Changing the breaker of a running line
 

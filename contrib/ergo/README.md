@@ -37,6 +37,8 @@ parley server
 ```
 
 in a terminal of its own; Ctrl-C stops it, and parley exits with ergo's status.
+"Starting and stopping the server" in `docs/line.md` says what stopping it does
+to live sessions.
 Closing the terminal stops it too: parley passes the hangup on to ergo as a
 terminate, because ergo would take a hangup for a rehash and run on.
 It writes the configuration it runs into the datastore directory, as a file of
