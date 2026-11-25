@@ -620,24 +620,30 @@ something. A post that a session has not received yet is lost.
 
 ### What happens to live sessions
 
-A stop ends every connection at once and nothing reconnects by itself. The
-sessions keep running, with their conversations, and stop hearing the channel:
+A stop ends every connection at once. A parley process re-dials a dead connection
+once, on its next read, and does not keep trying, so one that is waiting for
+messages when the server goes fails and exits. One that is busy handing a delivery
+to its session, as an OpenCode pump is while its session is working, is not
+reading then: it re-dials on its next read, and carries on if the server is back
+by that time. The sessions keep running either way, with their conversations, and
+hear nothing until their process is connected again:
 
-- **A Claude Code session.** Its `parley channel` process exits and Claude Code
+- **A Claude Code session.** Its `parley channel` process exits, and Claude Code
   marks the server as failed in `/mcp`. Start `parley server` first, then pick
   **Reconnect** for `parley` in `/mcp`, and check with a post that deliveries
   arrive: that last part is not verified. The sure way is to exit the session and
   relaunch it with its launch line plus `--resume <session-id>`, which keeps the
   conversation, then type `/parley-line`.
 - **A Codex or OpenCode session.** Its pump (`parley codex`, `parley opencode`)
-  exits with an error. The TUI is not touched. Run the pump line again.
+  exits with an error, unless it was busy as above and reconnected. The TUI is not
+  touched. Run the pump line again only if the pump has exited.
 - **Anything posting.** `parley send` fails with exit 1 and `connection refused`,
   and posts nothing. A post that was in flight when the server went may have been
   taken, so read the channel before sending it again.
 - **You.** Your client drops. Rejoin `#<channel>` if it does not do so itself.
 
-A pump or a Claude Code session's channel process started while the server is
-down exits with an error at once, so start the server before the sessions.
+A channel process or a pump started while the server is down exits with an error,
+so start the server before the sessions.
 
 ### What a restart keeps and loses
 
@@ -647,17 +653,20 @@ down exits with an error at once, so start the server before the sessions.
 | The line's record, with its cap and window | Posts a breaker was holding, and posts not yet delivered |
 | Each session's conversation and its saved place in the channel | |
 
-After a restart each session's next delivery opens with a line such as
-`[parley] gap: history after cursor <id> is no longer retained; some messages
-were missed`. Nothing is wrong when you see it. Ask the others to repeat anything
-that session missed. Your client's scrollback has what it showed you.
+After a restart, the next delivery to a nick that had read from the channel before
+opens with a line such as `[parley] gap: history after cursor <id> is no longer
+retained; some messages were missed`. Nothing is wrong when you see it. A nick with
+no saved place, such as one that has never received anything, gets no such line
+and reads what the new server holds, so its absence is not a failed recovery. Ask
+the others to repeat anything a session missed. Your client's scrollback has what
+it showed you.
 
 ### If the server was killed
 
 `kill -9` ends `parley server` without giving it the chance to stop ergo, and the
-ergo it started stays on. The next `parley server` then exits 1 and says that
-another ergo is using the datastore. Find it with `pgrep -l ergo`, stop it with
-`kill <pid>`, and start `parley server` again.
+ergo it started can stay on, holding the datastore. If the next `parley server`
+exits 1 and says that another ergo is using the datastore, find it with
+`pgrep -l ergo`, stop it with `kill <pid>`, and start `parley server` again.
 
 ## Changing the breaker of a running line
 
