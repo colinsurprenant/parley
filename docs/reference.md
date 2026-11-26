@@ -130,7 +130,8 @@ configuration built into parley (a second one on the same datastore, or on a
 port that is taken, exits 1 and says which). `--listen` takes another loopback IP
 and port (a host name is refused), `--datastore` another directory for ergo's
 accounts, and `--ergo-bin` an `ergo` that is not on the `PATH`;
-`contrib/ergo/README.md` has how to install ergo and how to join from Halloy or
+the install line of `docs/table.md` ("Once per machine") installs ergo, and
+`contrib/ergo/README.md` has how to install it by hand and how to join from Halloy or
 WeeChat. The configuration's limits are what
 the adapter negotiates against: 64-byte nicks, a 64 KiB message over at most a
 thousand lines, and 2048 items of channel history.
@@ -1193,7 +1194,8 @@ subcommand of its commands that parley uses (when named, below), ergo and its ve
 answers with every IRC capability the adapter requires and, when its `sasl`
 lists mechanisms, `PLAIN` among them (a server that is not up is a `warn`), and
 the skill links `skills/install.sh` makes. A binary that is missing is a `FAIL`
-that links the project's install page. `--harness claude`, `--harness codex` or
+that links the project's install page; a missing ergo and a missing skill link
+name the install line first. `--harness claude`, `--harness codex` or
 `--harness opencode`, repeatable, narrows the binary, version, skill-link and
 `--live` checks to the harnesses you have; Claude Code and Codex are checked
 without one, and OpenCode only when named, so a machine without it is not failed
@@ -1267,7 +1269,12 @@ sessions, with the work and its records staying where they live.
 `~/.agents/skills/`, which is where Claude Code and
 the agentskills.io convention look; OpenCode reads both roots. All six are symlinks into the checkout, so
 an edit is live in the next session; the script is idempotent, never replaces a
-path it did not create, and `--uninstall` takes its links out again. Claude
+path it did not create, and `--uninstall` takes its links out again. The install
+line of `docs/table.md` runs the copy of this script that a release carries, from
+`~/.local/share/parley/skills`, so the links point there and not into a checkout,
+and the next run of the line replaces that directory with the new release's. A
+link made from a checkout is a path the line did not create: the line leaves it,
+and says that the checkout's `skills/install.sh --uninstall` takes it out. Claude
 Code invokes them as `/parley-build`, `/parley-table` and `/parley-line`, Codex as
 `$parley-build`, `$parley-table` and `$parley-line`, and the human invokes one at
 the start of a build, a table or a line, in every session. OpenCode loads a skill

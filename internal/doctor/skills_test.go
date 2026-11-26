@@ -413,14 +413,14 @@ func TestOpenCodeSkillIsAFAILOnlyWhenNeitherRootHasIt(t *testing.T) {
 		t.Fatalf("want two ok lines and one FAIL:\n%s", render(rs))
 	}
 	for _, want := range []string{"OpenCode reads skills from either root", "parley-build is under neither", claudeBuild + " is missing",
-		codexBuild + " ->", "is dangling", "run sh skills/install.sh from a parley checkout"} {
+		codexBuild + " ->", "is dangling", skillFix} {
 		if !strings.Contains(fails[0].Detail, want) {
 			t.Errorf("the FAIL does not say %q: %q", want, fails[0])
 		}
 	}
 	// The fix is said once, at the end.
-	if n := strings.Count(fails[0].Detail, "install.sh"); n != 1 {
-		t.Errorf("the FAIL says to run install.sh %d times: %q", n, fails[0])
+	if n := strings.Count(fails[0].Detail, skillFix); n != 1 {
+		t.Errorf("the FAIL gives the fix %d times: %q", n, fails[0])
 	}
 }
 

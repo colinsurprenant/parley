@@ -694,9 +694,10 @@ stream specs:
   file:<path>              one append-only NDJSON file, which stock tools can
                            read and write: tail -f to watch, >> to post
   irc://host:port/channel  one channel on a local IRC server (ergo, which
-                           parley server runs; see contrib/ergo/README.md),
-                           where a human can join from any stock client; ids
-                           and timestamps are the server's
+                           parley server runs and the install.sh of a release
+                           installs; see contrib/ergo/README.md), where a human
+                           can join from any stock client; ids and timestamps
+                           are the server's
 
 nicks:
   letters, digits, '_' and '-', up to 64 bytes: the nick is a directory

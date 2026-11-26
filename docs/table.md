@@ -15,6 +15,22 @@ directory (`$XDG_STATE_HOME/parley`, by default `~/.local/state/parley`, or
 
 ## Once per machine
 
+On macOS or Linux, with no Go and no checkout of parley, one line does the first
+three of these from the latest release:
+
+```
+curl -fsSL https://github.com/colinsurprenant/parley/releases/latest/download/install.sh | sh
+```
+
+It puts `parley` and `ergo` in `~/.local/bin` (an `ergo` already on the `PATH` is
+left alone), puts the skills in `~/.local/share/parley/skills` and links them as
+step 3 says, then runs `parley doctor` for the harnesses it finds. Every download
+is checked against a checksum before anything is installed, and a file in the
+way that is not parley's is refused, never replaced. Running the line again
+upgrades parley and the skills, and says what it left alone. The line runs a
+script: to read it first, fetch it with `curl -fsSLo install.sh` and the same
+address, read it, and run `sh install.sh`. Or by hand:
+
 1. **The binary.** From a parley checkout, `go build -o bin/parley ./cmd/parley`,
    and put `parley` on the `PATH` your terminals start with. Every command
    `parley table new` prints names the binary by its absolute path, so a copy

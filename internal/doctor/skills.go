@@ -123,8 +123,10 @@ func (r skillReader) check(home, name string) Result {
 		r.harness, name, strings.Join(problems, "; "), skillFix)}
 }
 
-// skillFix is what a person does about a link that is not there.
-const skillFix = "run sh skills/install.sh from a parley checkout"
+// skillFix is what a person does about a link that is not there: the install
+// line, which links them from a release, or skills/install.sh, which links them
+// from a checkout.
+const skillFix = "run the install line (" + InstallLine + "), or sh skills/install.sh from a parley checkout"
 
 func checkSkillLink(path string) Result {
 	const surface = "skill"

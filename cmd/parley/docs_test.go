@@ -30,3 +30,28 @@ func TestDocsNameTheOpenCodeVersionLastVerified(t *testing.T) {
 		}
 	}
 }
+
+// installLineDocs are the documents that give the line which installs parley.
+var installLineDocs = []string{"docs/table.md"}
+
+// TestDocsGiveTheInstallLineAsDoctorDoes: wherever the docs give the line that
+// installs parley, ergo and the skills, it is doctor.InstallLine, the line
+// doctor tells a person to run, so the two cannot drift apart.
+func TestDocsGiveTheInstallLineAsDoctorDoes(t *testing.T) {
+	re := regexp.MustCompile(`curl -fsSL \S*install\.sh \| sh`)
+	for _, f := range installLineDocs {
+		raw, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(f)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := re.FindAllString(string(raw), -1)
+		if len(found) == 0 {
+			t.Errorf("%s does not give the install line", f)
+		}
+		for _, line := range found {
+			if line != doctor.InstallLine {
+				t.Errorf("%s gives the install line as %q, want %q", f, line, doctor.InstallLine)
+			}
+		}
+	}
+}
