@@ -618,7 +618,9 @@ is why `tmux` suits it. To stop it from another terminal, find the process with
 ergo behind (see the end of this section).
 
 If you can choose the moment, stop it when no session is in the middle of
-something. A post that a session has not received yet is lost.
+something. A post that a session has not received yet may never reach it, though
+a pump that had already collected it can still hand it over, so ask before
+anything is sent again.
 
 ### What happens to live sessions
 
@@ -654,7 +656,7 @@ so start the server before the sessions.
 | Kept | Lost |
 |---|---|
 | Accounts: your registered nick and the sessions' passwords | The history of every channel |
-| The line's record, with its cap and window | Posts a breaker was holding, and posts not yet delivered |
+| The line's record, with its cap and window | Posts a breaker was holding, and posts not yet delivered, except what a pump had already collected |
 | Each session's conversation and its saved place in the channel | |
 
 After a restart, the next delivery to a nick that had read from the channel before
