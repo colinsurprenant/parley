@@ -610,8 +610,10 @@ line on the machine, so stopping it affects all of them. Run it in a terminal
 that stays open, such as a window of its own or a `tmux` session. A server in an
 editor's terminal goes when the editor does.
 
-Ctrl-C stops it, and so does closing its terminal, logging out or restarting the
-machine. To stop it from another terminal, find the process with
+Ctrl-C in its terminal stops it, and so does ending that terminal's session:
+closing a plain terminal window, logging out, or restarting the machine. Closing a
+terminal attached to `tmux` only detaches it, and the server keeps running, which
+is why `tmux` suits it. To stop it from another terminal, find the process with
 `pgrep -fl 'parley server'` and `kill <pid>`. Avoid `kill -9`, which leaves its
 ergo behind (see the end of this section).
 
@@ -638,8 +640,10 @@ hear nothing until their process is connected again:
   exits with an error, unless it was busy as above and reconnected. The TUI is not
   touched. Run the pump line again only if the pump has exited.
 - **Anything posting.** `parley send` fails with exit 1 and `connection refused`,
-  and posts nothing. A post that was in flight when the server went may have been
-  taken, so read the channel before sending it again.
+  and posts nothing. A post that was in flight when the server went has an unknown
+  outcome: another session may have received it before the history was lost, so
+  its absence from the new history proves nothing. Ask the sessions, or check the
+  record the post pointed to, before sending it again.
 - **You.** Your client drops. Rejoin `#<channel>` if it does not do so itself.
 
 A channel process or a pump started while the server is down exits with an error,
