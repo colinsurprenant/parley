@@ -1,0 +1,187 @@
+name: release
+
+# Pushing a v* tag builds parley for macOS and Linux on amd64 and arm64 and makes
+# a DRAFT release holding the four archives and the install.sh that installs
+# them. The maintainer adds the notes and publishes the draft; until then
+# nothing is served at releases/latest. A run that fails is recovered by hand:
+# delete the draft, if one was made, and run the workflow again.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The tag reaches the shell steps through the environment only, never
+      # through ${{ }} inside a script.
+      TAG: ${{ github.ref_name }}
+      TARGETS: darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
+      # Tests that commit in throwaway repositories need an identity, and a
+      # runner has none configured.
+      GIT_AUTHOR_NAME: parley-release
+      GIT_AUTHOR_EMAIL: parley-release@users.noreply.github.com
+      GIT_COMMITTER_NAME: parley-release
+      GIT_COMMITTER_EMAIL: parley-release@users.noreply.github.com
+    steps:
+      - name: Check the tag
+        run: |
+          re='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+          if ! [[ $TAG =~ $re ]]; then
+            echo "::error::the tag $TAG is not vMAJOR.MINOR.PATCH, with an optional -suffix"
+            exit 1
+          fi
+
+      # The checkout holds the tag: the Go toolchain stamps it as the module
+      # version of every binary built here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # stable, not go.mod's version: the release is built by the newest Go, so
+      # the tests run on it as well, which ci.yml (go.mod's version) does not. The
+      # live IRC tests skip here for want of ergo; ci.yml runs them.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+
+      - run: go test ./...
+
+      # Into the runner's temporary directory, never the checkout: a build that
+      # writes into it makes the tree dirty, and the version then ends in +dirty.
+      - name: Build
+        run: |
+          for target in $TARGETS; do
+            os=${target%/*}
+            arch=${target#*/}
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch \
+              go build -trimpath -o "$RUNNER_TEMP/bin/$os-$arch/parley" ./cmd/parley
+          done
+
+      - name: Check the module version of every binary is the tag
+        run: |
+          for target in $TARGETS; do
+            os=${target%/*}
+            arch=${target#*/}
+            got=$(go version -m "$RUNNER_TEMP/bin/$os-$arch/parley" |
+              awk '$1 == "mod" && $2 == "github.com/colinsurprenant/parley" { print $3 }')
+            if [ "$got" != "$TAG" ]; then
+              echo "::error::the $os/$arch binary is at module version \"$got\", not $TAG"
+              exit 1
+            fi
+          done
+
+      # One top directory per archive: the binary, the skills with the marker
+      # that tells install.sh the directory is ours, and the license.
+      - name: Archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/dist"
+          for target in $TARGETS; do
+            os=${target%/*}
+            arch=${target#*/}
+            name=parley-$TAG-$os-$arch
+            stage=$RUNNER_TEMP/stage/$name
+            mkdir -p "$stage"
+            cp "$RUNNER_TEMP/bin/$os-$arch/parley" "$stage/parley"
+            cp -R skills "$stage/skills"
+            printf 'parley %s\n' "$TAG" > "$stage/skills/.parley-release"
+            cp LICENSE "$stage/LICENSE"
+            tar --owner=0 --group=0 -czf "$RUNNER_TEMP/dist/$name.tar.gz" -C "$RUNNER_TEMP/stage" "$name"
+          done
+
+      # The ergo here is the one ci.yml installs for the tests and
+      # internal/ergoconf was written for; TestErgoPinsAgree keeps the three in
+      # step, and the checksums are the ones ergo publishes with its release.
+      - name: Render install.sh
+        env:
+          ERGO_VERSION: 2.19.1
+          ERGO_SHA256_MACOS_ARM64: 1bd97a0917036061e2dcdfc29149c2e252e3bc856282e0956afa2aaaa54dd787
+          ERGO_SHA256_MACOS_X86_64: 68b388a49034257082ee0292703874630a2c10cfba86c73bb2adc37b515c57a3
+          ERGO_SHA256_LINUX_X86_64: c275f2de8e8eb074c38707136392290172400b5b78616cb9f660351527924b47
+          ERGO_SHA256_LINUX_ARM64: 3f68fee0ede09eeeb205a553fe9727b409c686752e1cc2fea34ae2f9d64517fb
+        run: |
+          dist=$RUNNER_TEMP/dist
+          sum() { sha256sum "$dist/parley-$TAG-$1-$2.tar.gz" | cut -d ' ' -f 1; }
+          sed \
+            -e "s|@PARLEY_VERSION@|$TAG|g" \
+            -e "s|@PARLEY_BASE_URL@|https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG|g" \
+            -e "s|@PARLEY_SHA256_DARWIN_AMD64@|$(sum darwin amd64)|g" \
+            -e "s|@PARLEY_SHA256_DARWIN_ARM64@|$(sum darwin arm64)|g" \
+            -e "s|@PARLEY_SHA256_LINUX_AMD64@|$(sum linux amd64)|g" \
+            -e "s|@PARLEY_SHA256_LINUX_ARM64@|$(sum linux arm64)|g" \
+            -e "s|@ERGO_VERSION@|$ERGO_VERSION|g" \
+            -e "s|@ERGO_BASE_URL@|https://github.com/ergochat/ergo/releases/download/v$ERGO_VERSION|g" \
+            -e "s|@ERGO_SHA256_MACOS_ARM64@|$ERGO_SHA256_MACOS_ARM64|g" \
+            -e "s|@ERGO_SHA256_MACOS_X86_64@|$ERGO_SHA256_MACOS_X86_64|g" \
+            -e "s|@ERGO_SHA256_LINUX_X86_64@|$ERGO_SHA256_LINUX_X86_64|g" \
+            -e "s|@ERGO_SHA256_LINUX_ARM64@|$ERGO_SHA256_LINUX_ARM64|g" \
+            install.sh.in > "$dist/install.sh"
+          if grep -q '@[A-Z0-9_]*@' "$dist/install.sh"; then
+            echo "::error::install.sh still holds a placeholder"
+            exit 1
+          fi
+          sh -n "$dist/install.sh"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  # This job checks out no code and runs none of the repository's, so the one
+  # job that can write to it holds nothing but the bytes the build job made. That
+  # protects the repository; it does not vouch for the bytes, which the build job
+  # decides.
+  release:
+    name: draft the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check the tag
+        run: |
+          re='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+          if ! [[ $TAG =~ $re ]]; then
+            echo "::error::the tag $TAG is not vMAJOR.MINOR.PATCH, with an optional -suffix"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/dist
+
+      # A release that exists for the tag, a draft included, is somebody's, and
+      # is not added to or replaced. No --target: the tag exists, and the release
+      # is made at it.
+      - name: Draft the release
+        run: |
+          dist=$RUNNER_TEMP/dist
+          if [ "$(find "$dist" -type f | wc -l)" -ne 5 ]; then
+            echo "::error::the build job passed on other than four archives and install.sh"
+            exit 1
+          fi
+          tags=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+          if printf '%s\n' "$tags" | grep -Fxq -- "$TAG"; then
+            echo "::error::a release for $TAG already exists; delete it to run this again"
+            exit 1
+          fi
+          flags=(--draft --verify-tag --title "$TAG" --notes "")
+          if [[ $TAG == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "${flags[@]}" "$dist"/parley-"$TAG"-*.tar.gz "$dist/install.sh"
