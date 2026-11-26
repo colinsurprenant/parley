@@ -65,15 +65,24 @@ jobs:
               go build -trimpath -o "$RUNNER_TEMP/bin/$os-$arch/parley" ./cmd/parley
           done
 
-      - name: Check the module version of every binary is the tag
+      # What each binary says it is, not what the loop meant to build: the module
+      # version is the tag, and the target is the one it will be archived for.
+      - name: Check every binary is the tag, built for its own platform
         run: |
+          set -o pipefail
           for target in $TARGETS; do
             os=${target%/*}
             arch=${target#*/}
-            got=$(go version -m "$RUNNER_TEMP/bin/$os-$arch/parley" |
-              awk '$1 == "mod" && $2 == "github.com/colinsurprenant/parley" { print $3 }')
+            info=$(go version -m "$RUNNER_TEMP/bin/$os-$arch/parley")
+            got=$(awk '$1 == "mod" && $2 == "github.com/colinsurprenant/parley" { print $3 }' <<< "$info")
+            got_os=$(awk '$1 == "build" && $2 ~ /^GOOS=/ { print substr($2, 6) }' <<< "$info")
+            got_arch=$(awk '$1 == "build" && $2 ~ /^GOARCH=/ { print substr($2, 8) }' <<< "$info")
             if [ "$got" != "$TAG" ]; then
               echo "::error::the $os/$arch binary is at module version \"$got\", not $TAG"
+              exit 1
+            fi
+            if [ "$got_os" != "$os" ] || [ "$got_arch" != "$arch" ]; then
+              echo "::error::the $os/$arch binary was built for \"$got_os/$got_arch\""
               exit 1
             fi
           done
@@ -107,15 +116,29 @@ jobs:
           ERGO_SHA256_LINUX_X86_64: c275f2de8e8eb074c38707136392290172400b5b78616cb9f660351527924b47
           ERGO_SHA256_LINUX_ARM64: 3f68fee0ede09eeeb205a553fe9727b409c686752e1cc2fea34ae2f9d64517fb
         run: |
+          set -o pipefail
           dist=$RUNNER_TEMP/dist
           sum() { sha256sum "$dist/parley-$TAG-$1-$2.tar.gz" | cut -d ' ' -f 1; }
+          sum_darwin_amd64=$(sum darwin amd64)
+          sum_darwin_arm64=$(sum darwin arm64)
+          sum_linux_amd64=$(sum linux amd64)
+          sum_linux_arm64=$(sum linux arm64)
+          # An empty or malformed sum would be rendered into a script that no
+          # archive could ever match, so nothing is rendered from one.
+          re='^[0-9a-f]{64}$'
+          for s in "$sum_darwin_amd64" "$sum_darwin_arm64" "$sum_linux_amd64" "$sum_linux_arm64"; do
+            if ! [[ $s =~ $re ]]; then
+              echo "::error::a parley archive checksum is empty or not a sha256: \"$s\""
+              exit 1
+            fi
+          done
           sed \
             -e "s|@PARLEY_VERSION@|$TAG|g" \
             -e "s|@PARLEY_BASE_URL@|https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG|g" \
-            -e "s|@PARLEY_SHA256_DARWIN_AMD64@|$(sum darwin amd64)|g" \
-            -e "s|@PARLEY_SHA256_DARWIN_ARM64@|$(sum darwin arm64)|g" \
-            -e "s|@PARLEY_SHA256_LINUX_AMD64@|$(sum linux amd64)|g" \
-            -e "s|@PARLEY_SHA256_LINUX_ARM64@|$(sum linux arm64)|g" \
+            -e "s|@PARLEY_SHA256_DARWIN_AMD64@|$sum_darwin_amd64|g" \
+            -e "s|@PARLEY_SHA256_DARWIN_ARM64@|$sum_darwin_arm64|g" \
+            -e "s|@PARLEY_SHA256_LINUX_AMD64@|$sum_linux_amd64|g" \
+            -e "s|@PARLEY_SHA256_LINUX_ARM64@|$sum_linux_arm64|g" \
             -e "s|@ERGO_VERSION@|$ERGO_VERSION|g" \
             -e "s|@ERGO_BASE_URL@|https://github.com/ergochat/ergo/releases/download/v$ERGO_VERSION|g" \
             -e "s|@ERGO_SHA256_MACOS_ARM64@|$ERGO_SHA256_MACOS_ARM64|g" \
@@ -180,7 +203,7 @@ jobs:
             echo "::error::a release for $TAG already exists; delete it to run this again"
             exit 1
           fi
-          flags=(--draft --verify-tag --title "$TAG" --notes "")
+          flags=(--draft --verify-tag --title "parley $TAG" --notes "")
           if [[ $TAG == *-* ]]; then
             flags+=(--prerelease)
           fi
