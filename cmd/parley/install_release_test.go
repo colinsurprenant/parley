@@ -414,19 +414,10 @@ func wantNot(t *testing.T, what, got string, nots ...string) {
 	}
 }
 
-// wantInstalled checks a finished install of version v: both binaries, the
-// skills and their six links, and no leftover of the run.
-func wantInstalled(t *testing.T, m *machine, v string) {
+// wantSkills checks the skills of version v are installed and the six links
+// resolve into them.
+func wantSkills(t *testing.T, m *machine, v string) {
 	t.Helper()
-	for _, name := range []string{"parley", "ergo"} {
-		fi, err := os.Lstat(m.bin(name))
-		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o755 {
-			t.Fatalf("%s is not an executable file (err %v)", m.bin(name), err)
-		}
-	}
-	if got := m.read(m.bin("parley")); !strings.Contains(got, "\t"+v+"\t") {
-		t.Fatalf("the installed parley is not %s:\n%s", v, got)
-	}
 	if got := m.read(filepath.Join(m.skillsDir(), relMarker)); got != "parley "+v+"\n" {
 		t.Fatalf("the installed skills carry the marker %q, want %s", got, v)
 	}
@@ -440,6 +431,22 @@ func wantInstalled(t *testing.T, m *machine, v string) {
 			t.Fatalf("%s holds no SKILL.md", l)
 		}
 	}
+}
+
+// wantInstalled checks a finished install of version v: both binaries, the
+// skills and their six links, and no leftover of the run.
+func wantInstalled(t *testing.T, m *machine, v string) {
+	t.Helper()
+	for _, name := range []string{"parley", "ergo"} {
+		fi, err := os.Lstat(m.bin(name))
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o755 {
+			t.Fatalf("%s is not an executable file (err %v)", m.bin(name), err)
+		}
+	}
+	if got := m.read(m.bin("parley")); !strings.Contains(got, "\t"+v+"\t") {
+		t.Fatalf("the installed parley is not %s:\n%s", v, got)
+	}
+	wantSkills(t, m, v)
 	entries, _ := os.ReadDir(filepath.Join(m.home, ".local", "bin"))
 	if len(entries) != 2 {
 		t.Fatalf("~/.local/bin holds more than parley and ergo: %v", entries)
@@ -511,11 +518,18 @@ func TestReleaseRerunLeavesAloneWhatIsThereAndUpgrades(t *testing.T) {
 	if res := m.run(r.script(), ""); res.code != 0 {
 		t.Fatalf("the first install exited %d\n%s%s", res.code, res.stdout, res.stderr)
 	}
+	first, err := os.Stat(m.bin("parley"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	res := m.run(r.script(), "")
 	if res.code != 0 || res.stderr != "" {
 		t.Fatalf("the rerun exited %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
 	}
 	wantInstalled(t, m, "v1.2.3")
+	if again, err := os.Stat(m.bin("parley")); err != nil || !os.SameFile(first, again) {
+		t.Errorf("the rerun replaced a parley that was already the release (err %v)", err)
+	}
 	wantContains(t, "the rerun", res.stdout,
 		"ergo: left alone", m.bin("ergo")+" is already a file",
 		"parley: "+m.bin("parley")+" is already v1.2.3; left alone",
@@ -527,6 +541,7 @@ func TestReleaseRerunLeavesAloneWhatIsThereAndUpgrades(t *testing.T) {
 	if got := r.archives("ergo/"); len(got) != 1 {
 		t.Errorf("the rerun fetched ergo again: %v", got)
 	}
+	installed := first
 
 	// A file the old skills carried and the new ones do not.
 	m.write(filepath.Join(m.skillsDir(), "old-only"), "x", 0o644)
@@ -536,6 +551,12 @@ func TestReleaseRerunLeavesAloneWhatIsThereAndUpgrades(t *testing.T) {
 		t.Fatalf("the upgrade exited %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
 	}
 	wantInstalled(t, m, "v1.3.0")
+	// parley changes by rename, never by a write in place: the file at the path is
+	// a new one, so a session that is running the old one is running a file that
+	// nothing has written to.
+	if upgraded, err := os.Stat(m.bin("parley")); err != nil || os.SameFile(installed, upgraded) {
+		t.Errorf("the upgrade wrote parley in place, not by rename (err %v)", err)
+	}
 	if exists(filepath.Join(m.skillsDir(), "old-only")) {
 		t.Error("a file of the old skills is still there after the upgrade")
 	}
@@ -986,21 +1007,93 @@ func TestReleaseNamesWhichBinaryWinsOnPATH(t *testing.T) {
 }
 
 // TestReleaseClearsTheLeftoversOfAnEarlierRun: a skills.new or skills.old that
-// carries the marker is what a run that was stopped left, and goes.
+// carries the marker is what a run that was stopped left, whatever else it holds,
+// and the next run clears it.
 func TestReleaseClearsTheLeftoversOfAnEarlierRun(t *testing.T) {
-	r := newRelease(t, "v1.2.3")
-	m := newMachine(t)
-	for _, d := range []string{m.skillsDir() + ".new", m.skillsDir() + ".old"} {
-		m.write(filepath.Join(d, relMarker), "parley v0.1.0\n", 0o644)
-		m.write(filepath.Join(d, "half"), "x", 0o644)
+	for _, name := range []string{"skills.new", "skills.old"} {
+		for _, tc := range []struct {
+			what  string
+			files []string
+		}{
+			{"only the marker", nil},
+			{"the marker and some files", []string{"half", "parley-build/SKILL.md"}},
+		} {
+			t.Run(name+" holding "+tc.what, func(t *testing.T) {
+				r := newRelease(t, "v1.2.3")
+				m := newMachine(t)
+				dir := filepath.Join(filepath.Dir(m.skillsDir()), name)
+				m.write(filepath.Join(dir, relMarker), "parley v0.1.0\n", 0o644)
+				for _, f := range tc.files {
+					m.write(filepath.Join(dir, f), "x", 0o644)
+				}
+				res := m.run(r.script(), "")
+				if res.code != 0 || res.stderr != "" {
+					t.Fatalf("the install exited %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+				}
+				wantInstalled(t, m, "v1.2.3")
+				if exists(filepath.Join(m.skillsDir(), "half")) {
+					t.Error("a leftover file reached the installed skills")
+				}
+			})
+		}
 	}
-	res := m.run(r.script(), "")
-	if res.code != 0 || res.stderr != "" {
-		t.Fatalf("the install exited %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+}
+
+// TestReleaseAnInterruptedSkillsSwapNeverLeavesAPathTheNextRunRefuses: an
+// interrupt, as Ctrl-C is, in the middle of copying the new skills or of deleting
+// the old ones kills the cp or the rm and ends the run. The names the next run's
+// preflight reads are only ever whole directories, so the rerun installs, over
+// the old skills that were never touched, or over the new ones that were.
+func TestReleaseAnInterruptedSkillsSwapNeverLeavesAPathTheNextRunRefuses(t *testing.T) {
+	realOf := func(name string) string {
+		p, err := exec.LookPath(name)
+		if err != nil {
+			t.Skipf("no %s", name)
+		}
+		return p
 	}
-	wantInstalled(t, m, "v1.2.3")
-	if exists(filepath.Join(m.skillsDir(), "half")) {
-		t.Error("a leftover file reached the installed skills")
+	// The shims kill the installer's shell with an interrupt from inside the one
+	// command, after doing part of its work, as a terminal's Ctrl-C does.
+	cp := "case \" $* \" in\n*\" -R \"*)\n\tfor dest in \"$@\"; do :; done\n\tmkdir -p \"$dest\"\n\t: > \"$dest/partial\"\n\tkill -INT \"$PPID\"\n\texit 130\n\t;;\nesac\nexec " + realOf("cp") + " \"$@\"\n"
+	rm := "case \"$*\" in\n*/.discard.*)\n\tfor dest in \"$@\"; do :; done\n\t" + realOf("rm") + " -f -- \"$dest\"/*/" + relMarker + "\n\tkill -INT \"$PPID\"\n\texit 130\n\t;;\nesac\nexec " + realOf("rm") + " \"$@\"\n"
+	for _, tc := range []struct {
+		name, tool, body string
+		installed        bool // an install of v1.2.3 is there first
+	}{
+		{"copying, on a first install", "cp", cp, false},
+		{"copying, over an installed release", "cp", cp, true},
+		{"deleting the old skills, over an installed release", "rm", rm, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := newRelease(t, "v1.2.3")
+			next := newRelease(t, "v1.3.0")
+			m := newMachine(t)
+			if tc.installed {
+				if res := m.run(old.script(), ""); res.code != 0 {
+					t.Fatalf("the first install exited %d\n%s%s", res.code, res.stdout, res.stderr)
+				}
+			}
+			m.front = []string{shim(t, tc.tool, tc.body)}
+			res := m.run(next.script(), "")
+			if res.code == 0 {
+				t.Fatalf("the interrupted run exited 0\n%s", res.stdout)
+			}
+			if tc.installed && tc.tool == "cp" {
+				wantSkills(t, m, "v1.2.3")
+			}
+			for _, name := range []string{"skills", "skills.new", "skills.old"} {
+				dir := filepath.Join(filepath.Dir(m.skillsDir()), name)
+				if exists(dir) && !exists(filepath.Join(dir, relMarker)) {
+					t.Fatalf("%s is left without the marker, which the next run refuses\n%s", dir, strings.Join(snapshot(t, filepath.Dir(m.skillsDir())), "\n"))
+				}
+			}
+			m.front = nil
+			res = m.run(next.script(), "")
+			if res.code != 0 {
+				t.Fatalf("the rerun exited %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+			}
+			wantSkills(t, m, "v1.3.0")
+		})
 	}
 }
 
@@ -1140,5 +1233,103 @@ func TestErgoPinsAgree(t *testing.T) {
 	gomod := regexp.MustCompile(`(?m)^module (\S+)$`).FindStringSubmatch(read("go.mod"))
 	if gomod == nil || !strings.Contains(script, "parley_module="+gomod[1]+"\n") || !strings.Contains(script, "parley_package=$parley_module/cmd/parley\n") {
 		t.Errorf("install.sh.in does not tell parley's binary by the module %v and cmd/parley", gomod)
+	}
+}
+
+// TestReleaseWorkflowAndInstallScriptAgreeOnTheArchives keeps what the workflow
+// builds and uploads in step with what install.sh.in asks for: an archive's name
+// and its top directory, the platforms, the checksum each platform's archive is
+// rendered into, and the files a release carries. Each is a string the two files
+// both spell, so a rename in one is a failure here and not a 404 or a checksum
+// mismatch for the first person to run the line.
+func TestReleaseWorkflowAndInstallScriptAgreeOnTheArchives(t *testing.T) {
+	read := func(parts ...string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(append([]string{"..", ".."}, parts...)...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	workflow := read(".github", "workflows", "release.yml")
+	script := read("install.sh.in")
+	one := func(src, what, pattern string) []string {
+		t.Helper()
+		m := regexp.MustCompile(pattern).FindStringSubmatch(src)
+		if m == nil {
+			t.Fatalf("no %s (%s)", what, pattern)
+		}
+		return m
+	}
+	has := func(src, what string, wants ...string) {
+		t.Helper()
+		for _, w := range wants {
+			if !strings.Contains(src, w) {
+				t.Errorf("%s lacks %q", what, w)
+			}
+		}
+	}
+
+	// The name, and the top directory the name is.
+	built := one(workflow, "archive name in release.yml", `(?m)^\s+name=(\S+)$`)[1]
+	asked := one(script, "archive name in install.sh.in", `(?m)^\s+parley_name=(\S+)$`)[1]
+	if got := strings.ReplaceAll(built, "$TAG", "$parley_version"); got != asked {
+		t.Errorf("release.yml names the archive %s, install.sh.in asks for %s", built, asked)
+	}
+	has(workflow, "release.yml",
+		`stage=$RUNNER_TEMP/stage/$name`,
+		`cp "$RUNNER_TEMP/bin/$os-$arch/parley" "$stage/parley"`,
+		`cp -R skills "$stage/skills"`,
+		`"$stage/skills/`+relMarker+`"`,
+		`tar --owner=0 --group=0 -czf "$RUNNER_TEMP/dist/$name.tar.gz" -C "$RUNNER_TEMP/stage" "$name"`)
+	has(script, "install.sh.in",
+		`fetch "$parley_base/$parley_name.tar.gz"`,
+		`parley_new=$tmp/parley/$parley_name/parley`,
+		`skills_new=$tmp/parley/$parley_name/skills`,
+		"marker="+relMarker)
+
+	// The platforms, and the checksum rendered for each.
+	targets := strings.Fields(one(workflow, "TARGETS", `(?m)^\s+TARGETS: (.+)$`)[1])
+	cases := regexp.MustCompile(`(?m)^\t(\w+)-(\w+)\) parley_sha=\$parley_sha_(\w+) ;;$`).FindAllStringSubmatch(script, -1)
+	if len(cases) != len(targets) {
+		t.Fatalf("release.yml builds %v, install.sh.in chooses among %d archives", targets, len(cases))
+	}
+	wired := map[string]bool{}
+	for _, c := range cases {
+		wired[c[1]+"/"+c[2]] = true
+		if c[3] != c[1]+"_"+c[2] {
+			t.Errorf("install.sh.in reads the %s-%s checksum from parley_sha_%s", c[1], c[2], c[3])
+		}
+	}
+	for _, target := range targets {
+		if !wired[target] {
+			t.Errorf("release.yml builds %s, install.sh.in has no archive for it", target)
+		}
+		osName, arch, _ := strings.Cut(target, "/")
+		up := strings.ToUpper(osName + "_" + arch)
+		low := osName + "_" + arch
+		has(workflow, "release.yml",
+			"sum_"+low+"=$(sum "+osName+" "+arch+")",
+			`-e "s|@PARLEY_SHA256_`+up+`@|$sum_`+low+`|g"`)
+		has(script, "install.sh.in", "parley_sha_"+low+"='@PARLEY_SHA256_"+up+"@'")
+	}
+
+	// The ergo archives: the platform labels CI and the workflow pin are the ones
+	// the script maps to a name and a checksum.
+	has(script, "install.sh.in", "ergo_name=ergo-$ergo_version-$ergo_os-$ergo_arch", `fetch "$ergo_base/$ergo_name.tar.gz"`)
+	for _, p := range relPlatforms {
+		label := p.ergoOS + "-" + p.ergoArch
+		low := p.ergoOS + "_" + p.ergoArch
+		has(script, "install.sh.in", "\t"+label+") ergo_sha=$ergo_sha_"+low+" ;;")
+	}
+
+	// The files a release carries: one archive per target and install.sh, which is
+	// the name the install line downloads.
+	has(workflow, "release.yml",
+		`"$dist"/parley-"$TAG"-*.tar.gz "$dist/install.sh"`,
+		`-ne `+strconv.Itoa(len(targets)+1)+` ]`,
+		`install.sh.in > "$dist/install.sh"`)
+	if !strings.HasSuffix(doctor.InstallLine, "/releases/latest/download/install.sh | sh") {
+		t.Errorf("the install line %q does not download the asset release.yml uploads, install.sh", doctor.InstallLine)
 	}
 }

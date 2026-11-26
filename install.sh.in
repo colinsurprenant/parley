@@ -11,20 +11,23 @@
 # own, so there is nothing to override at run time and no option.
 #
 # What it does, in this order, and nothing else: refuse before touching anything
-# if a destination holds something that is not ours; download the parley archive
-# for this machine and, unless an ergo is already there, the ergo archive, and
-# check each against the checksum rendered into this script; then place ergo and
-# parley in ~/.local/bin, each written beside its destination and renamed into it,
-# and the skills in ~/.local/share/parley/skills, and link them with the
-# skills/install.sh they carry. Nothing is written outside the temporary directory
-# until every checksum has passed, and that directory is the only thing removed
-# that this script did not place. It uses no sudo, edits no shell startup file,
-# starts no server, stops no process and sends nothing but its downloads'
-# requests.
+# if the parley or skills destination holds something that is not ours; download
+# the parley archive for this machine and, unless an ergo is already there, the
+# ergo archive, and check each against the checksum rendered into this script;
+# then place ergo and parley in ~/.local/bin, each written beside its destination
+# and renamed into it, and the skills in ~/.local/share/parley/skills, and link
+# them with the skills/install.sh they carry. Nothing is written outside the
+# temporary directory until every checksum has passed, and that directory is the
+# only thing removed that this script did not place. It uses no sudo, edits no
+# shell startup file, starts no server, stops no process and sends nothing but
+# its downloads' requests.
 #
-# A path it did not make is never followed and never replaced: a symlink at an
-# install path is refused, and so is a regular file that is not a parley binary,
+# A path it did not make is never followed and never replaced: a symlink at the
+# parley path is refused, and so is a regular file that is not a parley binary,
 # which is told by the module path a Go binary carries and never by running it.
+# An ergo on PATH, or a regular file at the ergo path, is left alone and the run
+# goes on; with no ergo on PATH, a symlink or a directory at the ergo path is
+# refused.
 # A run that stops, or is stopped, is recovered by running the line again. The
 # skills may be absent for the moment between the old directory moving aside and
 # the new one moving in.
@@ -40,10 +43,12 @@ parley_module=github.com/colinsurprenant/parley
 parley_package=$parley_module/cmd/parley
 marker=.parley-release
 
-# tmp is the temporary directory and staged the file being written beside its
-# destination; cleanup removes both, and nothing else.
+# tmp is the temporary directory, staged the file being written beside its
+# destination and stage the skills directory being built; cleanup removes the
+# three, and nothing else.
 tmp=
 staged=
+stage=
 
 say() {
 	printf '%s\n' "$*"
@@ -61,6 +66,9 @@ die() {
 cleanup() {
 	if [ -n "$staged" ]; then
 		rm -f -- "$staged"
+	fi
+	if [ -n "$stage" ]; then
+		rm -rf -- "$stage"
 	fi
 	if [ -n "$tmp" ]; then
 		rm -rf -- "$tmp"
@@ -120,6 +128,19 @@ binary_version() {
 # only kind of skills directory this script clears or moves aside.
 owned_skills_dir() {
 	[ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/$marker" ] && [ ! -L "$1/$marker" ]
+}
+
+# discard removes the skills directory $1, if there is one, by renaming it into a
+# directory of its own and deleting that, so that $1 is never a directory half
+# deleted, which the preflight of the next run would refuse. A run interrupted in
+# the deleting leaves the rest of it in a .discard directory of $share, which
+# nothing reads.
+discard() {
+	if [ -e "$1" ] || [ -L "$1" ]; then
+		gone=$(mktemp -d "$share/.discard.XXXXXX") || die "could not make a directory in $share"
+		mv -- "$1" "$gone/" || die "could not move $1 aside"
+		rm -rf -- "$gone"
+	fi
 }
 
 # install_binary writes the file $1 beside the destination $2 and renames it into
@@ -358,17 +379,27 @@ main() {
 		say "A line whose launch files name another parley path keeps that path; to move a session to this one, drop it (parley line drop) and add it again (parley line add)."
 	fi
 
-	rm -rf -- "$skills.new" "$skills.old"
+	# The named paths are only ever renamed whole: skills.new is the finished copy
+	# of a staging directory that may be cut short anywhere, and skills.old is the
+	# directory that was there, so a run stopped at any point leaves directories
+	# with the marker, which the next run clears, and never one without.
+	mkdir -p -- "$share" || die "could not make $share"
+	discard "$skills.new"
+	discard "$skills.old"
 	if [ -d "$skills" ] && cmp -s -- "$skills/$marker" "$skills_new/$marker"; then
 		say "skills: $skills is already at $parley_version; left alone"
 	else
-		mkdir -p -- "$share" || die "could not make $share"
-		cp -R -- "$skills_new" "$skills.new" || die "could not copy the skills to $skills.new"
+		stage=$(mktemp -d "$share/.stage.XXXXXX") || die "could not make a directory in $share"
+		chmod 0755 "$stage" || die "could not make $stage readable"
+		cp -- "$skills_new/$marker" "$stage/$marker" || die "could not copy the skills to $stage"
+		cp -R -- "$skills_new/." "$stage/" || die "could not copy the skills to $stage"
+		mv -- "$stage" "$skills.new" || die "could not move $stage to $skills.new"
+		stage=
 		if [ -d "$skills" ]; then
 			mv -- "$skills" "$skills.old" || die "could not move $skills aside"
 		fi
 		mv -- "$skills.new" "$skills" || die "could not move $skills.new to $skills"
-		rm -rf -- "$skills.old"
+		discard "$skills.old"
 		say "skills: installed $parley_version at $skills"
 	fi
 
