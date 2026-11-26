@@ -602,3 +602,83 @@ func TestSkillLinksAreTheOnesInstallMakes(t *testing.T) {
 		t.Errorf("install.sh has %d skills roots, doctor checks %d", got, len(skillRoots))
 	}
 }
+
+// TestSkillFixClearsWhatTheInstallerWillNotReplace: skills/install.sh links where
+// nothing is and leaves any other path alone, so a dangling link and a path that
+// is not a link to a skill each say what to clear before the install line, and a
+// missing link says only to run it. A report of two roots says the first clause
+// with each finding and the fix once.
+func TestSkillFixClearsWhatTheInstallerWillNotReplace(t *testing.T) {
+	home, _ := skillHome(t)
+	claude := filepath.Join(home, ".claude", "skills")
+	codex := filepath.Join(home, ".agents", "skills")
+	for _, tc := range []struct {
+		name  string
+		make  func(path string)
+		want  string
+		wants []string
+	}{
+		{"missing", func(p string) {}, "is missing", []string{skillFix}},
+		{"a dangling link", func(p string) {
+			if err := os.Symlink(filepath.Join(home, "gone"), p); err != nil {
+				t.Fatal(err)
+			}
+		}, "is dangling", []string{": remove it, then " + skillFix}},
+		{"a link to a directory that is no skill", func(p string) {
+			if err := os.Symlink(home, p); err != nil {
+				t.Fatal(err)
+			}
+		}, "holds no SKILL.md file", []string{": remove it, then " + skillFix}},
+		{"a directory that is no skill", func(p string) {
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, "holds no SKILL.md file", []string{": it is not parley's, so move it aside, then " + skillFix}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, root := range []string{claude, codex} {
+				if err := os.RemoveAll(filepath.Join(root, "parley-line")); err != nil {
+					t.Fatal(err)
+				}
+				tc.make(filepath.Join(root, "parley-line"))
+			}
+			// One root of a harness: the fix is the whole of the detail's end.
+			fails := lines(Check(context.Background(), Options{Claude: true, ClaudeBin: "no-such-claude", Skills: true}), Fail)
+			var detail string
+			for _, f := range fails {
+				if f.Surface == "skill" {
+					detail = f.Detail
+				}
+			}
+			if !strings.Contains(detail, tc.want) {
+				t.Fatalf("the FAIL does not say %q:\n%s", tc.want, render(fails))
+			}
+			for _, w := range tc.wants {
+				if !strings.HasSuffix(detail, w) {
+					t.Errorf("the FAIL does not end with %q: %q", w, detail)
+				}
+			}
+			// Two roots, none sound: each finding keeps its first step, the fix is said once.
+			fails = lines(Check(context.Background(), Options{OpenCode: true, OpenCodeBin: "no-such-opencode", Skills: true}), Fail)
+			detail = ""
+			for _, f := range fails {
+				if f.Surface == "skill" {
+					detail = f.Detail
+				}
+			}
+			if n := strings.Count(detail, skillFix); n != 1 || !strings.HasSuffix(detail, ": "+skillFix) {
+				t.Errorf("the OpenCode FAIL does not give the fix once, at the end: %q", detail)
+			}
+			switch tc.name {
+			case "a dangling link", "a link to a directory that is no skill":
+				if !strings.Contains(detail, "(remove it first)") {
+					t.Errorf("the OpenCode FAIL does not say to remove the link first: %q", detail)
+				}
+			case "a directory that is no skill":
+				if !strings.Contains(detail, "(not parley's: move it aside first)") {
+					t.Errorf("the OpenCode FAIL does not say to move the path aside first: %q", detail)
+				}
+			}
+		})
+	}
+}

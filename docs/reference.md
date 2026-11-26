@@ -1195,7 +1195,9 @@ answers with every IRC capability the adapter requires and, when its `sasl`
 lists mechanisms, `PLAIN` among them (a server that is not up is a `warn`), and
 the skill links `skills/install.sh` makes. A binary that is missing is a `FAIL`
 that links the project's install page; a missing ergo and a missing skill link
-name the install line first. `--harness claude`, `--harness codex` or
+name the install line first, and a skill link that dangles, or a path that is
+not a link to a skill, says to remove it or move it aside before that, since
+the install line and `skills/install.sh` leave such a path alone. `--harness claude`, `--harness codex` or
 `--harness opencode`, repeatable, narrows the binary, version, skill-link and
 `--live` checks to the harnesses you have; Claude Code and Codex are checked
 without one, and OpenCode only when named, so a machine without it is not failed
@@ -1272,9 +1274,11 @@ an edit is live in the next session; the script is idempotent, never replaces a
 path it did not create, and `--uninstall` takes its links out again. The install
 line of `docs/table.md` runs the copy of this script that a release carries, from
 `~/.local/share/parley/skills`, so the links point there and not into a checkout,
-and the next run of the line replaces that directory with the new release's. A
-link made from a checkout is a path the line did not create: the line leaves it,
-and says that the checkout's `skills/install.sh --uninstall` takes it out. Claude
+and a run of the line for a different release replaces that directory with that
+release's, while a run for the same release leaves it alone. A link made from a
+checkout is a path the line did not create: the line leaves it, exits 1 once
+everything else is installed, and says that the checkout's
+`skills/install.sh --uninstall` takes it out. Claude
 Code invokes them as `/parley-build`, `/parley-table` and `/parley-line`, Codex as
 `$parley-build`, `$parley-table` and `$parley-line`, and the human invokes one at
 the start of a build, a table or a line, in every session. OpenCode loads a skill

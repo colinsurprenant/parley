@@ -25,9 +25,13 @@ curl -fsSL https://github.com/colinsurprenant/parley/releases/latest/download/in
 It puts `parley` and `ergo` in `~/.local/bin` (an `ergo` already on the `PATH` is
 left alone), puts the skills in `~/.local/share/parley/skills` and links them as
 step 3 says, then runs `parley doctor` for the harnesses it finds. Every download
-is checked against a checksum before anything is installed, and a file in the
-way that is not parley's is refused, never replaced. Running the line again
-upgrades parley and the skills, and says what it left alone. The line runs a
+is checked against a checksum before anything is installed. A symlink where
+`parley` goes, a `parley` that is not parley, or a skills directory that is not
+its own stops the run before anything is installed, and is never replaced. An
+`ergo` already present is left alone and the run goes on, and a skill link that
+is not its own ends the run with exit 1 once the rest is installed. Running the
+line again moves parley and the skills to the latest release, and says what it
+left alone. The line runs a
 script: to read it first, fetch it with `curl -fsSLo install.sh` and the same
 address, read it, and run `sh install.sh`. Or by hand:
 
