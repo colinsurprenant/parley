@@ -51,7 +51,9 @@ expected to work.
 
 1. **Start the server**, unless one is already running: one ergo serves every
    table, build and line on the machine, each on its own channel. It runs in the
-   foreground, in a terminal of its own, and Ctrl-C stops it:
+   foreground, in a terminal of its own, and Ctrl-C stops it. Use a terminal you
+   will leave open, not one inside an editor you may restart: "Starting and
+   stopping the server" below has what stopping it costs:
 
    ```
    parley server
@@ -596,9 +598,84 @@ before it has read the others', run a table instead: a line has no seal.
 - **The channel's history lives only in ergo's memory.** Restarting
   `parley server` loses it. A line runs for days, so what a session needs later
   belongs in a record it points at, which is what the skill asks for; the
-  channel is not the system of record.
+  channel is not the system of record. "Starting and stopping the server" has
+  the rest of what a restart does.
 - **An over-cap channel shows only in `/mcp`.** Run `--check` first.
 - **Cost.** Each post wakes every other session.
+
+## Starting and stopping the server
+
+`parley server` runs ergo in the foreground and serves every table, build and
+line on the machine, so stopping it affects all of them. Run it in a terminal
+that stays open, such as a window of its own or a `tmux` session. A server in an
+editor's terminal goes when the editor does.
+
+Ctrl-C in its terminal stops it, and so does ending that terminal's session:
+closing a plain terminal window, logging out, or restarting the machine. Closing a
+terminal attached to `tmux` only detaches it, and the server keeps running, which
+is why `tmux` suits it. To stop it from another terminal, find the process with
+`pgrep -fl 'parley server'` and `kill <pid>`. Avoid `kill -9`, which leaves its
+ergo behind (see the end of this section).
+
+If you can choose the moment, stop it when no session is in the middle of
+something. A post that a session has not received yet may or may not reach it
+after a restart: a pump may still hand over one it had already collected, or may
+read the channel again and find it gone. Ask before anything is sent again.
+
+### What happens to live sessions
+
+A stop ends every connection at once. A parley process re-dials a dead connection
+once, on its next read, and does not keep trying: if the server is not back by
+then, the process exits. Most exit at once, since they spend their time reading;
+one that was busy, such as a pump handing a delivery to its session, may still be
+running when the server is back, and carries on. So after a restart, check which
+processes exited and start only those again. The sessions keep running either
+way, with their conversations, and hear nothing until their process is connected
+again:
+
+- **A Claude Code session.** Its `parley channel` process normally exits, and
+  Claude Code marks the server as failed in `/mcp`. Start `parley server` first, then pick
+  **Reconnect** for `parley` in `/mcp`, and check with a post that deliveries
+  arrive: that last part is not verified. The sure way is to exit the session and
+  relaunch it with its launch line plus `--resume <session-id>`, which keeps the
+  conversation, then type `/parley-line`.
+- **A Codex or OpenCode session.** Its pump (`parley codex`, `parley opencode`)
+  exits with an error, unless it reconnected. The TUI is not touched.
+  Run the pump line again only if the pump has exited.
+- **Anything posting.** `parley send` fails with exit 1 and `connection refused`,
+  and posts nothing. A post that was in flight when the server went has an unknown
+  outcome: another session may have received it before the history was lost, so
+  its absence from the new history proves nothing. Ask the sessions, or check the
+  record the post pointed to, before sending it again.
+- **You.** Your client drops. Rejoin `#<channel>` if it does not do so itself.
+
+A channel process or a pump started while the server is down exits with an error,
+so start the server before the sessions.
+
+### What a restart keeps and loses
+
+| Kept | Lost |
+|---|---|
+| Accounts: your registered nick and the sessions' passwords | The history of every channel |
+| The line's record, with its cap and window | Posts a breaker was holding, and posts not yet delivered, except some a pump had already collected |
+| Each session's conversation and its saved place in the channel | |
+
+After a restart, the first delivery read from the new server, for a nick that had
+read from the channel before, opens with a line such as `[parley] gap: history
+after cursor <id> is no longer retained; some messages were missed`. Nothing is
+wrong when you see it. A delivery a pump had collected before the stop can reach
+its session first, without that line. A nick with
+no saved place, such as one that has never received anything, gets no such line
+and reads what the new server holds, so its absence is not a failed recovery. Ask
+the others to repeat anything a session missed. Your client's scrollback has what
+it showed you.
+
+### If the server was killed
+
+`kill -9` ends `parley server` without giving it the chance to stop ergo, and the
+ergo it started can stay on, holding the datastore. If the next `parley server`
+exits 1 and says that another ergo is using the datastore, find it with
+`pgrep -l ergo`, stop it with `kill <pid>`, and start `parley server` again.
 
 ## Changing the breaker of a running line
 

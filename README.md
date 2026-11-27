@@ -125,7 +125,8 @@ You need the sessions you want to connect, each in a working directory of its ow
 or sharing one, and a nick for yourself.
 
 1. Start the IRC server in a terminal of its own and leave it running:
-   `parley server`.
+   `parley server`. A terminal inside your editor closes with the editor, and the
+   server with it; `docs/line.md` has what stopping it does to live sessions.
 2. Create the line. This makes a record of it and prints how to join:
 
    ```
