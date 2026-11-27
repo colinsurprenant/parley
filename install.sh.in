@@ -84,12 +84,15 @@ need() {
 }
 
 # sha256_of prints the sha256 of the file $1, and fails if the hasher does: its
-# status is not hidden behind a pipe.
+# status is not hidden behind a pipe. The hasher reads the file on its standard
+# input, so that its output is the sum and a "-" and never carries the file's
+# name, which sha256sum escapes, with a backslash before the line, when it holds
+# a backslash or a newline.
 sha256_of() {
 	if command -v sha256sum >/dev/null 2>&1; then
-		line=$(sha256sum -- "$1") || return 1
+		line=$(sha256sum <"$1") || return 1
 	else
-		line=$(shasum -a 256 -- "$1") || return 1
+		line=$(shasum -a 256 <"$1") || return 1
 	fi
 	printf '%s\n' "${line%% *}"
 }
@@ -114,14 +117,31 @@ extract() {
 	tar -o -xzf "$1" -C "$2" || die "could not unpack $1: nothing was installed"
 }
 
-# usable_dir succeeds if $1, or the nearest ancestor of it that exists, is a
-# directory this user can write to: what the install will make or fill.
+# usable_dir succeeds if $1, an absolute path, or the nearest ancestor of it that
+# exists, is a directory this user can write to: what the install will make or
+# fill. The ancestor is cut from the path by parameter expansion, not read back
+# from dirname, whose output a command substitution trims of trailing newlines.
 usable_dir() {
 	dir=$1
 	while [ ! -e "$dir" ] && [ ! -L "$dir" ]; do
-		dir=$(dirname -- "$dir")
+		dir=${dir%/*}
+		if [ -z "$dir" ]; then
+			dir=/
+		fi
 	done
 	[ -d "$dir" ] && [ -w "$dir" ]
+}
+
+# find_command sets found to where PATH finds the command $1, or to nothing. What
+# command -v names has to be an executable regular file to count: a builtin, a
+# function or an alias is no path, and the path of a file may be relative, when
+# PATH holds a relative directory.
+find_command() {
+	found=
+	candidate=$(command -v "$1" 2>/dev/null) || return 0
+	if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+		found=$candidate
+	fi
 }
 
 # binary_version prints the module version a Go binary was built at, read from
@@ -197,13 +217,16 @@ run_doctor() {
 	(
 		PATH=$bindir:$PATH
 		set --
-		if command -v claude >/dev/null 2>&1; then
+		find_command claude
+		if [ -n "$found" ]; then
 			set -- "$@" --harness claude
 		fi
-		if command -v codex >/dev/null 2>&1; then
+		find_command codex
+		if [ -n "$found" ]; then
 			set -- "$@" --harness codex
 		fi
-		if command -v opencode >/dev/null 2>&1 && opencode_is_2; then
+		find_command opencode
+		if [ -n "$found" ] && opencode_is_2; then
 			set -- "$@" --harness opencode
 		fi
 		if [ "$#" -eq 0 ]; then
@@ -222,11 +245,7 @@ run_doctor() {
 # report_path says which $1 the person's own PATH finds. $2 is yes if this run
 # put one in ~/.local/bin.
 report_path() {
-	found=$(command -v "$1" 2>/dev/null || true)
-	case "$found" in
-	/*) ;;
-	*) found= ;;
-	esac
+	find_command "$1"
 	if [ -z "$found" ]; then
 		say "$1 is not on your PATH"
 		path_needed=1
@@ -342,10 +361,10 @@ main() {
 
 	ergo_dest=$bindir/ergo
 	ergo_have=
-	ergo_found=$(command -v ergo 2>/dev/null || true)
-	case "$ergo_found" in
-	/*) ergo_have="ergo is already installed at $ergo_found" ;;
-	esac
+	find_command ergo
+	if [ -n "$found" ]; then
+		ergo_have="ergo is already installed at $found"
+	fi
 	if [ -z "$ergo_have" ]; then
 		if [ -L "$ergo_dest" ]; then
 			die "$ergo_dest is a symlink; leaving it alone"
@@ -400,7 +419,12 @@ main() {
 		install_binary "$parley_new" "$parley_dest"
 		say "parley: installed $parley_version at $parley_dest"
 	elif cmp -s -- "$parley_new" "$parley_dest"; then
-		say "parley: $parley_dest is already $parley_version; left alone"
+		if [ -x "$parley_dest" ]; then
+			say "parley: $parley_dest is already $parley_version; left alone"
+		else
+			install_binary "$parley_new" "$parley_dest"
+			say "parley: $parley_dest was $parley_version but not executable; replaced it with an executable copy"
+		fi
 	else
 		install_binary "$parley_new" "$parley_dest"
 		say "parley: $parley_old -> $parley_version at $parley_dest"

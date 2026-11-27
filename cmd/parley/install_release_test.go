@@ -356,6 +356,7 @@ type machine struct {
 	back  []string // directories behind them
 	shell string
 	env   []string
+	cwd   string // the installer's working directory; the test's own if empty
 }
 
 var installTools = []string{"sh", "uname", "curl", "tar", "gzip", "mktemp", "grep", "cmp", "sha256sum", "shasum",
@@ -423,6 +424,7 @@ func (m *machine) run(script, stdin string, args ...string) installResult {
 		}
 		cmd = exec.CommandContext(ctx, shell, append([]string{path}, args...)...)
 	}
+	cmd.Dir = m.cwd
 	cmd.Env = append([]string{"HOME=" + m.home, "PATH=" + m.path(), "TMPDIR=" + m.tmp, "STUB_LOG=" + m.log}, m.env...)
 	var out, errs strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errs
@@ -1083,6 +1085,31 @@ func TestReleaseLeavesAnErgoAlone(t *testing.T) {
 		}
 		wantContains(t, "parley", m.read(m.bin("parley")), "v1.2.3")
 	})
+	for _, shell := range shells(t) {
+		t.Run("on PATH by a relative directory, under "+shell, func(t *testing.T) {
+			// command -v names such an ergo by a relative path in some shells (dash)
+			// and by an absolute one in others (bash as sh); either is a path to it:
+			// it is left alone, not downloaded again, and the report finds it.
+			r := newRelease(t, "v1.2.3")
+			m := newMachine(t)
+			m.shell = shell
+			m.cwd = t.TempDir()
+			m.write(filepath.Join(m.cwd, "relbin", "ergo"), "#!/bin/sh\necho theirs\n", 0o755)
+			m.front = []string{"relbin"}
+			res := m.run(r.script(), "")
+			if res.code != 0 {
+				t.Fatalf("the install exited %d\n%s%s", res.code, res.stdout, res.stderr)
+			}
+			wantContains(t, "stdout", res.stdout, "ergo: left alone, ergo is already installed at ", "relbin/ergo\n", "ergo on your PATH: ")
+			wantNot(t, "stdout", res.stdout, "ergo is not on your PATH")
+			if exists(m.bin("ergo")) {
+				t.Error("an ergo was installed beside the one on PATH")
+			}
+			if got := r.archives("ergo/"); len(got) != 0 {
+				t.Errorf("ergo was downloaded: %v", got)
+			}
+		})
+	}
 	t.Run("a regular file at the install path", func(t *testing.T) {
 		r := newRelease(t, "v1.2.3")
 		m := newMachine(t)
@@ -1524,5 +1551,74 @@ func TestReleaseWorkflowAndInstallScriptAgreeOnTheArchives(t *testing.T) {
 		`install.sh.in > "$dist/install.sh"`)
 	if !strings.HasSuffix(doctor.InstallLine, "/releases/latest/download/install.sh | sh") {
 		t.Errorf("the install line %q does not download the asset release.yml uploads, install.sh", doctor.InstallLine)
+	}
+}
+
+// TestReleaseInstallsWithAwkwardCharactersInTMPDIR: the name of the directory the
+// archives are downloaded to is no business of the hashing. sha256sum escapes a
+// name with a backslash or a newline in it, with a backslash before its line, so a
+// script that read the sum off a line that held the name would call a good archive
+// a bad one.
+func TestReleaseInstallsWithAwkwardCharactersInTMPDIR(t *testing.T) {
+	hashers := []struct {
+		name    string
+		without map[string]bool
+	}{{"the system's hasher", nil}}
+	if _, err := exec.LookPath("sha256sum"); err == nil {
+		if _, err := exec.LookPath("shasum"); err == nil {
+			hashers = append(hashers, struct {
+				name    string
+				without map[string]bool
+			}{"shasum", map[string]bool{"sha256sum": true}})
+		}
+	}
+	for _, hasher := range hashers {
+		for _, dir := range []string{"back\\slash", "line\nbreak", "back\\slash and\nline"} {
+			t.Run(fmt.Sprintf("%s in %q", hasher.name, dir), func(t *testing.T) {
+				r := newRelease(t, "v1.2.3")
+				m := newMachine(t)
+				m.tmp = filepath.Join(t.TempDir(), dir)
+				if err := os.MkdirAll(m.tmp, 0o755); err != nil {
+					t.Skipf("this file system cannot make %q: %v", dir, err)
+				}
+				if hasher.without != nil {
+					m.farm = m.toolFarm(hasher.without)
+				}
+				res := m.run(r.script(), "")
+				if res.code != 0 || res.stderr != "" {
+					t.Fatalf("the install exited %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+				}
+				wantInstalled(t, m, "v1.2.3")
+			})
+		}
+	}
+}
+
+// TestReleaseReplacesAParleyThatIsTheReleaseButCannotRun: a parley that is
+// byte for byte the release's, and not executable, is not left alone, since the
+// run would report success and leave a parley that cannot be run. It is replaced
+// by rename, as an upgrade is, and is executable afterwards.
+func TestReleaseReplacesAParleyThatIsTheReleaseButCannotRun(t *testing.T) {
+	r := newRelease(t, "v1.2.3")
+	m := newMachine(t)
+	if res := m.run(r.script(), ""); res.code != 0 {
+		t.Fatalf("the first install exited %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+	before, err := os.Stat(m.bin("parley"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(m.bin("parley"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := m.run(r.script(), "")
+	if res.code != 0 || res.stderr != "" {
+		t.Fatalf("the rerun exited %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+	}
+	wantContains(t, "stdout", res.stdout, "parley: "+m.bin("parley")+" was v1.2.3 but not executable; replaced it with an executable copy")
+	wantNot(t, "stdout", res.stdout, "left alone, "+m.bin("parley"), m.bin("parley")+" is already v1.2.3; left alone", "Sessions already running")
+	wantInstalled(t, m, "v1.2.3") // an executable file of mode 0755
+	if after, err := os.Stat(m.bin("parley")); err != nil || os.SameFile(before, after) {
+		t.Errorf("parley was written in place, not replaced by rename (err %v)", err)
 	}
 }
