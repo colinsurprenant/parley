@@ -34,7 +34,7 @@ its own stops the run before anything is installed, and is never replaced. An
 `ergo` that your `PATH` finds first in an absolute directory, or a regular file at
 `~/.local/bin/ergo`, is left alone and the run goes on. One that it finds first
 through a relative directory or an empty entry is one parley cannot use, so the
-line installs its own; with no usable `ergo`, a symlink or a directory at that
+line installs its own, unless a regular file is already at `~/.local/bin/ergo`; with no usable `ergo`, a symlink or a directory at that
 path stops the run. A skill link that is not its own ends the run with exit 1 once
 the rest is installed. Running the
 line again moves parley and the skills to the latest release, and says what it
