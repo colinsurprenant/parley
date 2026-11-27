@@ -1085,28 +1085,63 @@ func TestReleaseLeavesAnErgoAlone(t *testing.T) {
 		}
 		wantContains(t, "parley", m.read(m.bin("parley")), "v1.2.3")
 	})
+	// parley finds its tools with Go's exec.LookPath, which takes the first
+	// match on PATH and refuses it when it is in a relative directory, an empty
+	// entry being the current one. An ergo found only that way is one parley
+	// cannot use, so it is not left alone: ergo is installed, and the report says
+	// which directory to put ~/.local/bin ahead of. Whatever command -v makes of
+	// it, which differs by shell, is not asked.
 	for _, shell := range shells(t) {
-		t.Run("on PATH by a relative directory, under "+shell, func(t *testing.T) {
-			// command -v names such an ergo by a relative path in some shells (dash)
-			// and by an absolute one in others (bash as sh); either is a path to it:
-			// it is left alone, not downloaded again, and the report finds it.
+		for _, tc := range []struct {
+			name  string
+			entry string // the PATH entry, as written; empty is the current directory
+			dir   string // where the ergo is, under the working directory
+			named string // the directory the messages name
+		}{
+			{"a relative directory", "relbin", "relbin", "relbin"},
+			{"an empty entry", "", ".", "."},
+		} {
+			t.Run("on PATH only through "+tc.name+", under "+shell, func(t *testing.T) {
+				r := newRelease(t, "v1.2.3")
+				m := newMachine(t)
+				m.shell = shell
+				m.cwd = t.TempDir()
+				m.write(filepath.Join(m.cwd, tc.dir, "ergo"), "#!/bin/sh\necho theirs\n", 0o755)
+				m.front = []string{tc.entry}
+				res := m.run(r.script(), "")
+				if res.code != 0 {
+					t.Fatalf("the install exited %d\n%s%s", res.code, res.stdout, res.stderr)
+				}
+				found := `found through the relative PATH directory "` + tc.named + `", which parley cannot use`
+				wantContains(t, "stdout", res.stdout,
+					"ergo: an ergo is "+found, "ergo: installed "+relErgoVersion+" at "+m.bin("ergo"),
+					"ergo is "+found,
+					"put "+filepath.Dir(m.bin("ergo"))+" first on PATH, ahead of the relative directory, for example")
+				wantNot(t, "stdout", res.stdout, "ergo: left alone", "ergo is not on your PATH")
+				if got := m.read(m.bin("ergo")); !strings.Contains(got, "ergo-"+relErgoVersion) {
+					t.Errorf("the ergo at %s is not the release's:\n%s", m.bin("ergo"), got)
+				}
+				if got := r.archives("ergo/"); len(got) != 1 {
+					t.Errorf("ergo was downloaded %d times, want once: %v", len(got), got)
+				}
+			})
+		}
+		t.Run("on PATH by an absolute directory ahead of a relative one, under "+shell, func(t *testing.T) {
 			r := newRelease(t, "v1.2.3")
 			m := newMachine(t)
 			m.shell = shell
 			m.cwd = t.TempDir()
 			m.write(filepath.Join(m.cwd, "relbin", "ergo"), "#!/bin/sh\necho theirs\n", 0o755)
-			m.front = []string{"relbin"}
+			absolute := shim(t, "ergo", "echo theirs\n")
+			m.front = []string{absolute, "relbin"}
 			res := m.run(r.script(), "")
 			if res.code != 0 {
 				t.Fatalf("the install exited %d\n%s%s", res.code, res.stdout, res.stderr)
 			}
-			wantContains(t, "stdout", res.stdout, "ergo: left alone, ergo is already installed at ", "relbin/ergo\n", "ergo on your PATH: ")
-			wantNot(t, "stdout", res.stdout, "ergo is not on your PATH")
-			if exists(m.bin("ergo")) {
-				t.Error("an ergo was installed beside the one on PATH")
-			}
-			if got := r.archives("ergo/"); len(got) != 0 {
-				t.Errorf("ergo was downloaded: %v", got)
+			wantContains(t, "stdout", res.stdout, "ergo: left alone, ergo is already installed at "+filepath.Join(absolute, "ergo"))
+			wantNot(t, "stdout", res.stdout, "relative PATH directory")
+			if exists(m.bin("ergo")) || len(r.archives("ergo/")) != 0 {
+				t.Error("an ergo was installed beside the one that comes first on PATH")
 			}
 		})
 	}
@@ -1620,5 +1655,29 @@ func TestReleaseReplacesAParleyThatIsTheReleaseButCannotRun(t *testing.T) {
 	wantInstalled(t, m, "v1.2.3") // an executable file of mode 0755
 	if after, err := os.Stat(m.bin("parley")); err != nil || os.SameFile(before, after) {
 		t.Errorf("parley was written in place, not replaced by rename (err %v)", err)
+	}
+}
+
+// TestReleaseTakesAHarnessFoundOnlyThroughARelativeDirectoryForAbsent: parley
+// could not run it by name, so doctor is not asked about it.
+func TestReleaseTakesAHarnessFoundOnlyThroughARelativeDirectoryForAbsent(t *testing.T) {
+	for _, shell := range shells(t) {
+		t.Run(shell, func(t *testing.T) {
+			r := newRelease(t, "v1.2.3")
+			m := newMachine(t)
+			m.shell = shell
+			m.cwd = t.TempDir()
+			m.write(filepath.Join(m.cwd, "relbin", "claude"), "#!/bin/sh\necho 2.1.0\n", 0o755)
+			m.front = []string{"relbin"}
+			res := m.run(r.script(), "")
+			if res.code != 0 {
+				t.Fatalf("the install exited %d\n%s%s", res.code, res.stdout, res.stderr)
+			}
+			wantContains(t, "stdout", res.stdout, "parley doctor was not run")
+			wantNot(t, "stdout", res.stdout, "--harness claude")
+			if m.logged() != "" {
+				t.Errorf("doctor ran:\n%s", m.logged())
+			}
+		})
 	}
 }

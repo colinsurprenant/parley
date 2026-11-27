@@ -132,16 +132,34 @@ usable_dir() {
 	[ -d "$dir" ] && [ -w "$dir" ]
 }
 
-# find_command sets found to where PATH finds the command $1, or to nothing. What
-# command -v names has to be an executable regular file to count: a builtin, a
-# function or an alias is no path, and the path of a file may be relative, when
-# PATH holds a relative directory.
+# find_command looks for the command $1 on PATH as parley does, which is as Go's
+# exec.LookPath does: the first directory of PATH, in order, that holds an
+# executable regular file of that name decides, an empty entry is the current
+# directory, and a match in a relative directory is refused, whatever a shell
+# makes of it. So a command found through a relative directory is not one parley
+# can use, and `command -v`, which finds it in some shells by a relative path and
+# in others by an absolute one, is not asked. found is set to the path of a match
+# in an absolute directory; relative_dir is set to the directory of a match in a
+# relative one, "." for an empty entry; both are empty when there is no match.
 find_command() {
 	found=
-	candidate=$(command -v "$1" 2>/dev/null) || return 0
-	if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-		found=$candidate
-	fi
+	relative_dir=
+	[ -n "$PATH" ] || return 0
+	rest=$PATH:
+	while [ -n "$rest" ]; do
+		entry=${rest%%:*}
+		rest=${rest#*:}
+		if [ -z "$entry" ]; then
+			entry=.
+		fi
+		if [ -f "$entry/$1" ] && [ -x "$entry/$1" ]; then
+			case "$entry" in
+			/*) found=$entry/$1 ;;
+			*) relative_dir=$entry ;;
+			esac
+			return 0
+		fi
+	done
 }
 
 # binary_version prints the module version a Go binary was built at, read from
@@ -246,7 +264,11 @@ run_doctor() {
 # put one in ~/.local/bin.
 report_path() {
 	find_command "$1"
-	if [ -z "$found" ]; then
+	if [ -n "$relative_dir" ]; then
+		say "$1 is found through the relative PATH directory \"$relative_dir\", which parley cannot use"
+		path_needed=1
+		path_ahead_of=" ahead of the relative directory,"
+	elif [ -z "$found" ]; then
 		say "$1 is not on your PATH"
 		path_needed=1
 	elif [ "$found" -ef "$bindir/$1" ]; then
@@ -362,6 +384,7 @@ main() {
 	ergo_dest=$bindir/ergo
 	ergo_have=
 	find_command ergo
+	ergo_relative=$relative_dir
 	if [ -n "$found" ]; then
 		ergo_have="ergo is already installed at $found"
 	fi
@@ -411,6 +434,9 @@ main() {
 	if [ -n "$ergo_have" ]; then
 		say "ergo: left alone, $ergo_have"
 	else
+		if [ -n "$ergo_relative" ]; then
+			say "ergo: an ergo is found through the relative PATH directory \"$ergo_relative\", which parley cannot use"
+		fi
 		install_binary "$ergo_new" "$ergo_dest"
 		say "ergo: installed $ergo_version at $ergo_dest"
 	fi
@@ -468,6 +494,7 @@ main() {
 	run_doctor
 
 	path_needed=0
+	path_ahead_of=
 	report_path parley yes
 	if [ -n "$ergo_have" ]; then
 		report_path ergo no
@@ -475,7 +502,7 @@ main() {
 		report_path ergo yes
 	fi
 	if [ "$path_needed" -eq 1 ]; then
-		say "to run them by name, put $bindir first on PATH, for example by adding this line to your shell's startup file:"
+		say "to run them by name, put $bindir first on PATH,$path_ahead_of for example by adding this line to your shell's startup file:"
 		# shellcheck disable=SC2016 # the line is printed for a person to paste
 		say '  export PATH="$HOME/.local/bin:$PATH"'
 	fi
