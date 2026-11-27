@@ -618,31 +618,30 @@ is why `tmux` suits it. To stop it from another terminal, find the process with
 ergo behind (see the end of this section).
 
 If you can choose the moment, stop it when no session is in the middle of
-something. A post that a session has not received yet may never reach it. A pump
-that had already collected it can still hand it over, unless it is an OpenCode
-pump waiting for its busy session: that one reads the channel again once the
-session is idle, and after a restart what it had collected is behind the gap and
-lost. Either way, ask before anything is sent again.
+something. A post that a session has not received yet may or may not reach it
+after a restart: a pump may still hand over one it had already collected, or may
+read the channel again and find it gone. Ask before anything is sent again.
 
 ### What happens to live sessions
 
 A stop ends every connection at once. A parley process re-dials a dead connection
-once, on its next read, and does not keep trying, so one that is waiting for
-messages when the server goes fails and exits. One that is busy handing a delivery
-to its session, as an OpenCode pump is while its session is working, is not
-reading then: it re-dials on its next read, and carries on if the server is back
-by that time. The sessions keep running either way, with their conversations, and
-hear nothing until their process is connected again:
+once, on its next read, and does not keep trying: if the server is not back by
+then, the process exits. Most exit at once, since they spend their time reading;
+one that was busy, such as a pump handing a delivery to its session, may still be
+running when the server is back, and carries on. So after a restart, check which
+processes exited and start only those again. The sessions keep running either
+way, with their conversations, and hear nothing until their process is connected
+again:
 
-- **A Claude Code session.** Its `parley channel` process exits, and Claude Code
-  marks the server as failed in `/mcp`. Start `parley server` first, then pick
+- **A Claude Code session.** Its `parley channel` process normally exits, and
+  Claude Code marks the server as failed in `/mcp`. Start `parley server` first, then pick
   **Reconnect** for `parley` in `/mcp`, and check with a post that deliveries
   arrive: that last part is not verified. The sure way is to exit the session and
   relaunch it with its launch line plus `--resume <session-id>`, which keeps the
   conversation, then type `/parley-line`.
 - **A Codex or OpenCode session.** Its pump (`parley codex`, `parley opencode`)
-  exits with an error, unless it was busy as above and reconnected. The TUI is not
-  touched. Run the pump line again only if the pump has exited.
+  exits with an error, unless it was busy and reconnected. The TUI is not touched.
+  Run the pump line again only if the pump has exited.
 - **Anything posting.** `parley send` fails with exit 1 and `connection refused`,
   and posts nothing. A post that was in flight when the server went has an unknown
   outcome: another session may have received it before the history was lost, so
