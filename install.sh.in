@@ -19,8 +19,9 @@
 # them with the skills/install.sh they carry. Nothing is written outside the
 # temporary directory until every checksum has passed, and that directory is the
 # only thing removed that this script did not place. It uses no sudo, edits no
-# shell startup file, starts no server, stops no process and sends nothing but
-# its downloads' requests.
+# shell startup file, starts no server and stops no process. Over the network it
+# sends nothing but its downloads' requests; the parley doctor it runs at the end
+# checks the local server as doctor always does.
 #
 # A path it did not make is never followed and never replaced: a symlink at the
 # parley path is refused, and so is a regular file that is not a parley binary,
@@ -318,7 +319,9 @@ main() {
 	share=$HOME/.local/share/parley
 	skills=$share/skills
 
-	# Preflight: every destination is checked before anything is downloaded.
+	# Preflight: the binary and skills destinations are checked before anything is
+	# downloaded. The skill links are checked by skills/install.sh when it links
+	# them, after the rest is installed.
 	usable_dir "$bindir" || die "cannot make or write in $bindir"
 	usable_dir "$share" || die "cannot make or write in $share"
 
@@ -431,7 +434,7 @@ main() {
 	else
 		skills_failed=1
 		printf '%s\n' "$skills_out" >&2
-		warn "the skills could not all be linked, and everything else is installed. Links made from a parley checkout need that checkout's skills/install.sh --uninstall before this install can take their place, and a dangling link has to be removed by hand; then run the line again."
+		warn "the skills could not all be linked, and everything else is installed. Links made from a parley checkout need that checkout's skills/install.sh --uninstall before this install can take their place, a dangling link has to be removed by hand, and a file or directory that is not a link has to be moved aside; then run the line again."
 	fi
 
 	run_doctor

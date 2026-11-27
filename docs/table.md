@@ -28,8 +28,10 @@ step 3 says, then runs `parley doctor` for the harnesses it finds. Every downloa
 is checked against a checksum before anything is installed. A symlink where
 `parley` goes, a `parley` that is not parley, or a skills directory that is not
 its own stops the run before anything is installed, and is never replaced. An
-`ergo` already present is left alone and the run goes on, and a skill link that
-is not its own ends the run with exit 1 once the rest is installed. Running the
+`ergo` on your `PATH`, or a regular file at `~/.local/bin/ergo`, is left alone and
+the run goes on; with no `ergo` on your `PATH`, a symlink or a directory at that
+path stops the run. A skill link that is not its own ends the run with exit 1 once
+the rest is installed. Running the
 line again moves parley and the skills to the latest release, and says what it
 left alone. The line runs a
 script: to read it first, fetch it with `curl -fsSLo install.sh` and the same
