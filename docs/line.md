@@ -640,7 +640,7 @@ again:
   relaunch it with its launch line plus `--resume <session-id>`, which keeps the
   conversation, then type `/parley-line`.
 - **A Codex or OpenCode session.** Its pump (`parley codex`, `parley opencode`)
-  exits with an error, unless it was busy and reconnected. The TUI is not touched.
+  exits with an error, unless it reconnected. The TUI is not touched.
   Run the pump line again only if the pump has exited.
 - **Anything posting.** `parley send` fails with exit 1 and `connection refused`,
   and posts nothing. A post that was in flight when the server went has an unknown
