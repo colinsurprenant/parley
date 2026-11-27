@@ -476,8 +476,9 @@ func unameShim(t *testing.T, os_, arch string) string {
 	return shim(t, "uname", "case \"$1\" in -s) echo "+os_+" ;; -m) echo "+arch+" ;; esac\n")
 }
 
-// snapshot lists everything under root, links by their target, files by size and
-// mode: two snapshots are equal when nothing was added, removed or changed.
+// snapshot lists everything under root, links by their target, files by mode,
+// size and a hash of their contents: two snapshots are equal when nothing was
+// added, removed or changed, a same-size overwrite included.
 func snapshot(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
@@ -500,7 +501,12 @@ func snapshot(t *testing.T, root string) []string {
 		case info.IsDir():
 			out = append(out, rel+"/")
 		default:
-			out = append(out, rel+" "+info.Mode().String()+" "+strconv.FormatInt(info.Size(), 10))
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(body)
+			out = append(out, rel+" "+info.Mode().String()+" "+strconv.FormatInt(info.Size(), 10)+" "+hex.EncodeToString(sum[:8]))
 		}
 		return nil
 	})
@@ -1062,9 +1068,10 @@ func TestReleaseTellsParleyByAllThreeMarksOfItsBinary(t *testing.T) {
 	}
 }
 
-// TestReleaseLeavesAnErgoAlone: an ergo on PATH, or a file at ~/.local/bin/ergo
-// that PATH does not reach, is left as it is and said so, and ergo is not
-// downloaded.
+// TestReleaseLeavesAnErgoAlone: an ergo that PATH finds first in an absolute
+// directory, or a file at ~/.local/bin/ergo that PATH does not reach, is left as
+// it is and said so, and ergo is not downloaded. One that PATH finds first
+// through a relative directory is not one parley can use, and is not left alone.
 func TestReleaseLeavesAnErgoAlone(t *testing.T) {
 	t.Run("on PATH", func(t *testing.T) {
 		r := newRelease(t, "v1.2.3")
@@ -1126,6 +1133,31 @@ func TestReleaseLeavesAnErgoAlone(t *testing.T) {
 				}
 			})
 		}
+		t.Run("on PATH by a relative directory ahead of an absolute one, under "+shell, func(t *testing.T) {
+			// Go's LookPath stops at the first match, so the ergo in the absolute
+			// directory behind a relative one is not the one parley would run.
+			r := newRelease(t, "v1.2.3")
+			m := newMachine(t)
+			m.shell = shell
+			m.cwd = t.TempDir()
+			m.write(filepath.Join(m.cwd, "relbin", "ergo"), "#!/bin/sh\necho theirs\n", 0o755)
+			absolute := shim(t, "ergo", "echo theirs\n")
+			m.front = []string{"relbin", absolute}
+			res := m.run(r.script(), "")
+			if res.code != 0 {
+				t.Fatalf("the install exited %d\n%s%s", res.code, res.stdout, res.stderr)
+			}
+			found := `found through the relative PATH directory "relbin", which parley cannot use`
+			wantContains(t, "stdout", res.stdout, "ergo: an ergo is "+found, "ergo: installed "+relErgoVersion+" at "+m.bin("ergo"),
+				"put "+filepath.Dir(m.bin("ergo"))+" first on PATH, ahead of the relative directory, for example")
+			wantNot(t, "stdout", res.stdout, "ergo: left alone")
+			if got := r.archives("ergo/"); len(got) != 1 {
+				t.Errorf("ergo was downloaded %d times, want once: %v", len(got), got)
+			}
+			if got := m.read(filepath.Join(absolute, "ergo")); got != "#!/bin/sh\necho theirs\n" {
+				t.Errorf("the ergo in the absolute directory was rewritten: %q", got)
+			}
+		})
 		t.Run("on PATH by an absolute directory ahead of a relative one, under "+shell, func(t *testing.T) {
 			r := newRelease(t, "v1.2.3")
 			m := newMachine(t)
