@@ -117,27 +117,56 @@ func (r skillReader) check(home, name string) Result {
 		if res.Level == OK || len(r.roots) == 1 {
 			return res
 		}
-		problems = append(problems, strings.TrimSuffix(res.Detail, ": "+skillFix))
+		problems = append(problems, skillFinding(res.Detail))
 	}
 	return Result{Fail, "skill", fmt.Sprintf("%s reads skills from either root, and %s is under neither: %s: %s",
 		r.harness, name, strings.Join(problems, "; "), skillFix)}
 }
 
-// skillFix is what a person does about a link that is not there.
-const skillFix = "run sh skills/install.sh from a parley checkout"
+// skillFix is what a person does about a link that is not there: the install
+// line, which links them from a release, or skills/install.sh, which links them
+// from a checkout.
+const skillFix = "run the install line (" + InstallLine + "), or sh skills/install.sh from a parley checkout"
+
+// What stands in the way of that is a path skills/install.sh will not replace: it
+// links only where nothing is, or where its own link already is, so a dangling
+// link, or a path that is not a link to a skill, is a refusal that the person
+// clears first. The note is how a report of several roots says it in a clause.
+const (
+	skillFixDangling = "remove it, then " + skillFix
+	skillFixForeign  = "it is not parley's, so move it aside, then " + skillFix
+)
+
+var skillFixes = []struct{ fix, note string }{
+	{skillFixDangling, " (remove it first)"},
+	{skillFixForeign, " (not parley's: move it aside first)"},
+}
+
+// skillFinding is what a skill link's detail says is wrong, without its fix: a
+// report of several roots gives the fix once, at the end, and keeps from each
+// fix the clause that tells the person what to clear first.
+func skillFinding(detail string) string {
+	for _, f := range skillFixes {
+		if finding, ok := strings.CutSuffix(detail, ": "+f.fix); ok {
+			return finding + f.note
+		}
+	}
+	return strings.TrimSuffix(detail, ": "+skillFix)
+}
 
 func checkSkillLink(path string) Result {
 	const surface = "skill"
-	fix := skillFix
 	li, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return Result{Fail, surface, fmt.Sprintf("%s is missing: %s", path, fix)}
+		return Result{Fail, surface, fmt.Sprintf("%s is missing: %s", path, skillFix)}
 	case err != nil:
 		return Result{Fail, surface, fmt.Sprintf("%s: %v", path, err)}
 	}
 	target := path
+	fix := skillFixForeign
 	if li.Mode()&fs.ModeSymlink != 0 {
+		fix = skillFixDangling
 		raw, err := os.Readlink(path)
 		if err != nil {
 			return Result{Fail, surface, fmt.Sprintf("%s: %v", path, err)}
@@ -146,7 +175,7 @@ func checkSkillLink(path string) Result {
 		// control character or a second line.
 		to := codex.PlainLine(raw)
 		if _, err := os.Stat(path); err != nil {
-			return Result{Fail, surface, fmt.Sprintf("%s -> %s is dangling: %s", path, to, fix)}
+			return Result{Fail, surface, fmt.Sprintf("%s -> %s is dangling: %s", path, to, skillFixDangling)}
 		}
 		target = fmt.Sprintf("%s -> %s", path, to)
 	}

@@ -15,6 +15,33 @@ directory (`$XDG_STATE_HOME/parley`, by default `~/.local/state/parley`, or
 
 ## Once per machine
 
+On macOS or Linux, on amd64 or arm64 (the four platforms the releases are built
+for; on any other the script stops and says so), with no Go and no checkout of
+parley, one line does the first three of these from the latest release, except
+putting `~/.local/bin` on your `PATH`, which it tells you how to do when it is
+not there:
+
+```
+curl -fsSL https://github.com/colinsurprenant/parley/releases/latest/download/install.sh | sh
+```
+
+It puts `parley` and `ergo` in `~/.local/bin` (an `ergo` that your `PATH` finds
+first in an absolute directory is left alone), puts the skills in `~/.local/share/parley/skills` and links them as
+step 3 says, then runs `parley doctor` for the harnesses it finds. Every download
+is checked against a checksum before anything is installed. A symlink where
+`parley` goes, a `parley` that is not parley, or a skills directory that is not
+its own stops the run before anything is installed, and is never replaced. An
+`ergo` that your `PATH` finds first in an absolute directory, or a regular file at
+`~/.local/bin/ergo`, is left alone and the run goes on. One that it finds first
+through a relative directory or an empty entry is one parley cannot use, so the
+line installs its own, unless a regular file is already at `~/.local/bin/ergo`; with no usable `ergo`, a symlink or a directory at that
+path stops the run. A skill link that is not its own ends the run with exit 1 once
+the rest is installed. Running the
+line again moves parley and the skills to the latest release, and says what it
+left alone. The line runs a
+script: to read it first, fetch it with `curl -fsSLo install.sh` and the same
+address, read it, and run `sh install.sh`. Or by hand:
+
 1. **The binary.** From a parley checkout, `go build -o bin/parley ./cmd/parley`,
    and put `parley` on the `PATH` your terminals start with. Every command
    `parley table new` prints names the binary by its absolute path, so a copy

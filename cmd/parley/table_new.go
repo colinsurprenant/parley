@@ -1252,7 +1252,7 @@ func (p *tablePlan) runbook(r *tableRun) string {
 	if r.sheet != "" {
 		next("Fill in the sheet, which names the seats, the question and its scope, at %s, then open the table with this one line in the channel:", sheet)
 	} else {
-		next("No sheet template was found at ~/.claude/skills/parley-table/sheet.md or ~/.agents/skills/parley-table/sheet.md (sh skills/install.sh from a parley checkout links them). Copy skills/parley-table/sheet.md from a parley checkout to %s, fill it in, then open the table with this one line in the channel:", sheet)
+		next("No sheet template was found at ~/.claude/skills/parley-table/sheet.md or ~/.agents/skills/parley-table/sheet.md (run %s, or sh skills/install.sh from a parley checkout, to link them; a dangling link or a directory of your own at those paths has to be cleared first). Copy skills/parley-table/sheet.md from a parley checkout to %s, fill it in, then open the table with this one line in the channel:", doctor.InstallLine, sheet)
 	}
 	cmd("TABLE " + p.id + " " + sheet)
 	fmt.Fprintf(&b, "\nWhen it is over: %s table end %s --state-dir %s\n", q(p.self), p.id, q(p.base))

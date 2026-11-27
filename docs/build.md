@@ -18,8 +18,9 @@ and `<nick>` one peer's nick.
 ## Requirements
 
 Everything in "Once per machine" of `docs/table.md` holds here too: the binary,
-ergo, the skills (`sh skills/install.sh` links `parley-build`, `parley-table` and
-`parley-line`; the build skill is `/parley-build` in Claude Code and `$parley-build` in Codex),
+ergo, the skills (the install line of that section links `parley-build`,
+`parley-table` and `parley-line`, and so does `sh skills/install.sh` from a
+checkout; the build skill is `/parley-build` in Claude Code and `$parley-build` in Codex),
 the `claude` and `codex` harnesses on the `PATH`, and an IRC client for you.
 `parley doctor` checks them (`--harness claude` or `--harness codex`, repeatable,
 limits it to the harnesses you use; without one it checks Claude Code and Codex,

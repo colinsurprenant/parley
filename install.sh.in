@@ -1,0 +1,519 @@
+#!/bin/sh
+# Install parley, ergo and the parley skills from one release of
+# github.com/colinsurprenant/parley, with no Go and no checkout:
+#
+#   curl -fsSL https://github.com/colinsurprenant/parley/releases/latest/download/install.sh | sh
+#
+# This file is the template; the release workflow renders it into the install.sh
+# attached to a release by replacing the @-delimited names assigned at the top of
+# main() with that release's version, download address and archive checksums, and
+# ergo's. A script that still holds one refuses to run, and the tests render their
+# own, so there is nothing to override at run time and no option.
+#
+# What it does, in this order, and nothing else: refuse before touching anything
+# if the parley or skills destination holds something that is not ours; download
+# the parley archive for this machine and, unless a usable ergo or a regular
+# file at the ergo path is already there, the ergo archive, and check each
+# against the checksum rendered into this script; then place ergo and parley in
+# ~/.local/bin, each written beside its destination and renamed into it, and the
+# skills in ~/.local/share/parley/skills, and link them with the
+# skills/install.sh they carry. Nothing is written outside the temporary
+# directory until every checksum has passed, and that directory is the only
+# thing removed that this script did not place. It uses no sudo, edits no shell
+# startup file, starts no server and stops no process. Over the network it sends
+# nothing but its downloads' requests; the parley doctor it runs at the end
+# checks the local server as doctor always does.
+#
+# A path it did not make is never followed and never replaced: a symlink at the
+# parley path is refused, and so is a regular file that is not a parley binary,
+# which is told by what a Go build of parley carries (see is_parley_binary) and
+# never by running it. An ergo that PATH finds first in an absolute directory, or
+# a regular file at the ergo path, is left alone and the run goes on. An ergo that
+# PATH finds first through a relative directory, or an empty entry, is not one
+# parley can use, and the script installs its own (see find_command), unless a
+# regular file is already at the ergo path, which is left alone. With no
+# usable ergo on PATH, a symlink or a directory at the ergo path is refused. Only
+# the last component of a path is refused as a symlink: ~/.local or ~/.local/bin
+# that is itself a symlink is followed, as the user set it up.
+#
+# A run that stops, or is stopped, is recovered by running the line again. The
+# skills may be absent for the moment between the old directory moving aside and
+# the new one moving in.
+#
+# Everything runs from main(), called on the last line, so a script cut short in
+# the middle of any function is a syntax error and does nothing.
+set -eu
+
+# What a Go binary of parley carries, and what the release archive's skills
+# directory carries to say whose it is: ~/.local/share/parley/skills is only ever
+# replaced or cleared when it holds the marker. The workflow writes the marker.
+parley_module=github.com/colinsurprenant/parley
+parley_package=$parley_module/cmd/parley
+marker=.parley-release
+
+# tmp is the temporary directory, staged the file being written beside its
+# destination and stage the skills directory being built; cleanup removes the
+# three, and nothing else.
+tmp=
+staged=
+stage=
+
+say() {
+	printf '%s\n' "$*"
+}
+
+warn() {
+	printf 'install.sh: %s\n' "$*" >&2
+}
+
+die() {
+	warn "$*"
+	exit 1
+}
+
+cleanup() {
+	if [ -n "$staged" ]; then
+		rm -f -- "$staged"
+	fi
+	if [ -n "$stage" ]; then
+		rm -rf -- "$stage"
+	fi
+	if [ -n "$tmp" ]; then
+		rm -rf -- "$tmp"
+	fi
+}
+
+need() {
+	command -v "$1" >/dev/null 2>&1 || die "$1 is needed and was not found on PATH"
+}
+
+# sha256_of prints the sha256 of the file $1, and fails if the hasher does: its
+# status is not hidden behind a pipe. The hasher reads the file on its standard
+# input, so that its output is the sum and a "-" and never carries the file's
+# name, which sha256sum escapes, with a backslash before the line, when it holds
+# a backslash or a newline.
+sha256_of() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		line=$(sha256sum <"$1") || return 1
+	else
+		line=$(shasum -a 256 <"$1") || return 1
+	fi
+	printf '%s\n' "${line%% *}"
+}
+
+# fetch downloads the url $1 to the file $2.
+fetch() {
+	curl -fsSL -o "$2" "$1" || die "could not download $1"
+}
+
+# verify checks that the file $1 has the sha256 $2, and names it $3 if not.
+verify() {
+	got=$(sha256_of "$1") || die "could not hash $3"
+	if [ "$got" != "$2" ]; then
+		die "$3 does not match its checksum (got $got, want $2): nothing was installed"
+	fi
+}
+
+# extract unpacks the archive $1, once verified, into the new directory $2. -o
+# keeps the archive's owner off the files when this runs as root.
+extract() {
+	mkdir -- "$2" || die "could not make $2"
+	tar -o -xzf "$1" -C "$2" || die "could not unpack $1: nothing was installed"
+}
+
+# usable_dir succeeds if $1, an absolute path, or the nearest ancestor of it that
+# exists, is a directory this user can write to: what the install will make or
+# fill. The ancestor is cut from the path by parameter expansion, not read back
+# from dirname, whose output a command substitution trims of trailing newlines.
+usable_dir() {
+	dir=$1
+	while [ ! -e "$dir" ] && [ ! -L "$dir" ]; do
+		dir=${dir%/*}
+		if [ -z "$dir" ]; then
+			dir=/
+		fi
+	done
+	[ -d "$dir" ] && [ -w "$dir" ]
+}
+
+# find_command looks for the command $1 on PATH as parley does, which is as Go's
+# exec.LookPath does: the first directory of PATH, in order, that holds an
+# executable regular file of that name decides, an empty entry is the current
+# directory, and a match in a relative directory is refused, whatever a shell
+# makes of it. So a command found through a relative directory is not one parley
+# can use, and `command -v`, which finds it in some shells by a relative path and
+# in others by an absolute one, is not asked. found is set to the path of a match
+# in an absolute directory; relative_dir is set to the directory of a match in a
+# relative one, "." for an empty entry; both are empty when there is no match.
+find_command() {
+	found=
+	relative_dir=
+	[ -n "$PATH" ] || return 0
+	rest=$PATH:
+	while [ -n "$rest" ]; do
+		entry=${rest%%:*}
+		rest=${rest#*:}
+		if [ -z "$entry" ]; then
+			entry=.
+		fi
+		if [ -f "$entry/$1" ] && [ -x "$entry/$1" ]; then
+			case "$entry" in
+			/*) found=$entry/$1 ;;
+			*) relative_dir=$entry ;;
+			esac
+			return 0
+		fi
+	done
+}
+
+# binary_version prints the module version a Go binary was built at, read from
+# the build information it carries, or nothing. The file is only read.
+binary_version() {
+	LC_ALL=C grep -a -o -E "mod[[:space:]]${parley_module}[[:space:]][^[:space:]]+" "$1" 2>/dev/null |
+		head -n 1 | cut -f 3 || true
+}
+
+# is_parley_binary succeeds if the regular file $1 is a compiled Go program whose
+# main package is parley's. All three must hold, and the file is only read: it
+# begins with the magic number of an executable (ELF, or Mach-O thin or fat), it
+# carries the marker the Go linker puts before a binary's build information, and
+# that information has the line naming parley's main package, tab and all, up to
+# the end of the line. A launcher script that runs parley by its package path has
+# the line's text and none of the rest.
+is_parley_binary() {
+	magic=$(LC_ALL=C od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n')
+	case "$magic" in
+	7f454c46 | cffaedfe | cefaedfe | cafebabe | bebafeca) ;;
+	*) return 1 ;;
+	esac
+	LC_ALL=C grep -aqF -- "$(printf '\377 Go buildinf:')" "$1" || return 1
+	package_re=$(printf '%s' "$parley_package" | sed 's/[.]/[.]/g')
+	LC_ALL=C grep -aqE -- "path$(printf '\t')${package_re}\$" "$1"
+}
+
+# owned_skills_dir succeeds if $1 is a real directory holding the marker, a
+# regular file whose first line is "parley v<major>.<minor>.<patch>", with any
+# suffix a tag may carry: the only kind of skills directory this script clears
+# or moves aside.
+owned_skills_dir() {
+	[ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/$marker" ] && [ ! -L "$1/$marker" ] &&
+		head -n 1 "$1/$marker" | grep -Eqx 'parley v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'
+}
+
+# discard removes the skills directory $1, if there is one, by renaming it into a
+# directory of its own and deleting that, so that $1 is never a directory half
+# deleted, which the preflight of the next run would refuse. A run interrupted in
+# the deleting leaves the rest of it in a .discard directory of $share, which
+# nothing reads.
+discard() {
+	if [ -e "$1" ] || [ -L "$1" ]; then
+		gone=$(mktemp -d "$share/.discard.XXXXXX") || die "could not make a directory in $share"
+		mv -- "$1" "$gone/" || die "could not move $1 aside"
+		rm -rf -- "$gone"
+	fi
+}
+
+# install_binary writes the file $1 beside the destination $2 and renames it into
+# place, so the destination is the old binary or the new one and never half of
+# either.
+install_binary() {
+	mkdir -p -- "$bindir" || die "could not make $bindir"
+	staged=$(mktemp "$bindir/.install.XXXXXX") || die "could not write in $bindir"
+	cp -- "$1" "$staged" || die "could not write $staged"
+	chmod 0755 "$staged" || die "could not make $staged executable"
+	mv -f -- "$staged" "$2" || die "could not move $staged to $2"
+	staged=
+}
+
+# opencode_is_2 succeeds if the opencode on PATH reports version 2; parley speaks
+# to no other.
+opencode_is_2() {
+	version=$(opencode --version 2>/dev/null </dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1) || return 1
+	[ "${version%%.*}" = 2 ]
+}
+
+# run_doctor runs parley doctor with the ~/.local/bin binaries first on PATH, as
+# they are for a person who has added it, against each harness found. Its answer
+# is the machine's state, not the install's, so it never fails the install.
+run_doctor() {
+	(
+		PATH=$bindir:$PATH
+		set --
+		find_command claude
+		if [ -n "$found" ]; then
+			set -- "$@" --harness claude
+		fi
+		find_command codex
+		if [ -n "$found" ]; then
+			set -- "$@" --harness codex
+		fi
+		find_command opencode
+		if [ -n "$found" ] && opencode_is_2; then
+			set -- "$@" --harness opencode
+		fi
+		if [ "$#" -eq 0 ]; then
+			say "no claude, codex or opencode 2 found on PATH, so parley doctor was not run; run it once you have one"
+			exit 0
+		fi
+		say "parley doctor $*"
+		status=0
+		"$bindir/parley" doctor "$@" </dev/null || status=$?
+		if [ "$status" -ne 0 ]; then
+			say "parley doctor exited $status; the install itself is complete"
+		fi
+	)
+}
+
+# report_path says which $1 the person's own PATH finds. $2 is yes if this run
+# put one in ~/.local/bin.
+report_path() {
+	find_command "$1"
+	if [ -n "$relative_dir" ]; then
+		say "$1 is found through the relative PATH directory \"$relative_dir\", which parley cannot use"
+		path_needed=1
+		path_ahead_of=" ahead of the relative directory,"
+	elif [ -z "$found" ]; then
+		say "$1 is not on your PATH"
+		path_needed=1
+	elif [ "$found" -ef "$bindir/$1" ]; then
+		say "$1 on your PATH: $found"
+	elif [ "$2" = yes ]; then
+		say "$1 on your PATH is $found, which wins over the one installed here, $bindir/$1"
+		path_needed=1
+	else
+		say "$1 on your PATH: $found"
+	fi
+}
+
+main() {
+	if [ "$#" -gt 0 ]; then
+		die "this script takes no arguments"
+	fi
+
+	parley_version='@PARLEY_VERSION@'
+	parley_base='@PARLEY_BASE_URL@'
+	parley_sha_darwin_amd64='@PARLEY_SHA256_DARWIN_AMD64@'
+	parley_sha_darwin_arm64='@PARLEY_SHA256_DARWIN_ARM64@'
+	parley_sha_linux_amd64='@PARLEY_SHA256_LINUX_AMD64@'
+	parley_sha_linux_arm64='@PARLEY_SHA256_LINUX_ARM64@'
+	ergo_version='@ERGO_VERSION@'
+	ergo_base='@ERGO_BASE_URL@'
+	ergo_sha_macos_arm64='@ERGO_SHA256_MACOS_ARM64@'
+	ergo_sha_macos_x86_64='@ERGO_SHA256_MACOS_X86_64@'
+	ergo_sha_linux_x86_64='@ERGO_SHA256_LINUX_X86_64@'
+	ergo_sha_linux_arm64='@ERGO_SHA256_LINUX_ARM64@'
+
+	for value in "$parley_version" "$parley_base" "$ergo_version" "$ergo_base"; do
+		case "$value" in
+		'' | *@*) die "this script was not rendered by a release: it still holds a placeholder" ;;
+		esac
+	done
+	for value in "$parley_sha_darwin_amd64" "$parley_sha_darwin_arm64" "$parley_sha_linux_amd64" "$parley_sha_linux_arm64" \
+		"$ergo_sha_macos_arm64" "$ergo_sha_macos_x86_64" "$ergo_sha_linux_x86_64" "$ergo_sha_linux_arm64"; do
+		case "$value" in
+		*@*) die "this script was not rendered by a release: it still holds a placeholder" ;;
+		*[!0-9a-f]* | '') die "this script holds a checksum that is not a sha256: $value" ;;
+		esac
+		if [ "${#value}" -ne 64 ]; then
+			die "this script holds a checksum that is not a sha256: $value"
+		fi
+	done
+
+	# The platform, named as parley's archives name it and as ergo's do.
+	machine=$(uname -m)
+	case "$(uname -s)" in
+	Darwin) os=darwin ergo_os=macos ;;
+	Linux) os=linux ergo_os=linux ;;
+	*) die "unsupported platform $(uname -s)/$machine: parley is built for macOS and Linux on amd64 and arm64" ;;
+	esac
+	case "$machine" in
+	x86_64 | amd64) arch=amd64 ergo_arch=x86_64 ;;
+	arm64 | aarch64) arch=arm64 ergo_arch=arm64 ;;
+	*) die "unsupported platform $(uname -s)/$machine: parley is built for macOS and Linux on amd64 and arm64" ;;
+	esac
+	# A shell started under Rosetta on an Apple silicon Mac says x86_64; the key is
+	# 1 there and unknown on an Intel Mac, which sysctl reports as an error.
+	if [ "$os" = darwin ] && [ "$arch" = amd64 ] &&
+		[ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
+		arch=arm64
+		ergo_arch=arm64
+	fi
+	case "$os-$arch" in
+	darwin-amd64) parley_sha=$parley_sha_darwin_amd64 ;;
+	darwin-arm64) parley_sha=$parley_sha_darwin_arm64 ;;
+	linux-amd64) parley_sha=$parley_sha_linux_amd64 ;;
+	linux-arm64) parley_sha=$parley_sha_linux_arm64 ;;
+	esac
+	case "$ergo_os-$ergo_arch" in
+	macos-arm64) ergo_sha=$ergo_sha_macos_arm64 ;;
+	macos-x86_64) ergo_sha=$ergo_sha_macos_x86_64 ;;
+	linux-x86_64) ergo_sha=$ergo_sha_linux_x86_64 ;;
+	linux-arm64) ergo_sha=$ergo_sha_linux_arm64 ;;
+	esac
+
+	need curl
+	need tar
+	need mktemp
+	need grep
+	need cmp
+	if ! command -v sha256sum >/dev/null 2>&1; then
+		need shasum
+	fi
+
+	case "${HOME:-}" in
+	/*) ;;
+	*) die "HOME is not set to an absolute path" ;;
+	esac
+	bindir=$HOME/.local/bin
+	share=$HOME/.local/share/parley
+	skills=$share/skills
+
+	# Preflight: the binary and skills destinations are checked before anything is
+	# downloaded. The skill links are checked by skills/install.sh when it links
+	# them, after the rest is installed.
+	usable_dir "$bindir" || die "cannot make or write in $bindir"
+	usable_dir "$share" || die "cannot make or write in $share"
+
+	parley_dest=$bindir/parley
+	parley_old=
+	if [ -L "$parley_dest" ]; then
+		die "$parley_dest is a symlink; leaving it alone"
+	elif [ -e "$parley_dest" ]; then
+		[ -f "$parley_dest" ] || die "$parley_dest is not a regular file; leaving it alone"
+		is_parley_binary "$parley_dest" || die "$parley_dest is not a parley binary; leaving it alone"
+		parley_old=$(binary_version "$parley_dest")
+		: "${parley_old:=an unknown version}"
+	fi
+
+	ergo_dest=$bindir/ergo
+	ergo_have=
+	find_command ergo
+	ergo_relative=$relative_dir
+	if [ -n "$found" ]; then
+		ergo_have="ergo is already installed at $found"
+	fi
+	if [ -z "$ergo_have" ]; then
+		if [ -L "$ergo_dest" ]; then
+			die "$ergo_dest is a symlink; leaving it alone"
+		elif [ -e "$ergo_dest" ]; then
+			[ -f "$ergo_dest" ] || die "$ergo_dest is not a regular file; leaving it alone"
+			ergo_have="$ergo_dest is already a file"
+		fi
+	fi
+
+	for dir in "$skills" "$skills.new" "$skills.old"; do
+		if [ -e "$dir" ] || [ -L "$dir" ]; then
+			owned_skills_dir "$dir" || die "$dir is not a skills directory this script made; leaving it alone"
+		fi
+	done
+
+	# Download and verify everything before anything is installed.
+	trap cleanup EXIT
+	trap 'exit 1' HUP INT TERM
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/parley-install.XXXXXX") || die "could not make a temporary directory"
+
+	parley_name=parley-$parley_version-$os-$arch
+	say "downloading parley $parley_version for $os/$arch"
+	fetch "$parley_base/$parley_name.tar.gz" "$tmp/$parley_name.tar.gz"
+	verify "$tmp/$parley_name.tar.gz" "$parley_sha" "$parley_name.tar.gz"
+	if [ -z "$ergo_have" ]; then
+		ergo_name=ergo-$ergo_version-$ergo_os-$ergo_arch
+		say "downloading ergo $ergo_version for $ergo_os/$ergo_arch"
+		fetch "$ergo_base/$ergo_name.tar.gz" "$tmp/$ergo_name.tar.gz"
+		verify "$tmp/$ergo_name.tar.gz" "$ergo_sha" "$ergo_name.tar.gz"
+	fi
+
+	extract "$tmp/$parley_name.tar.gz" "$tmp/parley"
+	parley_new=$tmp/parley/$parley_name/parley
+	skills_new=$tmp/parley/$parley_name/skills
+	[ -f "$parley_new" ] && [ ! -L "$parley_new" ] || die "$parley_name.tar.gz holds no parley binary"
+	[ -f "$skills_new/$marker" ] && [ ! -L "$skills_new/$marker" ] || die "$parley_name.tar.gz holds no skills"
+	if [ -z "$ergo_have" ]; then
+		extract "$tmp/$ergo_name.tar.gz" "$tmp/ergo"
+		ergo_new=$tmp/ergo/$ergo_name/ergo
+		[ -f "$ergo_new" ] && [ ! -L "$ergo_new" ] || die "$ergo_name.tar.gz holds no ergo"
+	fi
+
+	# Install.
+	if [ -n "$ergo_have" ]; then
+		say "ergo: left alone, $ergo_have"
+	else
+		if [ -n "$ergo_relative" ]; then
+			say "ergo: an ergo is found through the relative PATH directory \"$ergo_relative\", which parley cannot use"
+		fi
+		install_binary "$ergo_new" "$ergo_dest"
+		say "ergo: installed $ergo_version at $ergo_dest"
+	fi
+
+	if [ -z "$parley_old" ]; then
+		install_binary "$parley_new" "$parley_dest"
+		say "parley: installed $parley_version at $parley_dest"
+	elif cmp -s -- "$parley_new" "$parley_dest"; then
+		if [ -x "$parley_dest" ]; then
+			say "parley: $parley_dest is already $parley_version; left alone"
+		else
+			install_binary "$parley_new" "$parley_dest"
+			say "parley: $parley_dest was $parley_version but not executable; replaced it with an executable copy"
+		fi
+	else
+		install_binary "$parley_new" "$parley_dest"
+		say "parley: $parley_old -> $parley_version at $parley_dest"
+		say "Sessions already running keep the old parley until they are restarted, but their replies (parley send) use the new one at once."
+		say "A line whose launch files name another parley path keeps that path; to move a session to this one, drop it (parley line drop) and add it again (parley line add)."
+	fi
+
+	# The named paths are only ever renamed whole: skills.new is the finished copy
+	# of a staging directory that may be cut short anywhere, and skills.old is the
+	# directory that was there, so a run stopped at any point leaves directories
+	# with the marker, which the next run clears, and never one without.
+	mkdir -p -- "$share" || die "could not make $share"
+	discard "$skills.new"
+	discard "$skills.old"
+	if [ -d "$skills" ] && cmp -s -- "$skills/$marker" "$skills_new/$marker"; then
+		say "skills: $skills is already at $parley_version; left alone"
+	else
+		stage=$(mktemp -d "$share/.stage.XXXXXX") || die "could not make a directory in $share"
+		chmod 0755 "$stage" || die "could not make $stage readable"
+		cp -- "$skills_new/$marker" "$stage/$marker" || die "could not copy the skills to $stage"
+		cp -R -- "$skills_new/." "$stage/" || die "could not copy the skills to $stage"
+		mv -- "$stage" "$skills.new" || die "could not move $stage to $skills.new"
+		stage=
+		if [ -d "$skills" ]; then
+			mv -- "$skills" "$skills.old" || die "could not move $skills aside"
+		fi
+		mv -- "$skills.new" "$skills" || die "could not move $skills.new to $skills"
+		discard "$skills.old"
+		say "skills: installed $parley_version at $skills"
+	fi
+
+	skills_failed=0
+	if skills_out=$(sh "$skills/install.sh" </dev/null 2>&1); then
+		say "$skills_out"
+	else
+		skills_failed=1
+		printf '%s\n' "$skills_out" >&2
+		warn "the skills could not all be linked, and everything else is installed. Links made from a parley checkout need that checkout's skills/install.sh --uninstall before this install can take their place, any other link, dangling or not, has to be removed by hand, and a file or directory that is not a link has to be moved aside; then run the line again."
+	fi
+
+	run_doctor
+
+	path_needed=0
+	path_ahead_of=
+	report_path parley yes
+	if [ -n "$ergo_have" ]; then
+		report_path ergo no
+	else
+		report_path ergo yes
+	fi
+	if [ "$path_needed" -eq 1 ]; then
+		say "to run them by name, put $bindir first on PATH,$path_ahead_of for example by adding this line to your shell's startup file:"
+		# shellcheck disable=SC2016 # the line is printed for a person to paste
+		say '  export PATH="$HOME/.local/bin:$PATH"'
+	fi
+
+	if [ "$skills_failed" -eq 1 ]; then
+		exit 1
+	fi
+}
+
+main "$@"

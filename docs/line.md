@@ -36,8 +36,9 @@ Example nicks are `plan`, `build` and `review`.
 
 The same as for a table, from `docs/table.md` ("Once per machine"): the binary
 on the `PATH` your terminals start with, ergo, the harnesses your sessions run
-on, and an IRC client for you. `sh skills/install.sh` links all three skills,
-`parley-build`, `parley-table` and `parley-line`, into `~/.claude/skills` and
+on, and an IRC client for you. The install line of that section links all three
+skills, and so does `sh skills/install.sh` from a checkout: `parley-build`,
+`parley-table` and `parley-line`, into `~/.claude/skills` and
 `~/.agents/skills`; the line skill is then `/parley-line` in Claude Code and
 `$parley-line` in Codex, and OpenCode, which reads both roots, loads it with its
 skill tool. `parley doctor` checks the links with the rest. A line takes OpenCode

@@ -73,9 +73,14 @@ const (
 // ergoVerifiedURL is the release page of the ergo that was verified.
 const ergoVerifiedURL = "https://github.com/ergochat/ergo/releases/tag/v" + ErgoVerified
 
+// InstallLine is the one line that installs parley, ergo and the skills from the
+// latest release, with no Go and no checkout (install.sh.in is the script it
+// runs, attached to each release by .github/workflows/release.yml).
+const InstallLine = "curl -fsSL https://github.com/colinsurprenant/parley/releases/latest/download/install.sh | sh"
+
 // ErgoInstallHint is what a person does about an ergo that is not installed. It
 // is the one wording of it: `parley doctor` and `parley server` both say it.
-const ErgoInstallHint = "install ergo from " + ErgoInstallURL + " (contrib/ergo/README.md in a parley checkout has the steps), or name it with --ergo-bin"
+const ErgoInstallHint = "run the install line (" + InstallLine + "), or install ergo from " + ErgoInstallURL + " (contrib/ergo/README.md in a parley checkout has the steps), or name it with --ergo-bin"
 
 // The default names the harnesses are resolved by, on PATH.
 const (
