@@ -24,10 +24,13 @@
 #
 # A path it did not make is never followed and never replaced: a symlink at the
 # parley path is refused, and so is a regular file that is not a parley binary,
-# which is told by the module path a Go binary carries and never by running it.
-# An ergo on PATH, or a regular file at the ergo path, is left alone and the run
-# goes on; with no ergo on PATH, a symlink or a directory at the ergo path is
-# refused.
+# which is told by what a Go build of parley carries (see is_parley_binary) and
+# never by running it. An ergo on PATH, or a regular file at the ergo path, is
+# left alone and the run goes on; with no ergo on PATH, a symlink or a directory
+# at the ergo path is refused. Only the last component of a path is refused as a
+# symlink: ~/.local or ~/.local/bin that is itself a symlink is followed, as the
+# user set it up.
+#
 # A run that stops, or is stopped, is recovered by running the line again. The
 # skills may be absent for the moment between the old directory moving aside and
 # the new one moving in.
@@ -124,10 +127,30 @@ binary_version() {
 		head -n 1 | cut -f 3 || true
 }
 
-# owned_skills_dir succeeds if $1 is a real directory holding the marker: the
-# only kind of skills directory this script clears or moves aside.
+# is_parley_binary succeeds if the regular file $1 is a compiled Go program whose
+# main package is parley's. All three must hold, and the file is only read: it
+# begins with the magic number of an executable (ELF, or Mach-O thin or fat), it
+# carries the marker the Go linker puts before a binary's build information, and
+# that information has the line naming parley's main package, tab and all, up to
+# the end of the line. A launcher script that runs parley by its package path has
+# the line's text and none of the rest.
+is_parley_binary() {
+	magic=$(LC_ALL=C od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n')
+	case "$magic" in
+	7f454c46 | cffaedfe | cefaedfe | cafebabe | bebafeca) ;;
+	*) return 1 ;;
+	esac
+	LC_ALL=C grep -aqF -- "$(printf '\377 Go buildinf:')" "$1" || return 1
+	package_re=$(printf '%s' "$parley_package" | sed 's/[.]/[.]/g')
+	LC_ALL=C grep -aqE -- "path$(printf '\t')${package_re}\$" "$1"
+}
+
+# owned_skills_dir succeeds if $1 is a real directory holding the marker, a
+# regular file that says "parley" and a version: the only kind of skills
+# directory this script clears or moves aside.
 owned_skills_dir() {
-	[ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/$marker" ] && [ ! -L "$1/$marker" ]
+	[ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/$marker" ] && [ ! -L "$1/$marker" ] &&
+		grep -q '^parley ' "$1/$marker"
 }
 
 # discard removes the skills directory $1, if there is one, by renaming it into a
@@ -305,8 +328,7 @@ main() {
 		die "$parley_dest is a symlink; leaving it alone"
 	elif [ -e "$parley_dest" ]; then
 		[ -f "$parley_dest" ] || die "$parley_dest is not a regular file; leaving it alone"
-		LC_ALL=C grep -aqF -- "$parley_package" "$parley_dest" ||
-			die "$parley_dest is not a parley binary; leaving it alone"
+		is_parley_binary "$parley_dest" || die "$parley_dest is not a parley binary; leaving it alone"
 		parley_old=$(binary_version "$parley_dest")
 		: "${parley_old:=an unknown version}"
 	fi

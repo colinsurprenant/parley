@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -85,20 +86,167 @@ func tgz(t *testing.T, entries []tarEntry) []byte {
 	return buf.Bytes()
 }
 
-// parleyStub is a parley that is a script. It carries what a Go binary of parley
-// carries, the package path and the module line of its build information (tab
-// separated, as `go version -m` prints it), so the installer takes it for one,
-// and it logs each run to $STUB_LOG so a test can tell what ran and what did
-// not.
-func parleyStub(version string) []byte {
-	return []byte("#!/bin/sh\n" +
-		"# path\tgithub.com/colinsurprenant/parley/cmd/parley\n" +
-		"# mod\tgithub.com/colinsurprenant/parley\t" + version + "\t\n" +
-		"echo \"parley-" + version + " $* PATH=${PATH%%:*}\" >> \"$STUB_LOG\"\n" +
-		"case \"$1\" in\n" +
-		"version) echo \"parley " + version + " stub\" ;;\n" +
-		"doctor) echo \"stub doctor $*\"; exit \"${STUB_DOCTOR_EXIT:-0}\" ;;\n" +
-		"esac\n")
+// stubMain is the parley of the archives: a program that logs each run to
+// $STUB_LOG, so a test can tell what ran and what did not, answers version and
+// doctor, and connects to nothing. It is built as the real parley is, so the
+// installer meets what it meets on a machine: a Go binary of a module named for
+// parley with its main package at cmd/parley, at the module version of its tag.
+const stubMain = `package main
+
+import (
+	"fmt"
+	"os"
+	"runtime/debug"
+	"strconv"
+	"strings"
+)
+
+func main() {
+	version := "(unknown)"
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		version = bi.Main.Version
+	}
+	if path := os.Getenv("STUB_LOG"); path != "" {
+		if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			first, _, _ := strings.Cut(os.Getenv("PATH"), ":")
+			fmt.Fprintf(f, "parley-%s %s PATH=%s\n", version, strings.Join(os.Args[1:], " "), first)
+			f.Close()
+		}
+	}
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version":
+			fmt.Printf("parley %s stub\n", version)
+		case "doctor":
+			fmt.Println("stub doctor", strings.Join(os.Args[1:], " "))
+			code, _ := strconv.Atoi(os.Getenv("STUB_DOCTOR_EXIT"))
+			os.Exit(code)
+		}
+	}
+}
+`
+
+var stubs struct {
+	sync.Mutex
+	built    map[string][]byte // version -> the program
+	archived map[string][]byte // top directory -> its archive
+}
+
+// stubBinary is the stub parley at module version v, built once per test binary:
+// in a throwaway git repository tagged v, as the release workflow builds from a
+// checkout of a tag, so that the toolchain stamps v as the version.
+func stubBinary(t *testing.T, v string) []byte {
+	t.Helper()
+	stubs.Lock()
+	defer stubs.Unlock()
+	if b, ok := stubs.built[v]; ok {
+		return b
+	}
+	gomod, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	goVersion := regexp.MustCompile(`(?m)^go (\S+)$`).FindSubmatch(gomod)
+	if goVersion == nil {
+		t.Fatal("go.mod names no go version")
+	}
+	dir := t.TempDir() // gone with the test that built it; the program is kept
+	src := filepath.Join(dir, "cmd", "parley")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		filepath.Join(dir, "go.mod"):  "module github.com/colinsurprenant/parley\n\ngo " + string(goVersion[1]) + "\n",
+		filepath.Join(src, "main.go"): stubMain,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GOFLAGS=", "CGO_ENABLED=0",
+		"GIT_AUTHOR_NAME=stub", "GIT_AUTHOR_EMAIL=stub@example.com", "GIT_COMMITTER_NAME=stub", "GIT_COMMITTER_EMAIL=stub@example.com")
+	run := func(name string, args ...string) {
+		cmd := exec.Command(name, args...)
+		cmd.Dir, cmd.Env = dir, env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
+		}
+	}
+	run("git", "init", "-q")
+	run("git", "add", "-A")
+	run("git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "stub "+v)
+	run("git", "tag", v)
+	bin := filepath.Join(dir, "parley")
+	run("go", "build", "-trimpath", "-buildvcs=true", "-o", bin, "./cmd/parley")
+	b, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := moduleVersion(string(b)); got != v {
+		t.Fatalf("the stub was built at module version %q, want %s", got, v)
+	}
+	if stubs.built == nil {
+		stubs.built = map[string][]byte{}
+	}
+	stubs.built[v] = b
+	return b
+}
+
+// moduleVersion is the version of parley's module in the build information of
+// the Go binary b, or "".
+func moduleVersion(b string) string {
+	m := regexp.MustCompile(`mod\tgithub\.com/colinsurprenant/parley\t(\S+)`).FindStringSubmatch(b)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// parleyArchive is the archive of version v for platform p: the stub, the skills
+// of this checkout and the marker, under one top directory. It is the same for
+// every test that asks, so it is made once.
+func parleyArchive(t *testing.T, v string, p struct{ os, arch, ergoOS, ergoArch string }) []byte {
+	t.Helper()
+	top := "parley-" + v + "-" + p.os + "-" + p.arch
+	binary := stubBinary(t, v)
+	stubs.Lock()
+	defer stubs.Unlock()
+	if b, ok := stubs.archived[top]; ok {
+		return b
+	}
+	skills := checkoutSkills(t)
+	entries := []tarEntry{
+		{name: top, mode: 0o755},
+		{name: top + "/parley", mode: 0o755, body: binary},
+		{name: top + "/LICENSE", mode: 0o644, body: []byte("license\n")},
+		{name: top + "/skills", mode: 0o755},
+		{name: top + "/skills/" + relMarker, mode: 0o644, body: []byte("parley " + v + "\n")},
+	}
+	err := filepath.WalkDir(skills, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(skills, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		name := top + "/skills/" + filepath.ToSlash(rel)
+		if d.IsDir() {
+			entries = append(entries, tarEntry{name: name, mode: 0o755})
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		entries = append(entries, tarEntry{name: name, mode: 0o644, body: body})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stubs.archived == nil {
+		stubs.archived = map[string][]byte{}
+	}
+	stubs.archived[top] = tgz(t, entries)
+	return stubs.archived[top]
 }
 
 // release is one version's archives, served over HTTP, and the values the
@@ -117,37 +265,9 @@ type release struct {
 func newRelease(t *testing.T, version string) *release {
 	t.Helper()
 	r := &release{t: t, version: version, files: map[string][]byte{}, sums: map[string]string{}}
-	skills := checkoutSkills(t)
 	for _, p := range relPlatforms {
 		top := "parley-" + version + "-" + p.os + "-" + p.arch
-		entries := []tarEntry{
-			{name: top, mode: 0o755},
-			{name: top + "/parley", mode: 0o755, body: parleyStub(version)},
-			{name: top + "/LICENSE", mode: 0o644, body: []byte("license\n")},
-			{name: top + "/skills", mode: 0o755},
-			{name: top + "/skills/" + relMarker, mode: 0o644, body: []byte("parley " + version + "\n")},
-		}
-		err := filepath.WalkDir(skills, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(skills, path)
-			if err != nil || rel == "." {
-				return err
-			}
-			name := top + "/skills/" + filepath.ToSlash(rel)
-			if d.IsDir() {
-				entries = append(entries, tarEntry{name: name, mode: 0o755})
-				return nil
-			}
-			body, err := os.ReadFile(path)
-			entries = append(entries, tarEntry{name: name, mode: 0o644, body: body})
-			return err
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.add("/parley/"+top+".tar.gz", "PARLEY_SHA256_"+strings.ToUpper(p.os+"_"+p.arch), tgz(t, entries))
+		r.add("/parley/"+top+".tar.gz", "PARLEY_SHA256_"+strings.ToUpper(p.os+"_"+p.arch), parleyArchive(t, version, p))
 
 		etop := "ergo-" + relErgoVersion + "-" + p.ergoOS + "-" + p.ergoArch
 		r.add("/ergo/"+etop+".tar.gz", "ERGO_SHA256_"+strings.ToUpper(p.ergoOS+"_"+p.ergoArch), tgz(t, []tarEntry{
@@ -239,7 +359,7 @@ type machine struct {
 }
 
 var installTools = []string{"sh", "uname", "curl", "tar", "gzip", "mktemp", "grep", "cmp", "sha256sum", "shasum",
-	"cut", "head", "dirname", "mkdir", "cp", "mv", "rm", "chmod", "readlink", "ln", "sysctl"}
+	"cut", "head", "dirname", "mkdir", "cp", "mv", "rm", "chmod", "readlink", "ln", "sysctl", "od", "tr", "sed"}
 
 func newMachine(t *testing.T) *machine {
 	t.Helper()
@@ -443,8 +563,8 @@ func wantInstalled(t *testing.T, m *machine, v string) {
 			t.Fatalf("%s is not an executable file (err %v)", m.bin(name), err)
 		}
 	}
-	if got := m.read(m.bin("parley")); !strings.Contains(got, "\t"+v+"\t") {
-		t.Fatalf("the installed parley is not %s:\n%s", v, got)
+	if got := moduleVersion(m.read(m.bin("parley"))); got != v {
+		t.Fatalf("the installed parley is at module version %q, want %s", got, v)
 	}
 	wantSkills(t, m, v)
 	entries, _ := os.ReadDir(filepath.Join(m.home, ".local", "bin"))
@@ -812,13 +932,18 @@ func TestReleaseRefusesWhatIsNotItsOwnAtAnInstallPath(t *testing.T) {
 		want  string
 	}{
 		{"a symlink at parley", func(m *machine) {
-			m.write(filepath.Join(m.home, "elsewhere", "parley"), string(parleyStub("v0.9.0")), 0o755)
+			m.write(filepath.Join(m.home, "elsewhere", "parley"), "#!/bin/sh\n", 0o755)
 			mustSymlink(t, filepath.Join(m.home, "elsewhere", "parley"), m.bin("parley"))
 		}, "parley is a symlink"},
 		{"a dangling symlink at parley", func(m *machine) {
 			mustSymlink(t, filepath.Join(m.home, "gone"), m.bin("parley"))
 		}, "parley is a symlink"},
 		{"a foreign file at parley", func(m *machine) { m.write(m.bin("parley"), mine, 0o755) }, "is not a parley binary"},
+		{"a launcher that runs parley by its package path", func(m *machine) {
+			m.write(m.bin("parley"), "#!/bin/sh\necho launcher >> \"$STUB_LOG\"\nexec go run github.com/colinsurprenant/parley/cmd/parley \"$@\"\n", 0o755)
+		}, "is not a parley binary"},
+		{"a binary that is not Go", func(m *machine) { m.write(m.bin("parley"), systemFile(t, "ls"), 0o755) }, "is not a parley binary"},
+		{"a Go binary that is not parley", func(m *machine) { m.write(m.bin("parley"), systemFile(t, "go"), 0o755) }, "is not a parley binary"},
 		{"a directory at parley", func(m *machine) {
 			if err := os.MkdirAll(m.bin("parley"), 0o755); err != nil {
 				t.Fatal(err)
@@ -836,6 +961,7 @@ func TestReleaseRefusesWhatIsNotItsOwnAtAnInstallPath(t *testing.T) {
 			}
 		}, "ergo is not a regular file"},
 		{"a skills directory that is not ours", func(m *machine) { m.write(filepath.Join(m.skillsDir(), "mine"), "x", 0o644) }, "is not a skills directory this script made"},
+		{"a skills directory whose marker is not ours", func(m *machine) { m.write(filepath.Join(m.skillsDir(), relMarker), "hello\n", 0o644) }, "is not a skills directory this script made"},
 		{"a skills symlink", func(m *machine) {
 			if err := os.MkdirAll(filepath.Join(m.home, "elsewhere"), 0o755); err != nil {
 				t.Fatal(err)
@@ -862,6 +988,73 @@ func TestReleaseRefusesWhatIsNotItsOwnAtAnInstallPath(t *testing.T) {
 			}
 			if m.logged() != "" {
 				t.Errorf("something ran: %q", m.logged())
+			}
+		})
+	}
+}
+
+// systemFile is the bytes of the program name finds on PATH.
+func systemFile(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Skipf("no %s on PATH", name)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestReleaseTellsParleyByAllThreeMarksOfItsBinary: a file at the parley path is
+// replaced only if it begins with the magic number of an executable, carries the
+// marker the Go linker puts before build information, and has the build line
+// naming parley's main package up to the end of the line. Files made of those
+// parts show which one each is needed for.
+func TestReleaseTellsParleyByAllThreeMarksOfItsBinary(t *testing.T) {
+	const (
+		buildinf = "\xff Go buildinf:"
+		pathLine = "path\tgithub.com/colinsurprenant/parley/cmd/parley\n"
+	)
+	file := func(magic, mark, line string) string {
+		return magic + strings.Repeat("\x00", 60) + mark + strings.Repeat("\x00", 20) + line + "mod\tgithub.com/colinsurprenant/parley\tv0.5.0\t\n"
+	}
+	for _, magic := range []string{"\x7fELF", "\xcf\xfa\xed\xfe", "\xce\xfa\xed\xfe", "\xca\xfe\xba\xbe", "\xbe\xba\xfe\xca"} {
+		t.Run(fmt.Sprintf("replaced, with magic % x", magic), func(t *testing.T) {
+			r := newRelease(t, "v1.2.3")
+			m := newMachine(t)
+			m.write(m.bin("parley"), file(magic, buildinf, pathLine), 0o755)
+			res := m.run(r.script(), "")
+			if res.code != 0 {
+				t.Fatalf("exit %d, want 0\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+			}
+			wantContains(t, "stdout", res.stdout, "parley: v0.5.0 -> v1.2.3")
+		})
+	}
+	for _, tc := range []struct{ name, body string }{
+		{"no magic number: a text file", file("#!/bin/sh\n", buildinf, pathLine)},
+		{"another magic number", file("MZ\x90\x00", buildinf, pathLine)},
+		{"no build information marker", file("\x7fELF", "", pathLine)},
+		{"another build information marker", file("\x7fELF", "\xff Go buildinf?", pathLine)},
+		{"no build line", file("\x7fELF", buildinf, "")},
+		{"a build line of another package", file("\x7fELF", buildinf, "path\tgithub.com/colinsurprenant/parley/cmd/other\n")},
+		{"a build line that goes on", file("\x7fELF", buildinf, "path\tgithub.com/colinsurprenant/parley/cmd/parley-x\n")},
+		{"a build line with a space for its tab", file("\x7fELF", buildinf, "path github.com/colinsurprenant/parley/cmd/parley\n")},
+		{"a package path with another character for a dot", file("\x7fELF", buildinf, "path\tgithubXcom/colinsurprenant/parley/cmd/parley\n")},
+	} {
+		t.Run("refused, with "+tc.name, func(t *testing.T) {
+			r := newRelease(t, "v1.2.3")
+			m := newMachine(t)
+			m.write(m.bin("parley"), tc.body, 0o755)
+			before := snapshot(t, m.home)
+			res := m.run(r.script(), "")
+			if res.code != 1 || !strings.Contains(res.stderr, "is not a parley binary") {
+				t.Fatalf("exit %d, want 1 and a refusal\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+			}
+			wantSame(t, "the home directory", before, snapshot(t, m.home))
+			if got := r.requested(); len(got) != 0 {
+				t.Errorf("the server was asked for %v before the refusal", got)
 			}
 		})
 	}
