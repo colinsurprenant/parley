@@ -1142,7 +1142,7 @@ func TestReleaseKeepsGoingWhenTheSkillsCannotBeLinked(t *testing.T) {
 			if res.code != 1 {
 				t.Fatalf("exit %d, want 1\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
 			}
-			wantContains(t, "stderr", res.stderr, inTheWay+" exists and is not a link to", "skills/install.sh --uninstall", "dangling link has to be removed by hand")
+			wantContains(t, "stderr", res.stderr, inTheWay+" exists and is not a link to", "skills/install.sh --uninstall", "dangling or not, has to be removed by hand")
 			wantContains(t, "stdout", res.stdout, "parley: installed v1.2.3", "ergo: installed", "skills: installed v1.2.3", "parley doctor --harness claude")
 			for _, name := range []string{"parley", "ergo"} {
 				if !exists(m.bin(name)) {

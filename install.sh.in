@@ -83,12 +83,15 @@ need() {
 	command -v "$1" >/dev/null 2>&1 || die "$1 is needed and was not found on PATH"
 }
 
+# sha256_of prints the sha256 of the file $1, and fails if the hasher does: its
+# status is not hidden behind a pipe.
 sha256_of() {
 	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum -- "$1" | cut -d ' ' -f 1
+		line=$(sha256sum -- "$1") || return 1
 	else
-		shasum -a 256 -- "$1" | cut -d ' ' -f 1
+		line=$(shasum -a 256 -- "$1") || return 1
 	fi
+	printf '%s\n' "${line%% *}"
 }
 
 # fetch downloads the url $1 to the file $2.
@@ -147,11 +150,12 @@ is_parley_binary() {
 }
 
 # owned_skills_dir succeeds if $1 is a real directory holding the marker, a
-# regular file that says "parley" and a version: the only kind of skills
-# directory this script clears or moves aside.
+# regular file whose first line is "parley v<major>.<minor>.<patch>", with any
+# suffix a tag may carry: the only kind of skills directory this script clears
+# or moves aside.
 owned_skills_dir() {
 	[ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/$marker" ] && [ ! -L "$1/$marker" ] &&
-		grep -q '^parley ' "$1/$marker"
+		head -n 1 "$1/$marker" | grep -Eqx 'parley v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'
 }
 
 # discard removes the skills directory $1, if there is one, by renaming it into a
@@ -434,7 +438,7 @@ main() {
 	else
 		skills_failed=1
 		printf '%s\n' "$skills_out" >&2
-		warn "the skills could not all be linked, and everything else is installed. Links made from a parley checkout need that checkout's skills/install.sh --uninstall before this install can take their place, a dangling link has to be removed by hand, and a file or directory that is not a link has to be moved aside; then run the line again."
+		warn "the skills could not all be linked, and everything else is installed. Links made from a parley checkout need that checkout's skills/install.sh --uninstall before this install can take their place, any other link, dangling or not, has to be removed by hand, and a file or directory that is not a link has to be moved aside; then run the line again."
 	fi
 
 	run_doctor

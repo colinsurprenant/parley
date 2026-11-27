@@ -1269,8 +1269,8 @@ sessions, with the work and its records staying where they live.
 `skills/install.sh` links the three skills, `skills/parley-build/`,
 `skills/parley-table/` and `skills/parley-line/`, into `~/.claude/skills/` and
 `~/.agents/skills/`, which is where Claude Code and
-the agentskills.io convention look; OpenCode reads both roots. All six are symlinks into the checkout, so
-an edit is live in the next session; the script is idempotent, never replaces a
+the agentskills.io convention look; OpenCode reads both roots. Run from a checkout,
+it makes all six symlinks into the checkout, so an edit is live in the next session; the script is idempotent, never replaces a
 path it did not create, and `--uninstall` takes its links out again. The install
 line of `docs/table.md` runs the copy of this script that a release carries, from
 `~/.local/share/parley/skills`, so the links point there and not into a checkout,

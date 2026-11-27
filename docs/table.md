@@ -16,7 +16,8 @@ directory (`$XDG_STATE_HOME/parley`, by default `~/.local/state/parley`, or
 ## Once per machine
 
 On macOS or Linux, with no Go and no checkout of parley, one line does the first
-three of these from the latest release:
+three of these from the latest release, except putting `~/.local/bin` on your
+`PATH`, which it tells you how to do when it is not there:
 
 ```
 curl -fsSL https://github.com/colinsurprenant/parley/releases/latest/download/install.sh | sh
